@@ -79,6 +79,37 @@
         padding: 40px 0;
         font-size: 13px;
       }
+      .verified-badge {
+        color: #4ade80;
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      .verification-detail {
+        font-size: 11px;
+        color: #666;
+        margin-bottom: 10px;
+      }
+      .btn-secondary {
+        background: transparent;
+        color: #888;
+        border: 1px solid #333;
+        padding: 6px 14px;
+        font-size: 12px;
+      }
+      .btn-secondary:hover {
+        border-color: #555;
+        color: #aaa;
+      }
+      .error-text {
+        color: #f87171;
+        font-size: 12px;
+        margin-bottom: 10px;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
     </style>
   </head>
   <body>
@@ -86,8 +117,26 @@
     <p class="subtitle">Your verified behavioral data</p>
 
     <div id="auth-section" class="auth-section">
-      <p>Verify you're a unique human to contribute anonymous data.</p>
-      <button id="auth-btn">Sign in with World ID</button>
+      <!-- Unauthenticated state -->
+      <div id="auth-prompt">
+        <p>Verify you're a unique human to contribute anonymous data.</p>
+        <button id="auth-btn">Sign in with World ID</button>
+      </div>
+      <!-- Authenticated state -->
+      <div id="auth-status" style="display: none">
+        <div class="verified-badge">✓ Verified Human</div>
+        <p class="verification-detail" id="verification-level"></p>
+        <button id="signout-btn" class="btn-secondary">Sign out</button>
+      </div>
+      <!-- Loading state -->
+      <div id="auth-loading" style="display: none">
+        <p>Verifying...</p>
+      </div>
+      <!-- Error state -->
+      <div id="auth-error" style="display: none">
+        <p class="error-text" id="error-message"></p>
+        <button id="retry-btn">Try again</button>
+      </div>
     </div>
 
     <ul id="stats" class="stats"></ul>

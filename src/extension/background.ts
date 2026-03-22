@@ -63,7 +63,7 @@ async function recordVisit(domain: string, seconds: number) {
   const key = `visit:${domain}`;
   const result = await chrome.storage.local.get(key);
 
-  const existing: VisitRecord = result[key] || {
+  const existing: VisitRecord = (result[key] as VisitRecord | undefined) ?? {
     domain,
     firstSeen: Date.now(),
     lastSeen: 0,
@@ -113,6 +113,27 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
       await switchDomain(domain);
     } catch {
       await switchDomain(null);
+    }
+  }
+});
+
+// ── Auth state awareness ────────────────────────────────────────────
+// The popup handles the auth flow directly via auth.ts.
+// The background tracks auth state changes for future use
+// (e.g., gating data collection on authenticated users only).
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes["auth:credential"]) {
+    const newValue = changes["auth:credential"].newValue as
+      | { verificationLevel: string }
+      | undefined;
+    if (newValue) {
+      console.log(
+        "[Proof of Commitment] User authenticated:",
+        newValue.verificationLevel
+      );
+    } else {
+      console.log("[Proof of Commitment] User signed out");
     }
   }
 });

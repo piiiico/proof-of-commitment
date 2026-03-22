@@ -6,6 +6,8 @@
  * - Top domains by time spent (your commitment profile)
  */
 
+import { signIn, signOut, getCredential, type AuthCredential } from "./auth";
+
 interface VisitRecord {
   domain: string;
   firstSeen: number;
@@ -13,6 +15,79 @@ interface VisitRecord {
   totalSeconds: number;
   visitCount: number;
 }
+
+// ── DOM elements ────────────────────────────────────────────────────
+const authPrompt = document.getElementById("auth-prompt")!;
+const authStatus = document.getElementById("auth-status")!;
+const authLoading = document.getElementById("auth-loading")!;
+const authError = document.getElementById("auth-error")!;
+const authBtn = document.getElementById("auth-btn")!;
+const signoutBtn = document.getElementById("signout-btn")!;
+const retryBtn = document.getElementById("retry-btn")!;
+const verificationLevel = document.getElementById("verification-level")!;
+const errorMessage = document.getElementById("error-message")!;
+
+// ── Auth state views ────────────────────────────────────────────────
+
+type AuthView = "prompt" | "authenticated" | "loading" | "error";
+
+function showAuthView(view: AuthView) {
+  authPrompt.style.display = view === "prompt" ? "block" : "none";
+  authStatus.style.display = view === "authenticated" ? "block" : "none";
+  authLoading.style.display = view === "loading" ? "block" : "none";
+  authError.style.display = view === "error" ? "block" : "none";
+}
+
+function showAuthenticated(credential: AuthCredential) {
+  const level = credential.verificationLevel;
+  const label =
+    level === "orb"
+      ? "Orb-verified"
+      : level === "device"
+        ? "Device-verified"
+        : "Verified";
+  verificationLevel.textContent = label;
+  showAuthView("authenticated");
+}
+
+function showError(message: string) {
+  errorMessage.textContent = message;
+  showAuthView("error");
+}
+
+// ── Auth flow ───────────────────────────────────────────────────────
+
+async function handleSignIn() {
+  showAuthView("loading");
+  try {
+    const credential = await signIn();
+    showAuthenticated(credential);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    console.error("[Proof of Commitment] Auth error:", msg);
+
+    // User cancellation is not an error — go back to prompt
+    if (msg.includes("canceled") || msg.includes("cancelled") || msg.includes("user denied")) {
+      showAuthView("prompt");
+      return;
+    }
+
+    showError(msg);
+  }
+}
+
+async function handleSignOut() {
+  await signOut();
+  showAuthView("prompt");
+}
+
+// ── Event listeners ─────────────────────────────────────────────────
+
+authBtn.addEventListener("click", handleSignIn);
+signoutBtn.addEventListener("click", handleSignOut);
+retryBtn.addEventListener("click", handleSignIn);
+
+// ── Stats ───────────────────────────────────────────────────────────
 
 function formatTime(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -61,11 +136,19 @@ async function loadStats() {
     .join("");
 }
 
-// Auth button (placeholder — World ID integration is next step)
-document.getElementById("auth-btn")?.addEventListener("click", () => {
-  // TODO: World ID OIDC flow
-  console.log("World ID auth not yet implemented");
-});
+// ── Init ────────────────────────────────────────────────────────────
 
-// Load stats on popup open
-loadStats();
+async function init() {
+  // Check existing auth state
+  const credential = await getCredential();
+  if (credential) {
+    showAuthenticated(credential);
+  } else {
+    showAuthView("prompt");
+  }
+
+  // Load visit stats
+  await loadStats();
+}
+
+init();
