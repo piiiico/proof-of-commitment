@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        width: 360px;
+        min-height: 400px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        background: #0a0a0a;
+        color: #e5e5e5;
+        padding: 16px;
+      }
+      h1 {
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 4px;
+        color: #fff;
+      }
+      .subtitle {
+        font-size: 12px;
+        color: #888;
+        margin-bottom: 16px;
+      }
+      .auth-section {
+        background: #1a1a1a;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 16px;
+        text-align: center;
+      }
+      .auth-section p {
+        font-size: 13px;
+        color: #aaa;
+        margin-bottom: 12px;
+      }
+      button {
+        background: #fff;
+        color: #000;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #ddd;
+      }
+      .stats {
+        list-style: none;
+      }
+      .stats li {
+        display: flex;
+        justify-content: space-between;
+        padding: 10px 0;
+        border-bottom: 1px solid #222;
+        font-size: 13px;
+      }
+      .stats li:last-child {
+        border-bottom: none;
+      }
+      .domain {
+        color: #fff;
+        font-weight: 500;
+      }
+      .time {
+        color: #888;
+      }
+      .empty {
+        text-align: center;
+        color: #555;
+        padding: 40px 0;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Proof of Commitment</h1>
+    <p class="subtitle">Your verified behavioral data</p>
+
+    <div id="auth-section" class="auth-section">
+      <p>Verify you're a unique human to contribute anonymous data.</p>
+      <button id="auth-btn">Sign in with World ID</button>
+    </div>
+
+    <ul id="stats" class="stats"></ul>
+    <div id="empty" class="empty" style="display: none">
+      Browse the web. Your commitments will appear here.
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

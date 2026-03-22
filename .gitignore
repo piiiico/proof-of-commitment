@@ -1,0 +1,7 @@
+node_modules/
+dist/
+bun.lock
+.obsidian/
+*.env
+.env.*
+.DS_Store
