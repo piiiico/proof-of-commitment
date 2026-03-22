@@ -8,7 +8,8 @@
     "build:ext": "bun build src/extension/background.ts --outfile dist/extension/background.js && bun build src/extension/content.ts --outfile dist/extension/content.js && bun build src/extension/popup.ts --outfile dist/extension/popup.js && cp src/extension/manifest.json dist/extension/ && cp src/extension/popup.html dist/extension/",
     "dev:ext": "bun run build:ext --watch",
     "dev:backend": "bun run --hot src/backend/server.ts",
-    "start:backend": "bun run src/backend/server.ts"
+    "start:backend": "bun run src/backend/server.ts",
+    "start:mcp": "bun run src/mcp/server.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -18,6 +19,8 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "hono": "^4.12.8"
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "hono": "^4.12.8",
+    "zod": "^4.3.6"
   }
 }
