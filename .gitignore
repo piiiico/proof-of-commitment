@@ -6,3 +6,4 @@ bun.lock
 .env.*
 .DS_Store
 data/
+.wrangler/

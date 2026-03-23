@@ -23,12 +23,26 @@ Browser extension (Chrome Manifest V3)
 - **No PageRank for v1**: Simple aggregates ("147 verified repeat customers") are already more trustworthy than anything existing.
 - **World ID for MVP**: Free, global, SDK ready. BankID as upgrade path for Norwegian market.
 
+## Deployment (2026-03-23)
+- **Backend**: Cloudflare Workers + D1 (SQLite). URL: `https://poc-backend.amdal-dev.workers.dev`
+- **D1 database**: `poc-commits` (ID: `6ef7b6a9-1d09-4a0f-9ddd-c869a0582460`)
+- **Deploy**: `bun run deploy` (builds worker, uploads via CF REST API — bypasses wrangler silent-failure)
+- **Local dev**: `bun run dev:backend` (uses `src/backend/server.ts` + `db.ts` with bun:sqlite)
+- **Production**: `src/backend/worker.ts` (CF Workers + D1 bindings, same API surface)
+- **MCP server**: `bun run start:mcp` (queries prod backend by default)
+
+### World ID blocker
+- `src/extension/auth.ts` has `WORLD_ID_APP_ID = "app_PLACEHOLDER"` — not functional yet
+- Håkon needs to register at https://developer.worldcoin.org (browser auth required)
+- Steps: Create app → get `app_id` → set redirect URI to `chrome.identity.getRedirectURL('/callback')` → replace placeholder in auth.ts
+- Extension tracks time + syncs to backend without auth, but World ID is needed for verified person proof
+
 ## Tech stack
 - **Runtime**: Bun + TypeScript
 - **Extension**: Chrome Manifest V3
 - **Identity**: World ID (OIDC)
 - **ZK proofs**: Reclaim Protocol (zkTLS), Semaphore V4 (anonymity)
-- **Backend**: Bun server (Hono or similar)
+- **Backend**: CF Workers + D1 (prod), Bun + SQLite (dev)
 
 ## Conventions
 - Small commits, often

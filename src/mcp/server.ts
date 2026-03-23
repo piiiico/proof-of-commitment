@@ -5,7 +5,7 @@
  * Wraps the backend aggregator API (GET /api/domain/:domain).
  *
  * Usage:
- *   BACKEND_URL=http://localhost:3000 bun run src/mcp/server.ts
+ *   BACKEND_URL=https://poc-backend.amdal-dev.workers.dev bun run src/mcp/server.ts
  *
  * MCP tool:
  *   query_commitment({ domain }) → { domain, uniqueCommitments, totalVisits, ... }
@@ -15,7 +15,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:3000";
+const BACKEND_URL = process.env.BACKEND_URL ?? "https://poc-backend.amdal-dev.workers.dev";
 
 // ── Server ──
 

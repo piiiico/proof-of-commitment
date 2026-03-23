@@ -9,7 +9,10 @@
     "dev:ext": "bun run build:ext --watch",
     "dev:backend": "bun run --hot src/backend/server.ts",
     "start:backend": "bun run src/backend/server.ts",
-    "start:mcp": "bun run src/mcp/server.ts"
+    "start:mcp": "bun run src/mcp/server.ts",
+    "build:worker": "bun build src/backend/worker.ts --target=browser --format=esm --minify --outfile=dist/worker.js",
+    "deploy": "bun run build:worker && bun deploy.ts",
+    "build:all": "bun run build:ext && bun run build:worker"
   },
   "devDependencies": {
     "@types/bun": "latest",
