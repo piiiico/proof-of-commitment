@@ -138,14 +138,54 @@ Until then, the extension tracks domain visits without identity verification. Th
 | Browser | Chrome Manifest V3 extension |
 | Backend | Hono + Bun (dev), Cloudflare Workers + D1 (prod) |
 | AI interface | MCP (Model Context Protocol) |
+| Smart contracts | Solidity (Foundry), Base L2, USDC |
 | ZK (future) | Reclaim Protocol (zkTLS), Semaphore V4 |
+
+## Smart Contracts
+
+Layer 2 of the commitment graph: staked endorsements. Users stake USDC on domain recommendations, resolved by behavioral data.
+
+```
+contracts/
+  src/StakedEndorsement.sol    — Core contract (stake, resolve, claim)
+  test/StakedEndorsement.t.sol — 27 tests including fuzz
+  script/Deploy.s.sol          — Base Sepolia / mainnet deploy script
+```
+
+### Core flow
+
+1. `stake(domain, amount)` — Endorse a business by staking USDC
+2. `resolve(domain, positive)` — Oracle resolves outcome (MVP: owner/multisig)
+3. `claim(endorsementId)` — Winners get stake back minus 1.5% protocol fee; losers forfeit
+
+### Development
+
+```bash
+cd contracts
+forge build    # compile
+forge test     # run tests
+```
+
+### Deploy
+
+```bash
+export PRIVATE_KEY=<your-key>
+export BASE_SEPOLIA_RPC_URL=<rpc-url>
+forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast --verify
+```
+
+USDC addresses: Base Sepolia `0x036CbD53842c5426634e7929541eC2318f3dCF7e`, Base mainnet `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`.
 
 ## Roadmap
 
 - [x] Backend aggregation (CF Workers + D1)
 - [x] E2E test with mock World ID
 - [x] MCP server
+- [x] Staked endorsement smart contract (Base L2, USDC)
+- [ ] Deploy to Base Sepolia testnet
 - [ ] Real World ID `app_id` (needs browser registration)
 - [ ] Chrome extension packaging
 - [ ] zkTLS proofs for purchase verification (Reclaim Protocol)
 - [ ] Unlinkable submissions via Semaphore V4
+- [ ] UMA Optimistic Oracle integration for dispute resolution
+- [ ] Reputation tracking (BondRegistry)
