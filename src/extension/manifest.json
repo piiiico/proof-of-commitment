@@ -3,6 +3,7 @@
   "name": "Proof of Commitment",
   "version": "0.1.0",
   "description": "Prove your loyalty to businesses — anonymously, cryptographically verified.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs0aGzGKeqcT3t3tJ5kpam2q5k+Cm22Lc6oaiCLntuqUrdqgo8OObYMoCJtEOlB/8Wc8r1CySBXSNErrhhyNNQ+xMNF4OWEIGWl/jLypoOWeLMnbUwaapeL3ZEjloaT4qVLi45D0OniUNWHzerh5Sq8b1x8rN+TDO4h14Oy0yeUOX2x88gWFJH2JkQqjK9j9aSZUpyYVzQHP/Qi8cRBumAMpKyKy8Lz3FtZEJika5D8X2iOn4/yWtwE3SJWxqAPJAUTYl6p1Ee9K2iZgzt/FjjALs6oBg85XRPVEtMBksum/phILBZwPw6NzrYh/cd9hStgYVvksLXIaokiKN0Tr15wIDAQAB",
   "permissions": [
     "storage",
     "tabs",

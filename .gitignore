@@ -7,3 +7,4 @@ bun.lock
 .DS_Store
 data/
 .wrangler/
+.keys/
