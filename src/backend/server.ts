@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { insertCommitment, getDomainStats, type Commitment } from "./db.ts";
+import { buildCommitmentProfile, searchAndProfile } from "./brreg.ts";
 
 const app = new Hono();
 
@@ -65,6 +66,42 @@ app.get("/api/domain/:domain", (c) => {
   }
 
   return c.json(stats);
+});
+
+// ── GET /api/business/search?q=name ──
+// Search Norwegian businesses by name and return commitment profiles.
+app.get("/api/business/search", async (c) => {
+  const query = c.req.query("q");
+  if (!query || query.trim().length === 0) {
+    return c.json({ error: "Query parameter 'q' is required" }, 400);
+  }
+
+  const limit = Math.min(Number(c.req.query("limit")) || 3, 10);
+  const profiles = await searchAndProfile(query, limit);
+
+  return c.json({
+    query,
+    count: profiles.length,
+    results: profiles,
+  });
+});
+
+// ── GET /api/business/:orgNumber ──
+// Look up a specific business by org number and return commitment profile.
+app.get("/api/business/:orgNumber", async (c) => {
+  const orgNumber = c.req.param("orgNumber").replace(/\s/g, "");
+
+  if (!/^\d{9}$/.test(orgNumber)) {
+    return c.json({ error: "Organization number must be 9 digits" }, 400);
+  }
+
+  const profile = await buildCommitmentProfile(orgNumber);
+
+  if (!profile) {
+    return c.json({ error: `No business found with org number ${orgNumber}` }, 404);
+  }
+
+  return c.json(profile);
 });
 
 // ── Validation ──
