@@ -1,41 +1,48 @@
 /**
  * Proof of Commitment — MCP Server
  *
- * Exposes commitment aggregates to AI models via the Model Context Protocol.
- * Wraps the backend aggregator API (GET /api/domain/:domain).
+ * Exposes commitment data to AI models via the Model Context Protocol.
+ *
+ * Tools:
+ *   query_commitment({ domain })       — behavioral commitment data for a domain
+ *   lookup_business({ query })         — Norwegian business commitment profile (Brreg public data)
+ *   lookup_business_by_org({ orgNumber }) — direct org number lookup
  *
  * Usage:
  *   BACKEND_URL=https://poc-backend.amdal-dev.workers.dev bun run src/mcp/server.ts
- *
- * MCP tool:
- *   query_commitment({ domain }) → { domain, uniqueCommitments, totalVisits, ... }
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import {
+  buildCommitmentProfile,
+  searchAndProfile,
+} from "../backend/brreg.ts";
 
-const BACKEND_URL = process.env.BACKEND_URL ?? "https://poc-backend.amdal-dev.workers.dev";
+const BACKEND_URL =
+  process.env.BACKEND_URL ?? "https://poc-backend.amdal-dev.workers.dev";
 
 // ── Server ──
 
 const server = new McpServer({
   name: "proof-of-commitment",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 // ── Tool: query_commitment ──
 
 server.tool(
   "query_commitment",
-  "Query verified commitment data for a domain. Returns aggregated behavioral signals: how many unique verified visitors, repeat visit rate, and average time spent. These signals prove real human engagement — harder to fake than reviews or content.",
+  "Query verified behavioral commitment data for a domain. Returns aggregated signals: unique verified visitors, repeat visit rate, and average time spent. These prove real human engagement — harder to fake than reviews or content.",
   {
-    domain: z.string().describe(
-      "The domain to query (e.g. 'example.com'). Will be normalized to lowercase without protocol or path."
-    ),
+    domain: z
+      .string()
+      .describe(
+        "The domain to query (e.g. 'example.com'). Will be normalized to lowercase without protocol or path."
+      ),
   },
   async ({ domain }) => {
-    // Normalize domain: strip protocol, path, lowercase
     const normalized = domain
       .trim()
       .toLowerCase()
@@ -59,9 +66,8 @@ server.tool(
         };
       }
 
-      const data = await res.json();
+      const data = (await res.json()) as any;
 
-      // Compute derived metrics for AI consumption
       const repeatRate =
         data.uniqueCommitments > 0 && data.totalVisits > 0
           ? Math.round(
@@ -74,7 +80,6 @@ server.tool(
       const avgMinutes =
         data.avgSeconds > 0 ? Math.round(data.avgSeconds / 60) : 0;
 
-      // Build human-readable summary alongside raw data
       const summary =
         data.uniqueCommitments === 0
           ? `No verified commitment data for ${normalized}.`
@@ -85,27 +90,18 @@ server.tool(
               `Repeat visit rate: ${repeatRate}%`,
               `Average time per visitor: ${avgMinutes} minutes (${Math.round(data.avgSeconds)}s)`,
               `Total time invested: ${Math.round(data.totalSeconds / 3600)} hours`,
-              data.lastUpdated
-                ? `Last updated: ${data.lastUpdated}`
-                : null,
+              data.lastUpdated ? `Last updated: ${data.lastUpdated}` : null,
             ]
               .filter(Boolean)
               .join("\n");
 
       return {
         content: [
-          {
-            type: "text" as const,
-            text: summary,
-          },
+          { type: "text" as const, text: summary },
           {
             type: "text" as const,
             text: JSON.stringify(
-              {
-                ...data,
-                repeatRate,
-                avgMinutes,
-              },
+              { ...data, repeatRate, avgMinutes },
               null,
               2
             ),
@@ -113,8 +109,7 @@ server.tool(
         ],
       };
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Unknown error";
+      const message = err instanceof Error ? err.message : "Unknown error";
       return {
         content: [
           {
@@ -128,12 +123,159 @@ server.tool(
   }
 );
 
+// ── Tool: lookup_business ──
+
+server.tool(
+  "lookup_business",
+  `Search for a Norwegian business and get its commitment profile from public data (Brønnøysund Register Centre). Returns real commitment signals that can't be faked:
+
+- Temporal commitment: how long the business has operated
+- Financial commitment: revenue, profitability, equity health
+- Operational commitment: employee count, active status
+- Overall commitment score (0-100)
+
+Data source: Norwegian government registers (Brreg). No user-contributed data needed — immediate trust verification for any Norwegian business.`,
+  {
+    query: z
+      .string()
+      .describe(
+        "Business name to search for (e.g. 'Peppes Pizza', 'Equinor')"
+      ),
+    maxResults: z
+      .number()
+      .int()
+      .min(1)
+      .max(10)
+      .optional()
+      .describe("Maximum number of results to return (default: 3)"),
+  },
+  async ({ query, maxResults }) => {
+    try {
+      const profiles = await searchAndProfile(query, maxResults ?? 3);
+
+      if (profiles.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No Norwegian businesses found matching "${query}".`,
+            },
+          ],
+        };
+      }
+
+      const summaries = profiles.map((p) => p.summary).join("\n\n---\n\n");
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Found ${profiles.length} business(es) matching "${query}":\n\n${summaries}`,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              profiles.map((p) => ({
+                orgNumber: p.orgNumber,
+                name: p.name,
+                yearsOperating: p.yearsOperating,
+                employees: p.employees,
+                industry: p.industry,
+                isActive: p.isActive,
+                financials: p.financials,
+                signals: p.signals,
+              })),
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error searching businesses: ${message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: lookup_business_by_org ──
+
+server.tool(
+  "lookup_business_by_org",
+  `Look up a specific Norwegian business by organization number and get its commitment profile from public data (Brønnøysund Register Centre). Returns real commitment signals: longevity, financial health, operational activity, and overall commitment score.`,
+  {
+    orgNumber: z
+      .string()
+      .describe(
+        "Norwegian organization number (9 digits, e.g. '984388659')"
+      ),
+  },
+  async ({ orgNumber }) => {
+    try {
+      const profile = await buildCommitmentProfile(orgNumber);
+
+      if (!profile) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `No business found with organization number ${orgNumber}.`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          { type: "text" as const, text: profile.summary },
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                orgNumber: profile.orgNumber,
+                name: profile.name,
+                yearsOperating: profile.yearsOperating,
+                employees: profile.employees,
+                industry: profile.industry,
+                isActive: profile.isActive,
+                financials: profile.financials,
+                signals: profile.signals,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error looking up business: ${message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
 // ── Start ──
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Proof of Commitment MCP server running on stdio");
+  console.error("Proof of Commitment MCP server v0.2.0 running on stdio");
 }
 
 main().catch((err) => {
