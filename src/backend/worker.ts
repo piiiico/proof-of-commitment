@@ -4,13 +4,16 @@
  * Production deployment. Mirrors the API surface of server.ts (local
  * Bun + SQLite) but runs on CF Workers + D1.
  *
- * POST /api/commit       — submit commitment(s)
- * GET  /api/domain/:d    — stats for a specific domain
- * GET  /                 — health check
+ * POST /api/commit              — submit commitment(s)
+ * GET  /api/domain/:d           — stats for a specific domain
+ * GET  /api/business/search?q=  — search Norwegian businesses
+ * GET  /api/business/:orgNumber — business commitment profile
+ * GET  /                        — health check
  */
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { buildCommitmentProfile, searchAndProfile } from "./brreg.ts";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -188,6 +191,49 @@ app.get("/api/domain/:domain", async (c) => {
     avgSeconds: row.avg_seconds,
     lastUpdated: row.last_updated,
   });
+});
+
+/**
+ * GET /api/business/search?q=name
+ * Search Norwegian businesses by name and return commitment profiles.
+ */
+app.get("/api/business/search", async (c) => {
+  const query = c.req.query("q");
+  if (!query || query.trim().length === 0) {
+    return c.json({ error: "Query parameter 'q' is required" }, 400);
+  }
+
+  const limit = Math.min(Number(c.req.query("limit")) || 3, 10);
+  const profiles = await searchAndProfile(query, limit);
+
+  return c.json({
+    query,
+    count: profiles.length,
+    results: profiles,
+  });
+});
+
+/**
+ * GET /api/business/:orgNumber
+ * Look up a specific Norwegian business by org number.
+ */
+app.get("/api/business/:orgNumber", async (c) => {
+  const orgNumber = c.req.param("orgNumber").replace(/\s/g, "");
+
+  if (!/^\d{9}$/.test(orgNumber)) {
+    return c.json({ error: "Organization number must be 9 digits" }, 400);
+  }
+
+  const profile = await buildCommitmentProfile(orgNumber);
+
+  if (!profile) {
+    return c.json(
+      { error: `No business found with org number ${orgNumber}` },
+      404
+    );
+  }
+
+  return c.json(profile);
 });
 
 export default app;
