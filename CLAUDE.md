@@ -29,7 +29,8 @@ Browser extension (Chrome Manifest V3)
 - **Deploy**: `bun run deploy` (builds worker, uploads via CF REST API — bypasses wrangler silent-failure)
 - **Local dev**: `bun run dev:backend` (uses `src/backend/server.ts` + `db.ts` with bun:sqlite)
 - **Production**: `src/backend/worker.ts` (CF Workers + D1 bindings, same API surface)
-- **MCP server**: `bun run start:mcp` (queries prod backend by default)
+- **MCP server (local)**: `bun run start:mcp` (stdio, queries prod backend)
+- **MCP server (remote)**: `https://poc-backend.amdal-dev.workers.dev/mcp` (Streamable HTTP, stateless)
 
 ### World ID blocker
 - `src/extension/auth.ts` has `WORLD_ID_APP_ID = "app_PLACEHOLDER"` — not functional yet

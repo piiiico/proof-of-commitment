@@ -82,7 +82,24 @@ asciinema rec --command "bash demo.sh" demo.cast
 
 ## MCP Integration
 
-Add to your MCP config (`~/.claude/claude_desktop_config.json`):
+### Remote MCP Server (recommended — zero install)
+
+Add to your MCP config (`~/.claude/claude_desktop_config.json` or Cursor settings):
+
+```json
+{
+  "mcpServers": {
+    "proof-of-commitment": {
+      "type": "streamable-http",
+      "url": "https://poc-backend.amdal-dev.workers.dev/mcp"
+    }
+  }
+}
+```
+
+No installation needed. Works with Claude Desktop, Cursor, Windsurf, and any MCP-compatible AI tool.
+
+### Local MCP Server (stdio)
 
 ```json
 {
@@ -98,17 +115,32 @@ Add to your MCP config (`~/.claude/claude_desktop_config.json`):
 }
 ```
 
-Then ask your AI:
-> "How many real people regularly visit peppes-pizza.no?"
+### Available Tools
 
-The `query_commitment` tool returns:
+| Tool | Description |
+|------|-------------|
+| `query_commitment` | Query behavioral commitment data for any domain |
+| `lookup_business` | Search Norwegian businesses by name, get commitment profile |
+| `lookup_business_by_org` | Look up business by org number (9 digits) |
+
+Then ask your AI:
+> "How trustworthy is Equinor?"
+
 ```
-Domain: peppes-pizza.no
-Verified unique visitors: 6
-Total visits: 47
-Repeat visit rate: 87%
-Average time per visitor: 3 minutes
+EQUINOR ASA (923609016)
+Operating for 53.5 years (founded 1972-09-18)
+21,408 employees
+Revenue: 72,543M NOK
+Equity ratio: 37.6%
+
+Commitment signals:
+  Temporal (longevity): 95/100
+  Financial (health): 90/100
+  Operational (activity): 95/100
+  Overall commitment: 93/100
 ```
+
+Data sourced from Norwegian government registers (Brønnøysund) — verified, public, unfakeable.
 
 ## Deployment
 
