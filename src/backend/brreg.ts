@@ -336,14 +336,77 @@ export async function buildCommitmentProfile(
   };
 }
 
+/**
+ * Rank entities for relevance when searching by name.
+ *
+ * Brreg returns results in arbitrary order. For restaurant/business lookups
+ * we want to surface the "real" company rather than a sole trader (ENK) with
+ * a similar name or an inactive entity.  We score on signals available in the
+ * entity search response (no extra API calls needed):
+ *
+ *  +20  Org form is AS or ASA (vs ENK which scores -20)
+ *  +30  Primary industry is food service / restaurant (56.xxx)
+ *  +15  Primary industry is accommodation (55.xxx) — adjacent sector
+ *  +10  Has ≥ 1 reported employee
+ *  +10  Has ≥ 5 reported employees (stacks with above)
+ *  -50  Bankrupt / under liquidation / forced dissolution
+ *
+ * Higher score = should appear first.
+ */
+function scoreEntity(entity: BrregEntity): number {
+  let score = 0;
+
+  // Organisation form
+  const orgKode = entity.organisasjonsform?.kode?.toUpperCase() ?? "";
+  if (orgKode === "AS" || orgKode === "ASA") score += 20;
+  else if (orgKode === "ENK") score -= 20;
+
+  // Industry — prefer restaurant/food service (56.xxx) and accommodation (55.xxx)
+  // 56.10x / 56.110: Restaurants — highest priority for food lookups
+  // 56.2xx: Catering — still food industry but secondary
+  // 55.xxx: Accommodation (often includes food service)
+  const nkKode = entity.naeringskode1?.kode ?? "";
+  if (nkKode.startsWith("56.1")) score += 35; // Restaurants specifically
+  else if (nkKode.startsWith("56")) score += 28; // Other food service (catering, bars)
+  else if (nkKode.startsWith("55")) score += 15; // Accommodation
+
+  // Employee count — stacking bonuses so more employees rank higher
+  const emp = entity.antallAnsatte ?? 0;
+  if (emp >= 1) score += 10;
+  if (emp >= 5) score += 10;
+  if (emp >= 10) score += 5;
+  if (emp >= 20) score += 5;
+
+  // Penalise inactive entities
+  if (
+    entity.konkurs ||
+    entity.underAvvikling ||
+    entity.underTvangsavviklingEllerTvangsopplosning
+  ) {
+    score -= 50;
+  }
+
+  return score;
+}
+
 export async function searchAndProfile(
   query: string,
   maxResults = 3
 ): Promise<CommitmentProfile[]> {
-  const entities = await searchEntities(query, maxResults);
-  const profiles: CommitmentProfile[] = [];
+  // Fetch a larger pool so we can re-rank before building full profiles.
+  // Brreg results can have the best match at position 10-15 when a sole trader
+  // (ENK) with a similar name appears first.  Fetch up to 20 to capture those.
+  const poolSize = Math.min(Math.max(maxResults * 5, 10), 20);
+  const entities = await searchEntities(query, poolSize);
 
-  for (const entity of entities) {
+  // Re-rank by our relevance heuristic, then take the top maxResults.
+  const ranked = [...entities].sort(
+    (a, b) => scoreEntity(b) - scoreEntity(a)
+  );
+  const selected = ranked.slice(0, maxResults);
+
+  const profiles: CommitmentProfile[] = [];
+  for (const entity of selected) {
     const profile = await buildCommitmentProfile(
       entity.organisasjonsnummer
     );
