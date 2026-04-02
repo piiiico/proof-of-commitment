@@ -395,8 +395,9 @@ export async function searchAndProfile(
 ): Promise<CommitmentProfile[]> {
   // Fetch a larger pool so we can re-rank before building full profiles.
   // Brreg results can have the best match at position 10-15 when a sole trader
-  // (ENK) with a similar name appears first.  Fetch up to 20 to capture those.
-  const poolSize = Math.min(Math.max(maxResults * 5, 10), 20);
+  // (ENK) with a similar name appears first.  Always fetch at least 20 to
+  // capture those cases regardless of how many results the caller wants.
+  const poolSize = 20;
   const entities = await searchEntities(query, poolSize);
 
   // Re-rank by our relevance heuristic, then take the top maxResults.
