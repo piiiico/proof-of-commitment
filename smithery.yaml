@@ -1,0 +1,16 @@
+# Smithery configuration for proof-of-commitment MCP server
+# Remote HTTP server — no local installation required
+
+startCommand:
+  type: http
+  configSchema:
+    type: object
+    properties: {}
+    required: []
+  commandFunction: |
+    (config) => ({
+      command: "bun",
+      args: ["run", "src/mcp/server.ts"],
+      env: { BACKEND_URL: "https://poc-backend.amdal-dev.workers.dev" }
+    })
+  exampleConfig: {}
