@@ -3,14 +3,9 @@
 
 startCommand:
   type: http
+  url: "https://poc-backend.amdal-dev.workers.dev/mcp"
   configSchema:
     type: object
     properties: {}
     required: []
-  commandFunction: |
-    (config) => ({
-      command: "bun",
-      args: ["run", "src/mcp/server.ts"],
-      env: { BACKEND_URL: "https://poc-backend.amdal-dev.workers.dev" }
-    })
   exampleConfig: {}
