@@ -7,6 +7,7 @@
  *   query_commitment({ domain })       — behavioral commitment data for a domain
  *   lookup_business({ query })         — Norwegian business commitment profile (Brreg public data)
  *   lookup_business_by_org({ orgNumber }) — direct org number lookup
+ *   lookup_github_repo({ repo })       — GitHub repo behavioral commitment profile
  *
  * Usage:
  *   BACKEND_URL=https://poc-backend.amdal-dev.workers.dev bun run src/mcp/server.ts
@@ -19,6 +20,7 @@ import {
   buildCommitmentProfile,
   searchAndProfile,
 } from "../backend/brreg.ts";
+import { buildGitHubCommitmentProfile, parseGitHubInput } from "../backend/github.ts";
 
 const BACKEND_URL =
   process.env.BACKEND_URL ?? "https://poc-backend.amdal-dev.workers.dev";
@@ -27,7 +29,7 @@ const BACKEND_URL =
 
 const server = new McpServer({
   name: "proof-of-commitment",
-  version: "0.2.0",
+  version: "0.4.0",
 });
 
 // ── Tool: query_commitment ──
@@ -270,12 +272,91 @@ server.tool(
   }
 );
 
+// ── Tool: lookup_github_repo ──
+
+server.tool(
+  "lookup_github_repo",
+  `Get a behavioral commitment profile for any public GitHub repository. Returns real signals: how long the project has existed, recent commit frequency, contributor community size, release cadence, and social proof. These are behavioral commitments — harder to fake than README claims.
+
+Useful for: vetting open-source dependencies, evaluating AI tools/frameworks, assessing vendor reliability.
+Examples: "vercel/next.js", "facebook/react", "https://github.com/piiiico/proof-of-commitment"`,
+  {
+    repo: z
+      .string()
+      .describe(
+        'GitHub repository in "owner/repo" format or full URL. Example: "vercel/next.js"'
+      ),
+  },
+  async ({ repo }) => {
+    const parsed = parseGitHubInput(repo);
+    if (!parsed) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Invalid GitHub repo format. Use "owner/repo". Example: "vercel/next.js"`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    try {
+      const profile = await buildGitHubCommitmentProfile(
+        parsed.owner,
+        parsed.repo
+      );
+
+      if (!profile) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Repository ${parsed.owner}/${parsed.repo} not found or not accessible.`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          { type: "text" as const, text: profile.summary },
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                fullName: profile.fullName,
+                ageYears: Math.round(profile.ageYears * 10) / 10,
+                stars: profile.stars,
+                recentCommits30d: profile.recentCommits30d,
+                contributorCount: profile.contributorCount,
+                commitmentScore: profile.commitmentScore,
+                scoreBreakdown: profile.scoreBreakdown,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${message}` },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
 // ── Start ──
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Proof of Commitment MCP server v0.2.0 running on stdio");
+  console.error("Proof of Commitment MCP server v0.4.0 running on stdio");
 }
 
 main().catch((err) => {

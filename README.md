@@ -122,9 +122,12 @@ No installation needed. Works with Claude Desktop, Cursor, Windsurf, and any MCP
 | `query_commitment` | Query behavioral commitment data for any domain |
 | `lookup_business` | Search Norwegian businesses by name, get commitment profile |
 | `lookup_business_by_org` | Look up business by org number (9 digits) |
+| `lookup_github_repo` | Get behavioral commitment score for any GitHub repo |
 
 Then ask your AI:
 > "How trustworthy is Equinor?"
+> "What's the commitment score for vercel/next.js?"
+> "Is this GitHub repo actively maintained? vercel/ai"
 
 ```
 EQUINOR ASA (923609016)

@@ -18,6 +18,110 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import { buildCommitmentProfile, searchAndProfile } from "./brreg.ts";
+import { buildGitHubCommitmentProfile, parseGitHubInput } from "./github.ts";
+
+// ── World ID JWT Verification ────────────────────────────────────────
+
+const WORLD_ID_APP_ID = "app_a2868bad17534bb7e8bc82de8df73773";
+const WORLD_ID_JWKS_URL = "https://id.worldcoin.org/jwks.json";
+const WORLD_ID_ISSUER = "https://id.worldcoin.org";
+
+interface JWK {
+  kty: string;
+  kid: string;
+  use: string;
+  alg: string;
+  n: string;
+  e: string;
+}
+
+interface JWTPayload {
+  iss: string;
+  sub: string;
+  aud: string;
+  nonce: string;
+  iat: number;
+  exp: number;
+  verification_level?: string;
+}
+
+// Cache JWKS for 1 hour (CF Workers have no persistent memory, but within a request it helps)
+let jwksCache: { keys: JWK[]; fetchedAt: number } | null = null;
+
+async function fetchJWKS(): Promise<JWK[]> {
+  const now = Date.now();
+  if (jwksCache && now - jwksCache.fetchedAt < 3600_000) {
+    return jwksCache.keys;
+  }
+  const res = await fetch(WORLD_ID_JWKS_URL);
+  if (!res.ok) throw new Error(`Failed to fetch JWKS: ${res.status}`);
+  const data = (await res.json()) as { keys: JWK[] };
+  jwksCache = { keys: data.keys, fetchedAt: now };
+  return data.keys;
+}
+
+function base64urlDecode(str: string): string {
+  let base64 = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (base64.length % 4 !== 0) base64 += "=";
+  return atob(base64);
+}
+
+/**
+ * Verify a World ID JWT and return the payload.
+ * Checks: signature (RSA via JWKS), issuer, audience, expiration.
+ */
+async function verifyWorldIdToken(token: string): Promise<JWTPayload> {
+  const parts = token.split(".");
+  if (parts.length !== 3) throw new Error("Invalid JWT format");
+
+  const header = JSON.parse(base64urlDecode(parts[0]!)) as { alg: string; kid: string };
+  const payload = JSON.parse(base64urlDecode(parts[1]!)) as JWTPayload;
+
+  // 1. Verify issuer
+  if (payload.iss !== WORLD_ID_ISSUER) {
+    throw new Error(`Invalid issuer: ${payload.iss}`);
+  }
+
+  // 2. Verify audience
+  if (payload.aud !== WORLD_ID_APP_ID) {
+    throw new Error(`Invalid audience: ${payload.aud}`);
+  }
+
+  // 3. Verify expiration
+  const now = Math.floor(Date.now() / 1000);
+  if (payload.exp && payload.exp < now) {
+    throw new Error("Token expired");
+  }
+
+  // 4. Verify signature via JWKS
+  const keys = await fetchJWKS();
+  const jwk = keys.find((k) => k.kid === header.kid);
+  if (!jwk) throw new Error(`No matching key for kid: ${header.kid}`);
+
+  const cryptoKey = await crypto.subtle.importKey(
+    "jwk",
+    { kty: jwk.kty, n: jwk.n, e: jwk.e, alg: jwk.alg, use: jwk.use },
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["verify"]
+  );
+
+  const signedContent = new TextEncoder().encode(`${parts[0]!}.${parts[1]!}`);
+  const sigStr = parts[2]!.replace(/-/g, "+").replace(/_/g, "/");
+  const paddedSig = sigStr + "=".repeat((4 - (sigStr.length % 4)) % 4);
+  const sigBytes = Uint8Array.from(atob(paddedSig), (c) => c.charCodeAt(0));
+
+  const valid = await crypto.subtle.verify(
+    "RSASSA-PKCS1-v1_5",
+    cryptoKey,
+    sigBytes,
+    signedContent
+  );
+
+  if (!valid) throw new Error("Invalid token signature");
+
+  return payload;
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -105,6 +209,21 @@ app.get("/", (c) => c.json({ status: "ok", service: "proof-of-commitment" }));
  * Each: { domain, visitCount, totalSeconds, firstSeen, lastSeen }
  */
 app.post("/api/commit", async (c) => {
+  // Require World ID authentication — verified human only
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader?.startsWith("Bearer ")) {
+    return c.json({ error: "Authentication required. Provide a World ID token via Authorization: Bearer <id_token>" }, 401);
+  }
+
+  const token = authHeader.slice(7);
+  let worldIdSub: string;
+  try {
+    const payload = await verifyWorldIdToken(token);
+    worldIdSub = payload.sub;
+  } catch (err) {
+    return c.json({ error: `Invalid World ID token: ${err instanceof Error ? err.message : "verification failed"}` }, 401);
+  }
+
   const body = await c.req.json();
   const items: unknown[] = Array.isArray(body) ? body : [body];
 
@@ -251,7 +370,7 @@ app.get("/api/business/:orgNumber", async (c) => {
 function createMcpServer(): McpServer {
   const mcp = new McpServer({
     name: "proof-of-commitment",
-    version: "0.3.0",
+    version: "0.4.0",
   });
 
   // Tool: query_commitment
@@ -398,6 +517,92 @@ function createMcpServer(): McpServer {
         }
         return {
           content: [{ type: "text" as const, text: profile.summary }],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: ${err instanceof Error ? err.message : "Unknown"}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Tool: lookup_github_repo
+  mcp.tool(
+    "lookup_github_repo",
+    `Get a behavioral commitment profile for any public GitHub repository. Returns real signals that prove genuine investment: how long the project has existed, recent commit frequency, contributor community size, release cadence, and social proof. These are behavioral commitments — harder to fake than README claims or marketing copy.
+
+Useful for: vetting open-source dependencies, evaluating AI tools/frameworks, assessing vendor reliability, due diligence on any GitHub project.
+
+Examples: "vercel/next.js", "facebook/react", "https://github.com/piiiico/proof-of-commitment"`,
+    {
+      repo: z
+        .string()
+        .describe(
+          'GitHub repository in "owner/repo" format or full URL. Examples: "vercel/next.js", "https://github.com/facebook/react"'
+        ),
+    },
+    async ({ repo }) => {
+      const parsed = parseGitHubInput(repo);
+      if (!parsed) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Invalid GitHub repo format. Use "owner/repo" or a full GitHub URL. Example: "vercel/next.js"`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      try {
+        const profile = await buildGitHubCommitmentProfile(
+          parsed.owner,
+          parsed.repo
+        );
+
+        if (!profile) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Repository ${parsed.owner}/${parsed.repo} not found or not accessible.`,
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            { type: "text" as const, text: profile.summary },
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  fullName: profile.fullName,
+                  ageYears: Math.round(profile.ageYears * 10) / 10,
+                  stars: profile.stars,
+                  forks: profile.forks,
+                  recentCommits30d: profile.recentCommits30d,
+                  contributorCount: profile.contributorCount,
+                  releaseCount: profile.releaseCount,
+                  latestRelease: profile.latestRelease,
+                  daysSinceLastPush: profile.daysSinceLastPush,
+                  isArchived: profile.isArchived,
+                  commitmentScore: profile.commitmentScore,
+                  scoreBreakdown: profile.scoreBreakdown,
+                },
+                null,
+                2
+              ),
+            },
+          ],
         };
       } catch (err) {
         return {
