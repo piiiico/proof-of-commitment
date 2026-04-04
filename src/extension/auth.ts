@@ -11,8 +11,7 @@
  */
 
 // ── Config ──────────────────────────────────────────────────────────
-// TODO: Replace with real app_id from World ID Developer Portal
-const WORLD_ID_APP_ID = "app_PLACEHOLDER";
+const WORLD_ID_APP_ID = "app_a2868bad17534bb7e8bc82de8df73773";
 const WORLD_ID_AUTHORIZE_URL = "https://id.worldcoin.org/authorize";
 const WORLD_ID_JWKS_URL = "https://id.worldcoin.org/jwks.json";
 const WORLD_ID_ISSUER = "https://id.worldcoin.org";

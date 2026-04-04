@@ -1,16 +1,14 @@
-# Proof of Commitment — Chrome Extension
+# Commit — Chrome Extension
 
-Track your time on websites. Verify you're a unique human. Prove commitment, not just clicks.
+See real trust signals. Contribute your behavioral data — anonymously, verified by World ID.
 
-**Status:** v0.1 — installable for sideloading. World ID integration requires credentials (see step 3).
+**Status:** v0.2 — site-contextual trust UI, contributing toggle, content script trust badge. Installable for sideloading.
 
 ---
 
 ## Install in 5 minutes
 
-### Step 1: Get the extension files
-
-Clone the repo (or download and unzip):
+### Step 1: Build
 
 ```bash
 git clone https://github.com/hawkaa/proof-of-commitment
@@ -19,58 +17,53 @@ bun install
 bun run build:ext
 ```
 
-Or just grab the pre-built `dist/extension/` folder if available.
-
 ### Step 2: Load in Chrome
 
-1. Open Chrome and go to `chrome://extensions`
+1. Open Chrome → `chrome://extensions`
 2. Enable **Developer mode** (toggle in top right)
-3. Click **Load unpacked**
-4. Select the `dist/extension/` folder
+3. Click **Load unpacked** → select `dist/extension/`
 
-The extension will appear in your toolbar (indigo icon). Click it — you'll see your browsing stats already being tracked.
+The extension appears in your toolbar. Click it on any website to see trust data.
 
-### Step 3: Set up World ID (for human verification)
+### Step 3: World ID verification (optional)
 
-The "Sign in with World ID" button requires credentials. You'll need a [World App](https://worldcoin.org/download) installed on your phone (for device or orb verification).
+The extension works without World ID — it tracks time locally and shows network trust data. To contribute your data to the trust network, verify with World ID.
 
 **Extension ID:** `iiomogkajkfbbpmicbfdgdojfmlbpnhn`
 **Redirect URI:** `https://iiomogkajkfbbpmicbfdgdojfmlbpnhn.chromiumapp.org/callback`
 
-If using the shared credentials (ask the maintainer for `app_id`):
-1. Receive `app_id` and update `src/extension/auth.ts` line 12
-2. Run `bun run build:ext` again
-3. Click **Reload** on `chrome://extensions`
-4. Sign in works!
-
-**To set up your own World ID app:**
-1. Go to [developer.worldcoin.org](https://developer.worldcoin.org)
-2. Create an account and a new app (select "Sign In with World ID")
-3. In the app settings, add redirect URI: `https://iiomogkajkfbbpmicbfdgdojfmlbpnhn.chromiumapp.org/callback`
-4. Copy the `app_id` (format: `app_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`)
-5. Replace `app_PLACEHOLDER` in `src/extension/auth.ts` line 12
-6. `bun run build:ext` → reload extension → done
+World ID app_id is pre-configured. You just need a [World App](https://worldcoin.org/download) on your phone.
 
 ---
 
 ## What it does
 
-- **Tracks time** on each domain (stored locally in `chrome.storage.local`)
-- **Verifies humanity** via World ID OIDC (device or orb level)
-- **Popup** shows your top domains by time + verification status
+### Popup (site-contextual)
+- **Trust signals** for the current domain: verified visitors, repeat rate, avg engagement time
+- **Your commitment** to this site: time spent, visits, since when
+- **Contributing toggle**: control whether your data syncs to the network
+- **Brreg lookup**: Norwegian business registry data for .no domains (expandable)
+- **Trust score ring**: composite score from visitor density, repeat rate, and engagement
 
-### What it does NOT do yet (v0.2+)
-- No data leaves your browser (no backend sync yet)
-- No zkTLS proofs on purchases yet
-- No Semaphore anonymous submission yet
+### Content script
+- **Trust badge**: small floating pill (bottom-right) on pages with commitment data
+- Shows verified visitor count, color-coded by trust level
+- Dismissible with a click
+
+### Background
+- **Time tracking**: passive per-domain tracking (no URLs, no paths)
+- **Sync queue**: batched 5-minute syncs to backend (respects contributing toggle)
+- **Offline safe**: queues data when backend is unreachable
 
 ---
 
 ## Privacy
 
-All data stays in your browser. `chrome.storage.local` is only accessible to this extension. Nothing is transmitted anywhere in v0.1.
-
-World ID authentication: your sub identifier is app-specific (World ID scopes each app separately). The extension stores only your verification level and a session token — no biometrics, no personal data.
+- **Local first**: all visit data stored in `chrome.storage.local`
+- **Contributing toggle**: you control when data leaves your browser
+- **Domain-level only**: no URLs, paths, or page content
+- **World ID**: app-scoped sub identifier; no biometrics stored locally
+- **Sync data**: only domain + visit count + time; no user identity in payload
 
 ---
 
@@ -79,14 +72,15 @@ World ID authentication: your sub identifier is app-specific (World ID scopes ea
 ```bash
 bun install
 bun run build:ext    # build once
-bun run dev:ext      # watch mode (rebuilds on change)
+bun run dev:ext      # watch mode
 ```
 
 Source files:
-- `src/extension/background.ts` — service worker, time tracking
-- `src/extension/popup.ts` — popup UI logic
+- `src/extension/background.ts` — service worker, time tracking, sync
+- `src/extension/popup.ts` — site-contextual UI controller
+- `src/extension/popup.html` — popup markup & styles
 - `src/extension/auth.ts` — World ID OIDC flow
-- `src/extension/content.ts` — content script (placeholder for v0.2)
-- `src/extension/manifest.json` — Chrome extension manifest
+- `src/extension/content.ts` — trust badge injection
+- `src/extension/manifest.json` — Chrome MV3 manifest
 
-The extension has a stable ID (`iiomogkajkfbbpmicbfdgdojfmlbpnhn`) due to the RSA key in the manifest. This means redirect URIs registered with World ID will always match.
+Stable extension ID (`iiomogkajkfbbpmicbfdgdojfmlbpnhn`) via RSA key in manifest.

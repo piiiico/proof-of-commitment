@@ -9,139 +9,455 @@
         box-sizing: border-box;
       }
       body {
-        width: 360px;
-        min-height: 400px;
+        width: 380px;
+        min-height: 420px;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
           sans-serif;
         background: #0a0a0a;
         color: #e5e5e5;
         padding: 16px;
       }
+
+      /* ── Header ── */
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 16px;
+      }
+      .header-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .logo {
+        width: 24px;
+        height: 24px;
+        background: #fff;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        font-weight: 700;
+        color: #0a0a0a;
+      }
       h1 {
         font-size: 16px;
         font-weight: 600;
-        margin-bottom: 4px;
         color: #fff;
       }
-      .subtitle {
-        font-size: 12px;
+      .auth-pill {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 4px 10px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: 500;
+        cursor: pointer;
+        border: none;
+      }
+      .auth-pill.verified {
+        background: rgba(74, 222, 128, 0.12);
+        color: #4ade80;
+      }
+      .auth-pill.unverified {
+        background: rgba(255, 255, 255, 0.08);
         color: #888;
-        margin-bottom: 16px;
       }
-      .auth-section {
-        background: #1a1a1a;
-        border-radius: 8px;
+      .auth-pill:hover {
+        opacity: 0.8;
+      }
+      .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        display: inline-block;
+      }
+      .dot.green { background: #4ade80; }
+      .dot.gray { background: #555; }
+
+      /* ── Site trust card ── */
+      .site-card {
+        background: #141414;
+        border: 1px solid #222;
+        border-radius: 10px;
         padding: 16px;
-        margin-bottom: 16px;
-        text-align: center;
-      }
-      .auth-section p {
-        font-size: 13px;
-        color: #aaa;
         margin-bottom: 12px;
       }
-      button {
+      .site-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+      .site-domain {
+        font-size: 14px;
+        font-weight: 600;
+        color: #fff;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 220px;
+      }
+      .trust-score {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .score-ring {
+        width: 36px;
+        height: 36px;
+        position: relative;
+      }
+      .score-ring svg {
+        transform: rotate(-90deg);
+      }
+      .score-ring .score-text {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 700;
+        color: #fff;
+      }
+      .trust-signals {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 8px;
+      }
+      .signal {
+        text-align: center;
+        padding: 8px 4px;
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 6px;
+      }
+      .signal-value {
+        font-size: 16px;
+        font-weight: 700;
+        color: #fff;
+        margin-bottom: 2px;
+      }
+      .signal-label {
+        font-size: 10px;
+        color: #666;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .no-data {
+        text-align: center;
+        color: #444;
+        font-size: 12px;
+        padding: 12px 0;
+      }
+
+      /* ── Your commitment section ── */
+      .section-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: #555;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        margin-bottom: 8px;
+      }
+      .your-commitment {
+        background: #141414;
+        border: 1px solid #222;
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin-bottom: 12px;
+      }
+      .commitment-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .commitment-stat {
+        text-align: center;
+      }
+      .commitment-stat .value {
+        font-size: 15px;
+        font-weight: 600;
+        color: #fff;
+      }
+      .commitment-stat .label {
+        font-size: 10px;
+        color: #666;
+        margin-top: 2px;
+      }
+      .divider {
+        width: 1px;
+        height: 28px;
+        background: #222;
+      }
+
+      /* ── Contributing toggle ── */
+      .contribute-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: #141414;
+        border: 1px solid #222;
+        border-radius: 10px;
+        padding: 10px 16px;
+        margin-bottom: 12px;
+      }
+      .contribute-text {
+        font-size: 12px;
+        color: #aaa;
+      }
+      .contribute-text strong {
+        color: #fff;
+      }
+      .toggle {
+        position: relative;
+        width: 36px;
+        height: 20px;
+        appearance: none;
+        background: #333;
+        border-radius: 10px;
+        cursor: pointer;
+        transition: background 0.2s;
+        border: none;
+        outline: none;
+      }
+      .toggle:checked {
+        background: #4ade80;
+      }
+      .toggle::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 16px;
+        height: 16px;
+        background: #fff;
+        border-radius: 50%;
+        transition: transform 0.2s;
+      }
+      .toggle:checked::after {
+        transform: translateX(16px);
+      }
+
+      /* ── Auth overlay ── */
+      .auth-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(10, 10, 10, 0.95);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 32px;
+        z-index: 10;
+      }
+      .auth-overlay.hidden { display: none; }
+      .auth-overlay h2 {
+        font-size: 18px;
+        font-weight: 600;
+        color: #fff;
+        margin-bottom: 8px;
+      }
+      .auth-overlay p {
+        font-size: 13px;
+        color: #888;
+        text-align: center;
+        margin-bottom: 20px;
+        line-height: 1.5;
+      }
+      .auth-overlay .cta {
         background: #fff;
         color: #000;
         border: none;
-        padding: 10px 20px;
-        border-radius: 6px;
-        font-size: 13px;
-        font-weight: 600;
-        cursor: pointer;
-      }
-      button:hover {
-        background: #ddd;
-      }
-      .stats {
-        list-style: none;
-      }
-      .stats li {
-        display: flex;
-        justify-content: space-between;
-        padding: 10px 0;
-        border-bottom: 1px solid #222;
-        font-size: 13px;
-      }
-      .stats li:last-child {
-        border-bottom: none;
-      }
-      .domain {
-        color: #fff;
-        font-weight: 500;
-      }
-      .time {
-        color: #888;
-      }
-      .empty {
-        text-align: center;
-        color: #555;
-        padding: 40px 0;
-        font-size: 13px;
-      }
-      .verified-badge {
-        color: #4ade80;
+        padding: 12px 28px;
+        border-radius: 8px;
         font-size: 14px;
         font-weight: 600;
-        margin-bottom: 6px;
+        cursor: pointer;
+        margin-bottom: 12px;
+        width: 100%;
       }
-      .verification-detail {
-        font-size: 11px;
-        color: #666;
-        margin-bottom: 10px;
-      }
-      .btn-secondary {
-        background: transparent;
-        color: #888;
-        border: 1px solid #333;
-        padding: 6px 14px;
+      .auth-overlay .cta:hover { background: #e5e5e5; }
+      .auth-overlay .skip {
+        background: none;
+        border: none;
+        color: #555;
         font-size: 12px;
+        cursor: pointer;
+        padding: 6px;
       }
-      .btn-secondary:hover {
-        border-color: #555;
-        color: #aaa;
-      }
-      .error-text {
+      .auth-overlay .skip:hover { color: #888; }
+      .auth-overlay .error-text {
         color: #f87171;
         font-size: 12px;
         margin-bottom: 10px;
       }
-      button:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
+
+      /* ── Footer ── */
+      .footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-top: 8px;
+      }
+      .footer-stat {
+        font-size: 11px;
+        color: #444;
+      }
+      .footer a {
+        font-size: 11px;
+        color: #555;
+        text-decoration: none;
+      }
+      .footer a:hover { color: #888; }
+
+      /* ── Brreg lookup ── */
+      .brreg-section {
+        margin-top: 4px;
+      }
+      .brreg-link {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 12px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid #1a1a1a;
+        border-radius: 8px;
+        color: #888;
+        font-size: 11px;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .brreg-link:hover {
+        background: rgba(255, 255, 255, 0.06);
+        color: #aaa;
+      }
+      .brreg-details {
+        display: none;
+        margin-top: 8px;
+        padding: 12px;
+        background: #141414;
+        border: 1px solid #222;
+        border-radius: 8px;
+        font-size: 11px;
+        color: #888;
+        line-height: 1.6;
+      }
+      .brreg-details.visible { display: block; }
+      .brreg-score {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-weight: 600;
+        color: #fff;
       }
     </style>
   </head>
   <body>
-    <h1>Proof of Commitment</h1>
-    <p class="subtitle">Your verified behavioral data</p>
+    <!-- Auth overlay (shown when not verified) -->
+    <div id="auth-overlay" class="auth-overlay hidden">
+      <h2>Commit</h2>
+      <p>
+        Your browsing proves trust.<br/>
+        Verify you're human to contribute<br/>
+        anonymous commitment data.
+      </p>
+      <button id="auth-btn" class="cta">Verify with World ID</button>
+      <button id="skip-btn" class="skip">Browse without contributing</button>
+      <p id="auth-error" class="error-text" style="display:none"></p>
+    </div>
 
-    <div id="auth-section" class="auth-section">
-      <!-- Unauthenticated state -->
-      <div id="auth-prompt">
-        <p>Verify you're a unique human to contribute anonymous data.</p>
-        <button id="auth-btn">Sign in with World ID</button>
+    <!-- Main view -->
+    <div class="header">
+      <div class="header-left">
+        <div class="logo">C</div>
+        <h1>Commit</h1>
       </div>
-      <!-- Authenticated state -->
-      <div id="auth-status" style="display: none">
-        <div class="verified-badge">✓ Verified Human</div>
-        <p class="verification-detail" id="verification-level"></p>
-        <button id="signout-btn" class="btn-secondary">Sign out</button>
+      <button id="auth-pill" class="auth-pill unverified">
+        <span class="dot gray" id="auth-dot"></span>
+        <span id="auth-label">Not verified</span>
+      </button>
+    </div>
+
+    <!-- Site trust card -->
+    <div class="site-card">
+      <div class="site-header">
+        <span class="site-domain" id="site-domain">Loading...</span>
+        <div class="trust-score" id="trust-score-container">
+          <div class="score-ring" id="score-ring">
+            <svg width="36" height="36" viewBox="0 0 36 36">
+              <circle cx="18" cy="18" r="15" fill="none" stroke="#222" stroke-width="3"/>
+              <circle id="score-arc" cx="18" cy="18" r="15" fill="none" stroke="#4ade80" stroke-width="3"
+                stroke-dasharray="0 94.2" stroke-linecap="round"/>
+            </svg>
+            <span class="score-text" id="score-value">--</span>
+          </div>
+        </div>
       </div>
-      <!-- Loading state -->
-      <div id="auth-loading" style="display: none">
-        <p>Verifying...</p>
+      <div class="trust-signals" id="trust-signals">
+        <div class="signal">
+          <div class="signal-value" id="sig-visitors">--</div>
+          <div class="signal-label">Verified visitors</div>
+        </div>
+        <div class="signal">
+          <div class="signal-value" id="sig-repeat">--</div>
+          <div class="signal-label">Repeat rate</div>
+        </div>
+        <div class="signal">
+          <div class="signal-value" id="sig-time">--</div>
+          <div class="signal-label">Avg. time</div>
+        </div>
       </div>
-      <!-- Error state -->
-      <div id="auth-error" style="display: none">
-        <p class="error-text" id="error-message"></p>
-        <button id="retry-btn">Try again</button>
+      <div class="no-data" id="no-data" style="display:none">
+        No commitment data yet. Be the first contributor.
       </div>
     </div>
 
-    <ul id="stats" class="stats"></ul>
-    <div id="empty" class="empty" style="display: none">
-      Browse the web. Your commitments will appear here.
+    <!-- Your commitment to this site -->
+    <div class="section-label">Your commitment</div>
+    <div class="your-commitment" id="your-commitment">
+      <div class="commitment-row">
+        <div class="commitment-stat">
+          <div class="value" id="my-time">--</div>
+          <div class="label">Time spent</div>
+        </div>
+        <div class="divider"></div>
+        <div class="commitment-stat">
+          <div class="value" id="my-visits">--</div>
+          <div class="label">Visits</div>
+        </div>
+        <div class="divider"></div>
+        <div class="commitment-stat">
+          <div class="value" id="my-since">--</div>
+          <div class="label">Since</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Contributing toggle -->
+    <div class="contribute-bar">
+      <div class="contribute-text">
+        <strong>Contributing</strong> to trust network
+      </div>
+      <input type="checkbox" class="toggle" id="contribute-toggle" checked />
+    </div>
+
+    <!-- Brreg lookup (for Norwegian businesses) -->
+    <div class="brreg-section" id="brreg-section" style="display:none">
+      <div class="brreg-link" id="brreg-link">
+        <span>&#127475;&#127476;</span>
+        <span id="brreg-label">Business registry data available</span>
+      </div>
+      <div class="brreg-details" id="brreg-details"></div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <span class="footer-stat" id="footer-stat">0 sites tracked</span>
+      <a href="https://getcommit.dev" target="_blank">getcommit.dev</a>
     </div>
 
     <script src="popup.js"></script>

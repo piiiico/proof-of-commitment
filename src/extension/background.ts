@@ -1,11 +1,12 @@
 /**
- * Background service worker for Proof of Commitment extension.
+ * Background service worker for Commit browser extension.
  *
  * Responsibilities:
  * - Track active tab and time spent per domain
  * - Store visit data locally (chrome.storage.local)
  * - Manage World ID authentication state
  * - Sync visit deltas to aggregator backend (batched, offline-safe)
+ * - Respect contributing toggle (when off, track locally but don't sync)
  */
 
 interface VisitRecord {
@@ -127,10 +128,25 @@ async function getBackendUrl(): Promise<string> {
 }
 
 /**
+ * Check if contributing is enabled (default: true).
+ */
+async function isContributing(): Promise<boolean> {
+  const result = await chrome.storage.local.get("config:contributing");
+  return result["config:contributing"] !== false;
+}
+
+/**
  * Flush the sync queue to the backend.
  * If the backend is unavailable, the queue stays intact for the next attempt.
+ * If contributing is disabled, skip sync but keep queue for when re-enabled.
  */
 async function flushSyncQueue(): Promise<void> {
+  // Respect contributing toggle
+  if (!(await isContributing())) {
+    console.log("[Commit] Contributing disabled — skipping sync");
+    return;
+  }
+
   const backendUrl = await getBackendUrl();
   const result = await chrome.storage.local.get(STORAGE_KEY_QUEUE);
   const queue: CommitPayload[] = (result[STORAGE_KEY_QUEUE] as CommitPayload[] | undefined) ?? [];
@@ -151,13 +167,13 @@ async function flushSyncQueue(): Promise<void> {
       const remaining = afterQueue.slice(queue.length);
       await chrome.storage.local.set({ [STORAGE_KEY_QUEUE]: remaining });
 
-      console.log(`[PoC] Synced ${queue.length} commitments to backend`);
+      console.log(`[Commit] Synced ${queue.length} commitments to backend`);
     } else {
-      console.warn(`[PoC] Backend sync failed: HTTP ${res.status} — will retry`);
+      console.warn(`[Commit] Backend sync failed: HTTP ${res.status} — will retry`);
     }
   } catch (err) {
     // Network error — backend offline, keep queue for next sync
-    console.warn("[PoC] Backend unreachable — queued for next sync:", err);
+    console.warn("[Commit] Backend unreachable — queued for next sync:", err);
   }
 }
 
@@ -169,7 +185,7 @@ async function setupSyncAlarm() {
     chrome.alarms.create(SYNC_ALARM_NAME, {
       periodInMinutes: SYNC_INTERVAL_MINUTES,
     });
-    console.log(`[PoC] Sync alarm set: every ${SYNC_INTERVAL_MINUTES} minutes`);
+    console.log(`[Commit] Sync alarm set: every ${SYNC_INTERVAL_MINUTES} minutes`);
   }
 }
 
@@ -228,15 +244,25 @@ chrome.storage.onChanged.addListener((changes, area) => {
       | { verificationLevel: string }
       | undefined;
     if (newValue) {
-      console.log(
-        "[Proof of Commitment] User authenticated:",
-        newValue.verificationLevel
-      );
+      console.log("[Commit] User authenticated:", newValue.verificationLevel);
       // Trigger an immediate sync when user authenticates
       flushSyncQueue().catch(console.warn);
     } else {
-      console.log("[Proof of Commitment] User signed out");
+      console.log("[Commit] User signed out");
     }
+  }
+});
+
+// ── Message listener (from popup) ───────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === "contributing-changed") {
+    console.log("[Commit] Contributing toggled:", message.value);
+    if (message.value) {
+      // Re-enabled — flush any queued data
+      flushSyncQueue().catch(console.warn);
+    }
+    sendResponse({ ok: true });
   }
 });
 
@@ -250,4 +276,4 @@ async function init() {
 
 init().catch(console.error);
 
-console.log("[Proof of Commitment] Background service worker started");
+console.log("[Commit] Background service worker started");

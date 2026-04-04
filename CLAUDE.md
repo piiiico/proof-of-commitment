@@ -1,27 +1,34 @@
-# Proof of Commitment
+# Commit
 
 ## What this is
-A browser extension that captures verifiable behavioral data — proof that real people spend real time and money at real businesses. Anonymous, cryptographically verified, aggregated. The output: trust signals that AI can query instead of relying on reviews and content.
+A browser extension that captures and surfaces real trust signals. Your browsing behavior proves trust — time spent, repeat visits, engagement patterns. Anonymous, verified by World ID. The output: commitment data that AI and humans can query instead of relying on reviews and content.
 
 ## The thesis
 Content is free to fake. Commitment is not. A repeat customer is a stronger signal than a thousand five-star reviews. We prove commitment without revealing identity.
 
-## Architecture (v1)
+## Architecture (v0.2)
 ```
-Browser extension (Chrome Manifest V3)
+Browser extension (Chrome Manifest V3, branded "Commit")
   ├── World ID login (proof of unique person)
+  ├── Site-contextual popup (trust signals for current domain)
+  ├── Content script (trust badge injected on pages with data)
   ├── Passive: tracks page visits + time (stored locally)
-  ├── Active: zkTLS proof on order confirmations / bookings
-  ├── Semaphore: anonymous submission (unlinkable per business)
+  ├── Contributing toggle (user controls data sharing)
+  ├── Brreg integration (Norwegian business registry, .no domains)
+  ├── Active: zkTLS proof on order confirmations / bookings (v0.3)
+  ├── Semaphore: anonymous submission (unlinkable per business) (v0.3)
   └── Backend: aggregates per business → API / MCP server
 ```
 
-### Key decisions (2026-03-22)
-- **Unlinkable claims**: Semaphore nullifiers scoped per business. No cross-business patterns. No de-anonymization risk. No graph needed for v1.
-- **Live data, not historical**: Extension captures behavior as it happens. No PSD2/bank API dependency.
-- **No blockchain for v1**: Simple backend aggregation via Prio/DAP or equivalent.
-- **No PageRank for v1**: Simple aggregates ("147 verified repeat customers") are already more trustworthy than anything existing.
-- **World ID for MVP**: Free, global, SDK ready. BankID as upgrade path for Norwegian market.
+### Key decisions
+- **Site-contextual UI**: Popup shows trust data for the current tab's domain, not a personal dashboard. Your data + network data together.
+- **Contribute/consume duality**: Extension both captures your commitments AND surfaces trust from other verified humans.
+- **Contributing toggle**: Users control whether their data syncs to the network. Default on, can be turned off.
+- **Brreg as ONE feature**: Norwegian business registry data surfaces on .no domains. Not the product — one enrichment source.
+- **Unlinkable claims**: Semaphore nullifiers scoped per business (v0.3).
+- **Live data, not historical**: Extension captures behavior as it happens.
+- **No blockchain for v1**: Simple backend aggregation.
+- **World ID for MVP**: Free, global, SDK ready. BankID as upgrade path.
 
 ## Deployment (2026-03-23)
 - **Backend**: Cloudflare Workers + D1 (SQLite). URL: `https://poc-backend.amdal-dev.workers.dev`
@@ -32,11 +39,10 @@ Browser extension (Chrome Manifest V3)
 - **MCP server (local)**: `bun run start:mcp` (stdio, queries prod backend)
 - **MCP server (remote)**: `https://poc-backend.amdal-dev.workers.dev/mcp` (Streamable HTTP, stateless)
 
-### World ID blocker
-- `src/extension/auth.ts` has `WORLD_ID_APP_ID = "app_PLACEHOLDER"` — not functional yet
-- Håkon needs to register at https://developer.worldcoin.org (browser auth required)
-- Steps: Create app → get `app_id` → set redirect URI to `chrome.identity.getRedirectURL('/callback')` → replace placeholder in auth.ts
-- Extension tracks time + syncs to backend without auth, but World ID is needed for verified person proof
+### World ID
+- `src/extension/auth.ts` configured with real app_id: `app_a2868bad17534bb7e8bc82de8df73773`
+- Redirect URI still needs to be set in World ID Developer Portal to `chrome.identity.getRedirectURL('/callback')` after extension is loaded in Chrome
+- Extension tracks time + syncs to backend without auth, but World ID verifies unique personhood
 
 ## Tech stack
 - **Runtime**: Bun + TypeScript
