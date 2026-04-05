@@ -1,0 +1,20 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": [
+    "piiiico"
+  ],
+  "name": "proof-of-commitment",
+  "description": "Behavioral trust scores for GitHub repos and Norwegian businesses. Proves commitment through action: longevity, commit frequency, contributor community, financial health.",
+  "category": "Trust & Verification",
+  "tags": [
+    "trust",
+    "behavioral-data",
+    "github",
+    "norwegian-business",
+    "commitment",
+    "ai-trust"
+  ],
+  "author": "piiiico",
+  "license": "MIT",
+  "repository": "https://github.com/piiiico/proof-of-commitment"
+}
