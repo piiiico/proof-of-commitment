@@ -8,6 +8,8 @@
  *   lookup_business({ query })         — Norwegian business commitment profile (Brreg public data)
  *   lookup_business_by_org({ orgNumber }) — direct org number lookup
  *   lookup_github_repo({ repo })       — GitHub repo behavioral commitment profile
+ *   lookup_npm_package({ package })    — npm package behavioral commitment profile
+ *   lookup_pypi_package({ package })   — PyPI package behavioral commitment profile
  *
  * Usage:
  *   BACKEND_URL=https://poc-backend.amdal-dev.workers.dev bun run src/mcp/server.ts
@@ -22,6 +24,7 @@ import {
 } from "../backend/brreg.ts";
 import { buildGitHubCommitmentProfile, parseGitHubInput } from "../backend/github.ts";
 import { buildNpmCommitmentProfile } from "../backend/npm.ts";
+import { buildPyPICommitmentProfile } from "../backend/pypi.ts";
 
 const BACKEND_URL =
   process.env.BACKEND_URL ?? "https://poc-backend.amdal-dev.workers.dev";
@@ -421,12 +424,81 @@ Examples: "langchain", "@anthropic-ai/sdk", "express", "litellm"`,
   }
 );
 
+// ── Tool: lookup_pypi_package ──
+
+server.tool(
+  "lookup_pypi_package",
+  `Get a behavioral commitment profile for any PyPI (Python) package. Returns real signals: package age, download volume and trend, release consistency, maintainer/owner count, and linked GitHub activity.
+
+Supply chain attacks target Python packages — LiteLLM (97M downloads/mo) was compromised via stolen PyPI token in March 2026. Behavioral signals reveal what star counts hide.
+
+Useful for: vetting Python dependencies, identifying abandonware, supply chain risk due diligence.
+Examples: "langchain", "litellm", "openai", "anthropic", "requests", "fastapi", "pydantic"`,
+  {
+    package: z
+      .string()
+      .describe(
+        'PyPI package name. Examples: "langchain", "openai", "requests", "fastapi". Case-insensitive.'
+      ),
+  },
+  async ({ package: packageName }) => {
+    try {
+      const profile = await buildPyPICommitmentProfile(packageName);
+
+      if (!profile) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Package "${packageName}" not found on PyPI.`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          { type: "text" as const, text: profile.summary },
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                name: profile.name,
+                latestVersion: profile.latestVersion,
+                ageYears: Math.round(profile.ageYears * 10) / 10,
+                versionCount: profile.versionCount,
+                maintainerCount: profile.maintainerCount,
+                recentDailyDownloads: profile.recentDailyDownloads,
+                downloadTrend: profile.downloadTrend,
+                daysSinceLastPublish: profile.daysSinceLastPublish,
+                githubScore: profile.githubScore,
+                commitmentScore: profile.commitmentScore,
+                scoreBreakdown: profile.scoreBreakdown,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${message}` },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
 // ── Start ──
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Proof of Commitment MCP server v0.5.0 running on stdio");
+  console.error("Proof of Commitment MCP server v0.6.0 running on stdio");
 }
 
 main().catch((err) => {

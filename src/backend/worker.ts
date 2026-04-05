@@ -20,6 +20,7 @@ import { z } from "zod";
 import { buildCommitmentProfile, searchAndProfile } from "./brreg.ts";
 import { buildGitHubCommitmentProfile, parseGitHubInput } from "./github.ts";
 import { buildNpmCommitmentProfile } from "./npm.ts";
+import { buildPyPICommitmentProfile } from "./pypi.ts";
 
 // ── World ID JWT Verification ────────────────────────────────────────
 
@@ -371,7 +372,7 @@ app.get("/api/business/:orgNumber", async (c) => {
 function createMcpServer(): McpServer {
   const mcp = new McpServer({
     name: "proof-of-commitment",
-    version: "0.5.0",
+    version: "0.6.0",
   });
 
   // Tool: query_commitment
@@ -664,6 +665,76 @@ Examples: "langchain", "@anthropic-ai/sdk", "express", "litellm"`,
                   versionCount: profile.versionCount,
                   maintainerCount: profile.maintainerCount,
                   recentWeeklyDownloads: profile.recentWeeklyDownloads,
+                  downloadTrend: profile.downloadTrend,
+                  daysSinceLastPublish: profile.daysSinceLastPublish,
+                  githubScore: profile.githubScore,
+                  commitmentScore: profile.commitmentScore,
+                  scoreBreakdown: profile.scoreBreakdown,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: ${err instanceof Error ? err.message : "Unknown"}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Tool: lookup_pypi_package
+  mcp.tool(
+    "lookup_pypi_package",
+    `Get a behavioral commitment profile for any PyPI (Python) package. Returns real signals: package age, download volume and trend, release consistency, maintainer/owner count, and linked GitHub activity.
+
+Supply chain attacks target Python packages — LiteLLM (97M downloads/mo) was compromised via stolen PyPI token in March 2026. Behavioral signals reveal what star counts hide.
+
+Useful for: vetting Python dependencies, identifying abandonware, supply chain risk due diligence.
+Examples: "langchain", "litellm", "openai", "anthropic", "requests", "fastapi", "pydantic"`,
+    {
+      package: z
+        .string()
+        .describe(
+          'PyPI package name. Examples: "langchain", "openai", "requests", "fastapi". Case-insensitive.'
+        ),
+    },
+    async ({ package: packageName }) => {
+      try {
+        const profile = await buildPyPICommitmentProfile(packageName);
+
+        if (!profile) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Package "${packageName}" not found on PyPI.`,
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            { type: "text" as const, text: profile.summary },
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  name: profile.name,
+                  latestVersion: profile.latestVersion,
+                  ageYears: Math.round(profile.ageYears * 10) / 10,
+                  versionCount: profile.versionCount,
+                  maintainerCount: profile.maintainerCount,
+                  recentDailyDownloads: profile.recentDailyDownloads,
                   downloadTrend: profile.downloadTrend,
                   daysSinceLastPublish: profile.daysSinceLastPublish,
                   githubScore: profile.githubScore,
