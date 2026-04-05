@@ -10,6 +10,7 @@
  *   lookup_github_repo({ repo })       — GitHub repo behavioral commitment profile
  *   lookup_npm_package({ package })    — npm package behavioral commitment profile
  *   lookup_pypi_package({ package })   — PyPI package behavioral commitment profile
+ *   audit_dependencies({ packages })  — batch risk audit for multiple npm/PyPI packages
  *
  * Usage:
  *   BACKEND_URL=https://poc-backend.amdal-dev.workers.dev bun run src/mcp/server.ts
@@ -33,7 +34,7 @@ const BACKEND_URL =
 
 const server = new McpServer({
   name: "proof-of-commitment",
-  version: "0.5.0",
+  version: "0.7.0",
 });
 
 // ── Tool: query_commitment ──
@@ -493,12 +494,194 @@ Examples: "langchain", "litellm", "openai", "anthropic", "requests", "fastapi", 
   }
 );
 
+// ── Tool: audit_dependencies ──
+
+server.tool(
+  "audit_dependencies",
+  `Batch-score multiple npm or PyPI packages for supply chain risk. Takes a list of package names and returns a risk table sorted by commitment score (lowest = highest risk first).
+
+Risk flags:
+- CRITICAL: single maintainer + >10M weekly downloads (high-value target, minimal oversight)
+- HIGH: new package (<1yr) + high downloads (unproven, rapid adoption = supply chain risk)
+- WARN: no release in 12+ months (potential abandonware)
+
+Perfect for auditing a full package.json or requirements.txt — paste your dependency list and get a prioritized risk report.
+
+Examples: score all deps in a project, compare two similar packages, identify abandonware before it becomes a CVE.`,
+  {
+    packages: z
+      .array(z.string())
+      .min(1)
+      .max(20)
+      .describe(
+        'List of package names to score. Up to 20 at once. Examples: ["langchain", "litellm", "openai", "axios"] or ["@anthropic-ai/sdk", "zod", "express"]'
+      ),
+    ecosystem: z
+      .enum(["npm", "pypi", "auto"])
+      .default("auto")
+      .describe(
+        'Package ecosystem. "auto" defaults to npm. Force "pypi" for Python packages.'
+      ),
+  },
+  async ({ packages, ecosystem }) => {
+    const MAX_CONCURRENT = 5;
+    const results: Array<{
+      name: string;
+      score: number | null;
+      maintainers: number | null;
+      weeklyDownloads: number | null;
+      ageYears: number | null;
+      trend: string | null;
+      riskFlags: string[];
+      error?: string;
+    }> = [];
+
+    for (let i = 0; i < packages.length; i += MAX_CONCURRENT) {
+      const batch = packages.slice(i, i + MAX_CONCURRENT);
+      const batchResults = await Promise.all(
+        batch.map(async (pkg) => {
+          const useEcosystem = ecosystem === "pypi" ? "pypi" : "npm";
+          try {
+            if (useEcosystem === "pypi") {
+              const profile = await buildPyPICommitmentProfile(pkg);
+              if (!profile)
+                return {
+                  name: pkg,
+                  score: null,
+                  maintainers: null,
+                  weeklyDownloads: null,
+                  ageYears: null,
+                  trend: null,
+                  riskFlags: [],
+                  error: "not found",
+                };
+              const weeklyDl = profile.recentDailyDownloads * 7;
+              const riskFlags: string[] = [];
+              if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000)
+                riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
+              else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000)
+                riskFlags.push("HIGH: sole maintainer + >1M/wk");
+              if (profile.ageYears < 1 && weeklyDl > 100_000)
+                riskFlags.push("HIGH: new package (<1yr) + high downloads");
+              if (profile.daysSinceLastPublish > 365)
+                riskFlags.push("WARN: no release in 12+ months");
+              return {
+                name: pkg,
+                score: profile.commitmentScore,
+                maintainers: profile.maintainerCount,
+                weeklyDownloads: weeklyDl,
+                ageYears: Math.round(profile.ageYears * 10) / 10,
+                trend: profile.downloadTrend,
+                riskFlags,
+              };
+            } else {
+              const profile = await buildNpmCommitmentProfile(pkg);
+              if (!profile)
+                return {
+                  name: pkg,
+                  score: null,
+                  maintainers: null,
+                  weeklyDownloads: null,
+                  ageYears: null,
+                  trend: null,
+                  riskFlags: [],
+                  error: "not found",
+                };
+              const riskFlags: string[] = [];
+              if (profile.maintainerCount <= 1 && profile.recentWeeklyDownloads > 10_000_000)
+                riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
+              else if (profile.maintainerCount <= 1 && profile.recentWeeklyDownloads > 1_000_000)
+                riskFlags.push("HIGH: sole maintainer + >1M/wk");
+              if (profile.ageYears < 1 && profile.recentWeeklyDownloads > 100_000)
+                riskFlags.push("HIGH: new package (<1yr) + high downloads");
+              if (profile.daysSinceLastPublish > 365)
+                riskFlags.push("WARN: no release in 12+ months");
+              return {
+                name: pkg,
+                score: profile.commitmentScore,
+                maintainers: profile.maintainerCount,
+                weeklyDownloads: profile.recentWeeklyDownloads,
+                ageYears: Math.round(profile.ageYears * 10) / 10,
+                trend: profile.downloadTrend,
+                riskFlags,
+              };
+            }
+          } catch (err) {
+            return {
+              name: pkg,
+              score: null,
+              maintainers: null,
+              weeklyDownloads: null,
+              ageYears: null,
+              trend: null,
+              riskFlags: [],
+              error: err instanceof Error ? err.message : "unknown",
+            };
+          }
+        })
+      );
+      results.push(...batchResults);
+    }
+
+    results.sort((a, b) => {
+      if (a.score === null && b.score === null) return 0;
+      if (a.score === null) return 1;
+      if (b.score === null) return -1;
+      return a.score - b.score;
+    });
+
+    const rows = results.map((r) => {
+      const scoreStr = r.score !== null ? `${r.score}/100` : "N/A";
+      const dlStr =
+        r.weeklyDownloads !== null
+          ? r.weeklyDownloads >= 1_000_000
+            ? `${(r.weeklyDownloads / 1_000_000).toFixed(1)}M/wk`
+            : r.weeklyDownloads >= 1_000
+            ? `${Math.round(r.weeklyDownloads / 1_000)}k/wk`
+            : `${r.weeklyDownloads}/wk`
+          : "N/A";
+      const maintStr = r.maintainers !== null
+        ? `${r.maintainers} maintainer${r.maintainers !== 1 ? "s" : ""}`
+        : "N/A";
+      const ageStr = r.ageYears !== null
+        ? r.ageYears >= 1 ? `${Math.floor(r.ageYears)}yr` : `${Math.round(r.ageYears * 12)}mo`
+        : "N/A";
+      const flags = r.riskFlags.length > 0 ? ` ⚠️ ${r.riskFlags.join("; ")}` : "";
+      const errStr = r.error ? ` (error: ${r.error})` : "";
+      return `  ${scoreStr.padEnd(7)} ${r.name.padEnd(35)} ${dlStr.padEnd(12)} ${maintStr.padEnd(15)} ${ageStr}${flags}${errStr}`;
+    });
+
+    const criticalCount = results.filter((r) => r.riskFlags.some((f) => f.startsWith("CRITICAL"))).length;
+    const highCount = results.filter((r) => r.riskFlags.some((f) => f.startsWith("HIGH"))).length;
+    const warnCount = results.filter((r) => r.riskFlags.some((f) => f.startsWith("WARN"))).length;
+
+    const summary = [
+      `Dependency Risk Audit — ${packages.length} package${packages.length !== 1 ? "s" : ""} scored`,
+      `Risk summary: ${criticalCount} CRITICAL, ${highCount} HIGH, ${warnCount} WARN`,
+      `(sorted by commitment score — lowest = highest supply chain risk)`,
+      ``,
+      `  Score   Package                             Downloads    Maintainers     Age`,
+      `  ------  ----------------------------------  -----------  --------------  ---`,
+      ...rows,
+      ``,
+      `Score: 0-100 behavioral commitment. <40 = elevated risk. CRITICAL = immediate audit recommended.`,
+    ].join("\n");
+
+    return {
+      content: [
+        { type: "text" as const, text: summary },
+        { type: "text" as const, text: JSON.stringify(results, null, 2) },
+      ],
+    };
+  }
+);
+
 // ── Start ──
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Proof of Commitment MCP server v0.6.0 running on stdio");
+  console.error("Proof of Commitment MCP server v0.7.0 running on stdio");
 }
 
 main().catch((err) => {
