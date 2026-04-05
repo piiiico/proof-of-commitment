@@ -19,6 +19,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import { buildCommitmentProfile, searchAndProfile } from "./brreg.ts";
 import { buildGitHubCommitmentProfile, parseGitHubInput } from "./github.ts";
+import { buildNpmCommitmentProfile } from "./npm.ts";
 
 // ── World ID JWT Verification ────────────────────────────────────────
 
@@ -370,7 +371,7 @@ app.get("/api/business/:orgNumber", async (c) => {
 function createMcpServer(): McpServer {
   const mcp = new McpServer({
     name: "proof-of-commitment",
-    version: "0.4.0",
+    version: "0.5.0",
   });
 
   // Tool: query_commitment
@@ -595,6 +596,77 @@ Examples: "vercel/next.js", "facebook/react", "https://github.com/piiiico/proof-
                   latestRelease: profile.latestRelease,
                   daysSinceLastPush: profile.daysSinceLastPush,
                   isArchived: profile.isArchived,
+                  commitmentScore: profile.commitmentScore,
+                  scoreBreakdown: profile.scoreBreakdown,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: ${err instanceof Error ? err.message : "Unknown"}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Tool: lookup_npm_package
+  mcp.tool(
+    "lookup_npm_package",
+    `Get a behavioral commitment profile for any npm package. Returns real signals that prove genuine investment: package age, download volume and trend (growing/stable/declining), release consistency, maintainer count, and linked GitHub activity.
+
+Why behavioral signals matter: download counts, stars, and READMEs can be gamed. Download *trend* consistency and maintainer depth over years are harder to fake. Supply chain attacks often target packages that look popular but have low maintainer depth or inconsistent release patterns.
+
+Useful for: vetting dependencies before installation, due diligence on open-source packages, identifying abandonware, checking if a package is actively maintained.
+
+Examples: "langchain", "@anthropic-ai/sdk", "express", "litellm"`,
+    {
+      package: z
+        .string()
+        .describe(
+          'npm package name. Examples: "langchain", "@anthropic-ai/sdk", "express". Scoped packages need the @ prefix.'
+        ),
+    },
+    async ({ package: packageName }) => {
+      try {
+        const profile = await buildNpmCommitmentProfile(packageName);
+
+        if (!profile) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Package "${packageName}" not found on npm registry.`,
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            { type: "text" as const, text: profile.summary },
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  name: profile.name,
+                  latestVersion: profile.latestVersion,
+                  ageYears: Math.round(profile.ageYears * 10) / 10,
+                  versionCount: profile.versionCount,
+                  maintainerCount: profile.maintainerCount,
+                  recentWeeklyDownloads: profile.recentWeeklyDownloads,
+                  downloadTrend: profile.downloadTrend,
+                  daysSinceLastPublish: profile.daysSinceLastPublish,
+                  githubScore: profile.githubScore,
                   commitmentScore: profile.commitmentScore,
                   scoreBreakdown: profile.scoreBreakdown,
                 },

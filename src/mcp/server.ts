@@ -21,6 +21,7 @@ import {
   searchAndProfile,
 } from "../backend/brreg.ts";
 import { buildGitHubCommitmentProfile, parseGitHubInput } from "../backend/github.ts";
+import { buildNpmCommitmentProfile } from "../backend/npm.ts";
 
 const BACKEND_URL =
   process.env.BACKEND_URL ?? "https://poc-backend.amdal-dev.workers.dev";
@@ -29,7 +30,7 @@ const BACKEND_URL =
 
 const server = new McpServer({
   name: "proof-of-commitment",
-  version: "0.4.0",
+  version: "0.5.0",
 });
 
 // ── Tool: query_commitment ──
@@ -351,12 +352,81 @@ Examples: "vercel/next.js", "facebook/react", "https://github.com/piiiico/proof-
   }
 );
 
+// ── Tool: lookup_npm_package ──
+
+server.tool(
+  "lookup_npm_package",
+  `Get a behavioral commitment profile for any npm package. Returns real signals: package age, download volume and trend (growing/stable/declining), release consistency, maintainer count, and linked GitHub activity.
+
+Supply chain attacks target packages with inconsistent release patterns or low maintainer depth. Behavioral signals reveal what download counts hide.
+
+Useful for: vetting dependencies, identifying abandonware, due diligence on open-source packages.
+Examples: "langchain", "@anthropic-ai/sdk", "express", "litellm"`,
+  {
+    package: z
+      .string()
+      .describe(
+        'npm package name. Examples: "langchain", "@anthropic-ai/sdk", "express". Scoped packages need the @ prefix.'
+      ),
+  },
+  async ({ package: packageName }) => {
+    try {
+      const profile = await buildNpmCommitmentProfile(packageName);
+
+      if (!profile) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Package "${packageName}" not found on npm registry.`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          { type: "text" as const, text: profile.summary },
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                name: profile.name,
+                latestVersion: profile.latestVersion,
+                ageYears: Math.round(profile.ageYears * 10) / 10,
+                versionCount: profile.versionCount,
+                maintainerCount: profile.maintainerCount,
+                recentWeeklyDownloads: profile.recentWeeklyDownloads,
+                downloadTrend: profile.downloadTrend,
+                daysSinceLastPublish: profile.daysSinceLastPublish,
+                githubScore: profile.githubScore,
+                commitmentScore: profile.commitmentScore,
+                scoreBreakdown: profile.scoreBreakdown,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${message}` },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
 // ── Start ──
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Proof of Commitment MCP server v0.4.0 running on stdio");
+  console.error("Proof of Commitment MCP server v0.5.0 running on stdio");
 }
 
 main().catch((err) => {
