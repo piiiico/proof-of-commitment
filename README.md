@@ -1,90 +1,23 @@
 # Proof of Commitment
 
-> **Content is free to fake. Commitment is not.**
+> **Stars lie. Behavioral signals don't.**
 
-A browser extension that captures verifiable behavioral data — proof that real people spend real time at real businesses. Anonymous, cryptographically verified, AI-queryable.
+An MCP server and web tool that scores npm packages, PyPI packages, and GitHub repos on **behavioral commitment** — signals that are harder to fake than stars, READMEs, or download counts.
 
-## The Problem
+## The supply chain problem
 
-Reviews are fake. Ratings are gamed. Any content-based signal can be manufactured at scale.
+Three packages in a typical Node.js project are CRITICAL right now:
+- **chalk** — 399M downloads/week, **1 maintainer**
+- **zod** — 139M downloads/week, **1 maintainer**
+- **axios** — 96M downloads/week, **1 maintainer** (attacked April 1st, 2026)
 
-But commitment cannot be faked cheaply. A person who visits the same restaurant 12 times in 30 days is a real signal — harder to fake than a thousand five-star reviews.
+Stars and README quality don't surface this. Behavioral signals do.
 
-**Proof of Commitment replaces opinion with behavior.**
+## Try it now
 
-## Demo
+**Web demo (no install):** [getcommit.dev/audit](https://getcommit.dev/audit) — paste your packages, see risk scores in seconds.
 
-![Proof of Commitment — E2E Demo](demo.gif)
-
-*World ID identity → commitment submission → aggregated stats → MCP tool output*
-
-## Architecture
-
-```
-Browser Extension (Chrome Manifest V3)
-  ├── World ID login      — proof of unique person (1 human = 1 account)
-  ├── Passive tracking    — domain visits + time (stored locally first)
-  └── Anonymous submit    — behavioral signals sent without linking identity
-
-Backend (Cloudflare Workers + D1)
-  ├── POST /api/commit    — receive anonymized behavioral data
-  └── GET  /api/domain/:domain — return aggregate: unique visitors, repeat rate, avg time
-
-MCP Server
-  └── query_commitment({ domain }) — AI agents can ask "how many real humans visit X?"
-```
-
-No user IDs stored. No surveillance. Signal without identity.
-
-## What gets proven
-
-When a user submits a commitment, the backend stores:
-- `domain`: the website visited
-- `visitCount`: number of visits in the window
-- `totalSeconds`: total time spent
-- `firstSeen` / `lastSeen`: timestamps
-
-What it does **not** store: user IDs, World ID sub values, IP addresses, browsing history, or any cross-domain linkage.
-
-The result: **"6 verified unique visitors, 47 total visits, 87% repeat rate"** — a trust signal that's structurally harder to fake than any review.
-
-## Quick Start
-
-```bash
-# Install dependencies
-bun install
-
-# Run the E2E test (verifies the full flow with mock World ID)
-bun run test:e2e
-```
-
-The E2E test proves the architecture without external dependencies:
-
-1. **Mock World ID** — starts a local OIDC provider that issues signed JWTs (RSA-256)
-2. **Identity verification** — creates 5 verified unique persons, verifies JWT signatures
-3. **Behavioral simulation** — simulates browsing patterns across domains
-4. **Commitment submission** — posts anonymized data to the backend
-5. **Aggregation query** — queries per-domain stats via REST API
-6. **MCP tool** — same query surface available to AI models
-7. **Architecture check** — confirms anonymity properties hold
-
-All 7 steps should pass. The only missing piece for production is a real World ID `app_id`.
-
-## Running the demo
-
-```bash
-# Run the demo script (used to generate demo.gif)
-bash demo.sh
-
-# Or use asciinema to record it yourself
-asciinema rec --command "bash demo.sh" demo.cast
-```
-
-## MCP Integration
-
-### Remote MCP Server (recommended — zero install)
-
-Add to your MCP config (`~/.claude/claude_desktop_config.json` or Cursor settings):
+**MCP server (zero install):**
 
 ```json
 {
@@ -97,130 +30,121 @@ Add to your MCP config (`~/.claude/claude_desktop_config.json` or Cursor setting
 }
 ```
 
-No installation needed. Works with Claude Desktop, Cursor, Windsurf, and any MCP-compatible AI tool.
+Add to Claude Desktop, Cursor, Windsurf, or any MCP-compatible AI tool. Then ask:
 
-### Local MCP Server (stdio)
+> "Audit my package.json for supply chain risk"
+> "Score axios, zod, chalk, lodash — which is highest risk?"
+> "Is vercel/ai actively maintained?"
+
+## REST API
+
+No API key. No install.
+
+```bash
+curl https://poc-backend.amdal-dev.workers.dev/api/audit \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"packages": ["axios", "zod", "chalk", "lodash", "express"]}'
+```
 
 ```json
 {
-  "mcpServers": {
-    "proof-of-commitment": {
-      "command": "bun",
-      "args": ["run", "/path/to/proof-of-commitment/src/mcp/server.ts"],
-      "env": {
-        "BACKEND_URL": "https://poc-backend.amdal-dev.workers.dev"
-      }
-    }
-  }
+  "count": 5,
+  "results": [
+    {
+      "name": "chalk",
+      "ecosystem": "npm",
+      "score": 75,
+      "maintainers": 1,
+      "weeklyDownloads": 398397580,
+      "ageYears": 12.7,
+      "trend": "stable",
+      "riskFlags": ["CRITICAL"]
+    },
+    ...
+  ]
 }
 ```
 
-### Available Tools
+## 7 MCP tools
 
 | Tool | Description |
 |------|-------------|
-| `query_commitment` | Query behavioral commitment data for any domain |
-| `lookup_business` | Search Norwegian businesses by name, get commitment profile |
-| `lookup_business_by_org` | Look up business by org number (9 digits) |
-| `lookup_github_repo` | Get behavioral commitment score for any GitHub repo |
+| `audit_dependencies` | Batch risk audit for up to 20 npm/PyPI packages |
+| `lookup_npm_package` | Single npm package behavioral profile |
+| `lookup_pypi_package` | Single PyPI package behavioral profile |
+| `lookup_github_repo` | GitHub repo commitment score (longevity, commit frequency, contributor depth) |
+| `lookup_business` | Norwegian business register — operating years, employees, financials |
+| `lookup_business_by_org` | Same, by org number |
+| `query_commitment` | Browser extension behavioral data (unique verified visitors, repeat rate) |
 
-Then ask your AI:
-> "How trustworthy is Equinor?"
-> "What's the commitment score for vercel/next.js?"
-> "Is this GitHub repo actively maintained? vercel/ai"
+## What the score measures
+
+Each package is scored 0–100 across:
+
+- **Longevity** — How long has the package existed? Abandoned packages get reactivated for attacks.
+- **Maintainer depth** — Single maintainer + millions of weekly downloads = the attack surface LiteLLM exploited.
+- **Release consistency** — Regular releases signal active oversight. Long gaps = vulnerability accumulation.
+- **Download trend** — Growing packages attract more scrutiny (and attacks). Stable = lower profile.
+
+**Risk flags:**
+- `CRITICAL` — single maintainer + >10M weekly downloads (exact LiteLLM/axios attack profile)
+- `HIGH` — package <1yr old + rapid adoption
+- `WARN` — no release in 12+ months
+
+## Real data points
 
 ```
-EQUINOR ASA (923609016)
-Operating for 53.5 years (founded 1972-09-18)
-21,408 employees
-Revenue: 72,543M NOK
-Equity ratio: 37.6%
-
-Commitment signals:
-  Temporal (longevity): 95/100
-  Financial (health): 90/100
-  Operational (activity): 95/100
-  Overall commitment: 93/100
+chalk     — score 75, 1 maintainer, 399M/week  ⚑ CRITICAL
+zod       — score 83, 1 maintainer, 139M/week  ⚑ CRITICAL
+axios     — score 89, 1 maintainer,  96M/week  ⚑ CRITICAL (attacked Apr 1 2026)
+lodash    — score 88, 3 maintainers, 68M/week
+express   — score 91, 5 maintainers, 35M/week
+litellm   — score 74, 1 maintainer           ⚑ CRITICAL (supply chain attack Mar 2026)
 ```
 
-Data sourced from Norwegian government registers (Brønnøysund) — verified, public, unfakeable.
+## Why behavioral signals
 
-## Deployment
+The LiteLLM attack (March 2026) and axios attack (April 2026) followed the same pattern: stolen credentials → malicious package pushed → 97M+ machines exposed. Both packages scored CRITICAL by these metrics *before* the attacks.
 
-```bash
-# Deploy backend to Cloudflare Workers
-bun run deploy
+Declarative signals (stars, README quality, CI badges) don't capture this risk. Behavioral commitment does.
 
-# Backend URL: https://poc-backend.amdal-dev.workers.dev
+## Listed in the official MCP registry
+
 ```
-
-## Production Blocker
-
-The Chrome extension requires a real World ID `app_id`:
-
-1. Go to [developer.worldcoin.org](https://developer.worldcoin.org)
-2. Create an app → get `app_id`
-3. Set redirect URI to `chrome.identity.getRedirectURL('/callback')`
-4. Replace `app_PLACEHOLDER` in `src/extension/auth.ts`
-
-Until then, the extension tracks domain visits without identity verification. The E2E test uses a mock World ID that proves the architecture works.
+registry.modelcontextprotocol.io → io.github.piiiico/proof-of-commitment
+```
 
 ## Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Identity | World ID (OIDC, RSA-256 JWTs) |
-| Browser | Chrome Manifest V3 extension |
-| Backend | Hono + Bun (dev), Cloudflare Workers + D1 (prod) |
-| AI interface | MCP (Model Context Protocol) |
-| Smart contracts | Solidity (Foundry), Base L2, USDC |
-| ZK (future) | Reclaim Protocol (zkTLS), Semaphore V4 |
+| Backend | Cloudflare Workers + D1 |
+| MCP | Model Context Protocol SDK |
+| Data | npm registry, PyPI, GitHub API, Brønnøysund (NO) |
+| Landing | Astro + Cloudflare Pages |
 
-## Smart Contracts
+## The broader vision
 
-Layer 2 of the commitment graph: staked endorsements. Users stake USDC on domain recommendations, resolved by behavioral data.
+Supply chain auditing is the first tool. The underlying primitive is a **commitment graph** — behavioral signals that replace content-based trust across any domain.
 
-```
-contracts/
-  src/StakedEndorsement.sol    — Core contract (stake, resolve, claim)
-  test/StakedEndorsement.t.sol — 27 tests including fuzz
-  script/Deploy.s.sol          — Base Sepolia / mainnet deploy script
-```
+When content is free to fake (reviews, stars, READMEs), commitment becomes the signal. A maintainer who has shipped 847 releases over 12 years is a different kind of commitment than one who published once in 2023.
 
-### Core flow
+The same logic applies to websites, businesses, and AI agents. Two card networks have independently named this gap: Mastercard Verifiable Intent §9.2 explicitly lists behavioral trust as "not covered." Visa TAP identifies agents without answering whether to trust them.
 
-1. `stake(domain, amount)` — Endorse a business by staking USDC
-2. `resolve(domain, positive)` — Oracle resolves outcome (MVP: owner/multisig)
-3. `claim(endorsementId)` — Winners get stake back minus 1.5% protocol fee; losers forfeit
+Proof of Commitment is the trust layer they're pointing at.
 
-### Development
+→ [getcommit.dev](https://getcommit.dev)
+
+## Run locally
 
 ```bash
-cd contracts
-forge build    # compile
-forge test     # run tests
+bun install
+bun run dev:backend     # local server with SQLite
+bun run test:e2e        # E2E test with mock World ID
 ```
 
-### Deploy
-
+Deploy:
 ```bash
-export PRIVATE_KEY=<your-key>
-export BASE_SEPOLIA_RPC_URL=<rpc-url>
-forge script script/Deploy.s.sol --rpc-url base_sepolia --broadcast --verify
+bun run deploy          # deploys to Cloudflare Workers
 ```
-
-USDC addresses: Base Sepolia `0x036CbD53842c5426634e7929541eC2318f3dCF7e`, Base mainnet `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`.
-
-## Roadmap
-
-- [x] Backend aggregation (CF Workers + D1)
-- [x] E2E test with mock World ID
-- [x] MCP server
-- [x] Staked endorsement smart contract (Base L2, USDC)
-- [ ] Deploy to Base Sepolia testnet
-- [ ] Real World ID `app_id` (needs browser registration)
-- [ ] Chrome extension packaging
-- [ ] zkTLS proofs for purchase verification (Reclaim Protocol)
-- [ ] Unlinkable submissions via Semaphore V4
-- [ ] UMA Optimistic Oracle integration for dispute resolution
-- [ ] Reputation tracking (BondRegistry)
