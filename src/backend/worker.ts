@@ -8,6 +8,7 @@
  * GET  /api/domain/:d           — stats for a specific domain
  * GET  /api/business/search?q=  — search Norwegian businesses
  * GET  /api/business/:orgNumber — business commitment profile
+ * POST /api/audit               — batch npm/PyPI supply chain risk scoring
  * ALL  /mcp                     — Remote MCP server (Streamable HTTP)
  * GET  /                        — health check
  */
@@ -359,6 +360,71 @@ app.get("/api/business/:orgNumber", async (c) => {
   }
 
   return c.json(profile);
+});
+
+/**
+ * POST /api/audit
+ * Batch-score npm or PyPI packages for supply chain risk.
+ * Body: { packages: string[], ecosystem?: "npm" | "pypi" | "auto" }
+ * Returns JSON array sorted by commitment score (lowest = highest risk first).
+ */
+app.post("/api/audit", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const packages: string[] = Array.isArray(body?.packages) ? body.packages.slice(0, 20) : [];
+  const ecosystem: string = body?.ecosystem ?? "auto";
+
+  if (packages.length === 0) {
+    return c.json({ error: "'packages' array is required (max 20)" }, 400);
+  }
+
+  const MAX_CONCURRENT = 5;
+  const results: Array<{
+    name: string;
+    ecosystem: string;
+    score: number | null;
+    maintainers: number | null;
+    weeklyDownloads: number | null;
+    ageYears: number | null;
+    trend: string | null;
+    riskFlags: string[];
+    error?: string;
+  }> = [];
+
+  for (let i = 0; i < packages.length; i += MAX_CONCURRENT) {
+    const batch = packages.slice(i, i + MAX_CONCURRENT);
+    const batchResults = await Promise.all(
+      batch.map(async (pkg) => {
+        const usePypi = ecosystem === "pypi";
+        try {
+          if (usePypi) {
+            const profile = await buildPyPICommitmentProfile(pkg);
+            if (!profile) return { name: pkg, ecosystem: "pypi", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
+            const weeklyDl = profile.recentDailyDownloads * 7;
+            const riskFlags: string[] = [];
+            if (profile.maintainerCount === 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL");
+            else if (profile.ageYears < 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH");
+            else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+            return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
+          } else {
+            const profile = await buildNpmCommitmentProfile(pkg);
+            if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
+            const riskFlags: string[] = [];
+            const wdl = profile.recentWeeklyDownloads ?? 0;
+            if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+            else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
+            else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
+          }
+        } catch (err) {
+          return { name: pkg, ecosystem: usePypi ? "pypi" : "npm", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: err instanceof Error ? err.message : "error" };
+        }
+      })
+    );
+    results.push(...batchResults);
+  }
+
+  results.sort((a, b) => (a.score ?? -1) - (b.score ?? -1));
+  return c.json({ count: results.length, results });
 });
 
 // ── Remote MCP Server ────────────────────────────────────────────────
