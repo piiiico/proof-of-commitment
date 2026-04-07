@@ -36,7 +36,9 @@ app.post("/api/commit", async (c) => {
       errors.push(parsed.error);
       continue;
     }
-    insertCommitment(parsed.value);
+    // Dev server has no World ID auth — pass null so anonymous inserts
+    // don't conflict with each other via the UNIQUE(domain, world_id_sub) index.
+    insertCommitment(parsed.value, null);
     accepted++;
   }
 

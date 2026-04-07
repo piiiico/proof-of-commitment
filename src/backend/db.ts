@@ -19,6 +19,7 @@ function migrate(db: Database): void {
     CREATE TABLE IF NOT EXISTS commitments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       domain TEXT NOT NULL,
+      world_id_sub TEXT,
       visit_count INTEGER NOT NULL,
       total_seconds INTEGER NOT NULL,
       first_seen INTEGER NOT NULL,
@@ -28,6 +29,12 @@ function migrate(db: Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_commitments_domain
       ON commitments(domain);
+
+    -- Unique per (domain, world_id_sub) — NULLs excluded so anonymous dev
+    -- submissions never conflict with each other.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_commitments_domain_world_id_sub
+      ON commitments(domain, world_id_sub)
+      WHERE world_id_sub IS NOT NULL;
 
     -- Materialized aggregate view: updated on each insert via trigger
     CREATE TABLE IF NOT EXISTS domain_stats (
@@ -41,7 +48,7 @@ function migrate(db: Database): void {
     );
   `);
 
-  // Trigger to keep domain_stats in sync
+  // Trigger to keep domain_stats in sync on new inserts
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS trg_update_domain_stats
     AFTER INSERT ON commitments
@@ -77,13 +84,42 @@ export interface Commitment {
   lastSeen: number;
 }
 
-export function insertCommitment(c: Commitment): void {
+export function insertCommitment(c: Commitment, worldIdSub?: string | null): void {
   const db = getDb();
-  db.run(
-    `INSERT INTO commitments (domain, visit_count, total_seconds, first_seen, last_seen)
-     VALUES (?, ?, ?, ?, ?)`,
-    [c.domain, c.visitCount, c.totalSeconds, c.firstSeen, c.lastSeen]
-  );
+  if (worldIdSub) {
+    // Check if (domain, world_id_sub) already exists → upsert
+    const existing = db.query(
+      `SELECT id FROM commitments WHERE domain = ? AND world_id_sub = ? LIMIT 1`
+    ).get(c.domain, worldIdSub) as { id: number } | null;
+
+    if (existing) {
+      // Update existing record — same user re-submitting. Trigger does NOT fire
+      // so domain_stats.unique_commitments stays correct.
+      db.run(
+        `UPDATE commitments
+         SET visit_count = ?, total_seconds = ?,
+             first_seen = MIN(first_seen, ?),
+             last_seen = MAX(last_seen, ?)
+         WHERE domain = ? AND world_id_sub = ?`,
+        [c.visitCount, c.totalSeconds, c.firstSeen, c.lastSeen, c.domain, worldIdSub]
+      );
+      return;
+    }
+
+    // New commitment — include world_id_sub; trigger updates domain_stats
+    db.run(
+      `INSERT INTO commitments (domain, world_id_sub, visit_count, total_seconds, first_seen, last_seen)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [c.domain, worldIdSub, c.visitCount, c.totalSeconds, c.firstSeen, c.lastSeen]
+    );
+  } else {
+    // Anonymous insert (dev / no auth) — no deduplication, trigger fires
+    db.run(
+      `INSERT INTO commitments (domain, visit_count, total_seconds, first_seen, last_seen)
+       VALUES (?, ?, ?, ?, ?)`,
+      [c.domain, c.visitCount, c.totalSeconds, c.firstSeen, c.lastSeen]
+    );
+  }
 }
 
 export interface DomainStats {

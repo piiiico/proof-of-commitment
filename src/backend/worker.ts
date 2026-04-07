@@ -235,51 +235,79 @@ app.post("/api/commit", async (c) => {
   }
 
   const errors: string[] = [];
-  let accepted = 0;
-  const stmts: D1PreparedStatement[] = [];
+  type ValidCommitment = { domain: string; visitCount: number; totalSeconds: number; firstSeen: number; lastSeen: number };
+  const valid: ValidCommitment[] = [];
 
   for (const item of items) {
     const parsed = validateCommitment(item);
     if (!parsed.ok) {
       errors.push(parsed.error);
-      continue;
+    } else {
+      valid.push(parsed.value);
     }
-
-    const v = parsed.value;
-
-    // Insert into commitments table
-    stmts.push(
-      c.env.DB.prepare(
-        `INSERT INTO commitments (domain, visit_count, total_seconds, first_seen, last_seen)
-         VALUES (?, ?, ?, ?, ?)`
-      ).bind(v.domain, v.visitCount, v.totalSeconds, v.firstSeen, v.lastSeen)
-    );
-
-    // Update domain_stats (explicit upsert — D1 triggers not reliable)
-    stmts.push(
-      c.env.DB.prepare(
-        `INSERT INTO domain_stats (domain, unique_commitments, total_visits, total_seconds, avg_visits, avg_seconds, last_updated)
-         VALUES (?, 1, ?, ?, ?, ?, datetime('now'))
-         ON CONFLICT(domain) DO UPDATE SET
-           unique_commitments = unique_commitments + 1,
-           total_visits = total_visits + excluded.total_visits,
-           total_seconds = total_seconds + excluded.total_seconds,
-           avg_visits = CAST((total_visits + excluded.total_visits) AS REAL) / (unique_commitments + 1),
-           avg_seconds = CAST((total_seconds + excluded.total_seconds) AS REAL) / (unique_commitments + 1),
-           last_updated = datetime('now')`
-      ).bind(v.domain, v.visitCount, v.totalSeconds, v.visitCount, v.totalSeconds)
-    );
-
-    accepted++;
   }
 
-  if (accepted === 0) {
+  if (valid.length === 0) {
     return c.json({ error: "No valid commitments", details: errors }, 400);
+  }
+
+  // Check which (domain, worldIdSub) pairs already exist so we can upsert
+  // correctly without double-counting domain_stats.unique_commitments.
+  const existenceChecks = valid.map((v) =>
+    c.env.DB.prepare(
+      `SELECT 1 FROM commitments WHERE domain = ? AND world_id_sub = ? LIMIT 1`
+    ).bind(v.domain, worldIdSub)
+  );
+  const existenceResults = await c.env.DB.batch(existenceChecks);
+
+  const stmts: D1PreparedStatement[] = [];
+
+  for (let i = 0; i < valid.length; i++) {
+    const v = valid[i]!;
+    const isExisting = (existenceResults[i]?.results?.length ?? 0) > 0;
+
+    if (isExisting) {
+      // Same user re-submitting for same domain — update, don't recount
+      stmts.push(
+        c.env.DB.prepare(
+          `UPDATE commitments
+           SET visit_count    = ?,
+               total_seconds  = ?,
+               first_seen     = MIN(first_seen, ?),
+               last_seen      = MAX(last_seen, ?)
+           WHERE domain = ? AND world_id_sub = ?`
+        ).bind(v.visitCount, v.totalSeconds, v.firstSeen, v.lastSeen, v.domain, worldIdSub)
+      );
+      // domain_stats.unique_commitments stays unchanged — this user was already counted
+    } else {
+      // New (domain, user) pair — insert and update aggregate
+      stmts.push(
+        c.env.DB.prepare(
+          `INSERT INTO commitments (domain, world_id_sub, visit_count, total_seconds, first_seen, last_seen)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(v.domain, worldIdSub, v.visitCount, v.totalSeconds, v.firstSeen, v.lastSeen)
+      );
+
+      // Update domain_stats (explicit upsert — D1 triggers not reliable)
+      stmts.push(
+        c.env.DB.prepare(
+          `INSERT INTO domain_stats (domain, unique_commitments, total_visits, total_seconds, avg_visits, avg_seconds, last_updated)
+           VALUES (?, 1, ?, ?, ?, ?, datetime('now'))
+           ON CONFLICT(domain) DO UPDATE SET
+             unique_commitments = unique_commitments + 1,
+             total_visits       = total_visits + excluded.total_visits,
+             total_seconds      = total_seconds + excluded.total_seconds,
+             avg_visits         = CAST((total_visits + excluded.total_visits) AS REAL) / (unique_commitments + 1),
+             avg_seconds        = CAST((total_seconds + excluded.total_seconds) AS REAL) / (unique_commitments + 1),
+             last_updated       = datetime('now')`
+        ).bind(v.domain, v.visitCount, v.totalSeconds, v.visitCount, v.totalSeconds)
+      );
+    }
   }
 
   await c.env.DB.batch(stmts);
 
-  return c.json({ accepted, errors: errors.length > 0 ? errors : undefined });
+  return c.json({ accepted: valid.length, errors: errors.length > 0 ? errors : undefined });
 });
 
 /**
