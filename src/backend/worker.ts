@@ -9,6 +9,7 @@
  * GET  /api/business/search?q=  — search Norwegian businesses
  * GET  /api/business/:orgNumber — business commitment profile
  * POST /api/audit               — batch npm/PyPI supply chain risk scoring
+ * GET  /api/badge/:eco/:pkg     — SVG badge for README embedding
  * ALL  /mcp                     — Remote MCP server (Streamable HTTP)
  * GET  /                        — health check
  */
@@ -453,6 +454,129 @@ app.post("/api/audit", async (c) => {
 
   results.sort((a, b) => (a.score ?? -1) - (b.score ?? -1));
   return c.json({ count: results.length, results });
+});
+
+// ── SVG Badge Generator ───────────────────────────────────────────────
+
+/**
+ * Generate a shields.io-compatible SVG badge.
+ * Uses Verdana 11px metrics (~6.2px per character average).
+ */
+function generateBadge(label: string, value: string, color: string): string {
+  // Approximate character widths for Verdana 11px
+  const charWidth = 6.2;
+  const padding = 10;
+  const labelWidth = Math.ceil(label.length * charWidth + padding * 2);
+  const valueWidth = Math.ceil(value.length * charWidth + padding * 2);
+  const totalWidth = labelWidth + valueWidth;
+  const labelCenter = Math.floor(labelWidth / 2);
+  const valueCenter = labelWidth + Math.floor(valueWidth / 2);
+
+  // Escape XML entities
+  const escapeXml = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const labelEsc = escapeXml(label);
+  const valueEsc = escapeXml(value);
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${totalWidth}" height="20" role="img" aria-label="${labelEsc}: ${valueEsc}">
+<title>${labelEsc}: ${valueEsc}</title>
+<linearGradient id="s" x2="0" y2="100%">
+<stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
+<stop offset="1" stop-opacity=".1"/>
+</linearGradient>
+<clipPath id="r"><rect width="${totalWidth}" height="20" rx="3" fill="#fff"/></clipPath>
+<g clip-path="url(#r)">
+<rect width="${labelWidth}" height="20" fill="#555"/>
+<rect x="${labelWidth}" width="${valueWidth}" height="20" fill="${color}"/>
+<rect width="${totalWidth}" height="20" fill="url(#s)"/>
+</g>
+<g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="110">
+<text x="${labelCenter * 10}" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="${(labelWidth - padding * 2) * 10}" lengthAdjust="spacing">${labelEsc}</text>
+<text x="${labelCenter * 10}" y="140" transform="scale(.1)" textLength="${(labelWidth - padding * 2) * 10}" lengthAdjust="spacing">${labelEsc}</text>
+<text x="${valueCenter * 10}" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="${(valueWidth - padding * 2) * 10}" lengthAdjust="spacing">${valueEsc}</text>
+<text x="${valueCenter * 10}" y="140" transform="scale(.1)" textLength="${(valueWidth - padding * 2) * 10}" lengthAdjust="spacing">${valueEsc}</text>
+</g>
+</svg>`;
+}
+
+/**
+ * GET /api/badge/:ecosystem/:package{.+}
+ *
+ * Returns an SVG badge with the commitment score for an npm or PyPI package.
+ * Designed to embed in GitHub READMEs:
+ *   ![commit score](https://poc-backend.amdal-dev.workers.dev/api/badge/npm/axios)
+ *
+ * Colors: green (healthy) → yellow (moderate) → orange (high risk) → red (CRITICAL)
+ * Cache-Control: 5 minutes (edge cached by Cloudflare)
+ */
+app.get("/api/badge/:ecosystem/*", async (c) => {
+  const ecosystem = c.req.param("ecosystem");
+  // The wildcard captures the rest of the path (handles scoped packages like @scope/name)
+  const packageName = decodeURIComponent(c.req.path.replace(`/api/badge/${ecosystem}/`, ""));
+
+  if (ecosystem !== "npm" && ecosystem !== "pypi") {
+    const svg = generateBadge("commit", "invalid ecosystem", "#9f9f9f");
+    return new Response(svg, {
+      headers: { "Content-Type": "image/svg+xml", "Cache-Control": "max-age=60" },
+    });
+  }
+
+  let score: number | null = null;
+  let riskFlags: string[] = [];
+
+  try {
+    if (ecosystem === "npm") {
+      const profile = await buildNpmCommitmentProfile(packageName);
+      if (profile) {
+        score = profile.commitmentScore;
+        const wdl = profile.recentWeeklyDownloads ?? 0;
+        if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+      }
+    } else {
+      const profile = await buildPyPICommitmentProfile(packageName);
+      if (profile) {
+        score = profile.commitmentScore;
+        const weeklyDl = profile.recentDailyDownloads * 7;
+        if (profile.maintainerCount === 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL");
+      }
+    }
+  } catch {
+    // Fall through to error badge
+  }
+
+  let value: string;
+  let color: string;
+
+  if (score === null) {
+    value = "not found";
+    color = "#9f9f9f";
+  } else if (riskFlags.includes("CRITICAL")) {
+    value = `${score} ⚠ CRITICAL`;
+    color = "#e05d44";
+  } else if (score < 40) {
+    value = `${score} high risk`;
+    color = "#fe7d37";
+  } else if (score < 60) {
+    value = `${score} moderate`;
+    color = "#dfb317";
+  } else if (score < 75) {
+    value = `${score} good`;
+    color = "#97ca00";
+  } else {
+    value = `${score} healthy`;
+    color = "#44cc11";
+  }
+
+  const svg = generateBadge("commit", value, color);
+
+  return new Response(svg, {
+    headers: {
+      "Content-Type": "image/svg+xml",
+      "Cache-Control": "max-age=300, s-maxage=300",
+      "X-Powered-By": "getcommit.dev",
+    },
+  });
 });
 
 // ── Remote MCP Server ────────────────────────────────────────────────

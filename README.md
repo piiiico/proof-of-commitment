@@ -36,6 +36,26 @@ Add to Claude Desktop, Cursor, Windsurf, or any MCP-compatible AI tool. Then ask
 > "Score axios, zod, chalk, lodash — which is highest risk?"
 > "Is vercel/ai actively maintained?"
 
+## README Badges
+
+Add a commitment score badge to any package you maintain or depend on:
+
+```markdown
+![commit score](https://poc-backend.amdal-dev.workers.dev/api/badge/npm/YOUR-PACKAGE)
+```
+
+Examples:
+
+| Package | Badge URL |
+|---------|-----------|
+| axios | `![commit](https://poc-backend.amdal-dev.workers.dev/api/badge/npm/axios)` |
+| zod | `![commit](https://poc-backend.amdal-dev.workers.dev/api/badge/npm/zod)` |
+| litellm | `![commit](https://poc-backend.amdal-dev.workers.dev/api/badge/pypi/litellm)` |
+
+Colors: 🟢 healthy (75+) · 🟡 good (60–74) · 🟡 moderate (40–59) · 🟠 high risk (<40) · 🔴 CRITICAL (single maintainer + >10M downloads/week)
+
+Badges are cached 5 minutes at Cloudflare's edge. No API key needed.
+
 ## REST API
 
 No API key. No install.
