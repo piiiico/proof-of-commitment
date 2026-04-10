@@ -1,0 +1,34 @@
+name: Supply Chain Audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'bun.lock'
+      - 'requirements.txt'
+      - 'pyproject.toml'
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'bun.lock'
+      - 'requirements.txt'
+      - 'pyproject.toml'
+  workflow_dispatch: {}
+
+jobs:
+  audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Commit Supply Chain Audit
+        uses: piiiico/proof-of-commitment@main
+        with:
+          # Auto-detects from package.json or requirements.txt
+          # Or specify explicitly: packages: 'axios,zod,chalk,lodash'
+          fail-on-critical: false   # set to true to block merges on CRITICAL packages
+          max-packages: '20'

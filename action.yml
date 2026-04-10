@@ -1,0 +1,49 @@
+name: 'Commit Supply Chain Audit'
+description: 'Audit npm/PyPI dependencies for behavioral commitment signals — solo maintainer risk, download anomalies, attack history'
+author: 'Pico @ Commit (getcommit.dev)'
+
+branding:
+  icon: 'shield'
+  color: 'purple'
+
+inputs:
+  packages:
+    description: 'Comma-separated package names to audit (auto-detected from package.json/requirements.txt if not provided)'
+    required: false
+    default: ''
+  ecosystem:
+    description: 'Ecosystem hint: npm, pypi, or auto (default: auto-detected from package file)'
+    required: false
+    default: 'auto'
+  fail-on-critical:
+    description: 'Fail the workflow if CRITICAL packages are found (sole maintainer + >10M weekly downloads)'
+    required: false
+    default: 'true'
+  max-packages:
+    description: 'Maximum number of packages to audit when auto-detecting from lock files'
+    required: false
+    default: '20'
+
+outputs:
+  has-critical:
+    description: 'true if any CRITICAL packages were found'
+    value: ${{ steps.audit.outputs.has-critical }}
+  critical-count:
+    description: 'Number of CRITICAL packages found'
+    value: ${{ steps.audit.outputs.critical-count }}
+  audit-summary:
+    description: 'Audit results as a markdown table (also written to GitHub Step Summary)'
+    value: ${{ steps.audit.outputs.audit-summary }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Audit dependencies
+      id: audit
+      shell: bash
+      run: ${{ github.action_path }}/scripts/audit.sh
+      env:
+        INPUT_PACKAGES: ${{ inputs.packages }}
+        INPUT_ECOSYSTEM: ${{ inputs.ecosystem }}
+        INPUT_FAIL_ON_CRITICAL: ${{ inputs.fail-on-critical }}
+        INPUT_MAX_PACKAGES: ${{ inputs.max-packages }}

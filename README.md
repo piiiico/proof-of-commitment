@@ -36,6 +36,45 @@ Add to Claude Desktop, Cursor, Windsurf, or any MCP-compatible AI tool. Then ask
 > "Score axios, zod, chalk, lodash — which is highest risk?"
 > "Is vercel/ai actively maintained?"
 
+## GitHub Action
+
+Add supply chain auditing to any CI pipeline — auto-detects packages from `package.json` or `requirements.txt`, posts results to GitHub Step Summary, optionally fails on CRITICAL packages.
+
+```yaml
+# .github/workflows/supply-chain-audit.yml
+name: Supply Chain Audit
+on: [push, pull_request]
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: piiiico/proof-of-commitment@main
+        with:
+          fail-on-critical: false   # set true to block merges
+```
+
+**Inputs:**
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `packages` | _(auto)_ | Comma-separated package names (auto-detected from `package.json`/`requirements.txt` if not set) |
+| `fail-on-critical` | `true` | Fail the workflow if CRITICAL packages are found |
+| `max-packages` | `20` | Max packages to audit when auto-detecting |
+
+**Outputs:** `has-critical`, `critical-count`, `audit-summary` (markdown table, also written to Step Summary).
+
+Example Step Summary output:
+
+```
+| Package | Risk        | Score | Maintainers | Downloads/wk | Age   |
+|---------|-------------|-------|-------------|--------------|-------|
+| chalk   | 🔴 CRITICAL | 75    | 1           | 380M         | 12.7y |
+| zod     | 🔴 CRITICAL | 83    | 1           | 133M         | 6.1y  |
+| axios   | 🔴 CRITICAL | 89    | 1           | 93M          | 11.6y |
+```
+
 ## README Badges
 
 Add a commitment score badge to any package you maintain or depend on:
