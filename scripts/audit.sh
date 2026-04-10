@@ -112,6 +112,9 @@ fi
 
 # ─── Process results ─────────────────────────────────────────────────────────
 
+SUMMARY_FILE="$TMP_DIR/commit-audit-summary.md"
+export COMMIT_SUMMARY_FILE="$SUMMARY_FILE"
+
 python3 - "$FAIL_ON_CRITICAL" "$RESPONSE_FILE" << 'PYEOF'
 import json, os, sys
 
@@ -176,7 +179,10 @@ elif high_count:
 else:
     headline = "🟢 All packages pass behavioral commitment checks."
 
-summary = f"""## 🔍 Supply Chain Audit
+COMMIT_MARKER = "<!-- commit-supply-chain-audit -->"
+
+summary = f"""{COMMIT_MARKER}
+## 🔍 Supply Chain Audit
 
 {table}
 
@@ -184,7 +190,7 @@ summary = f"""## 🔍 Supply Chain Audit
 
 > Scored by [Commit](https://getcommit.dev) — behavioral commitment signals for supply chain trust.
 > **CRITICAL** = sole maintainer + >10M weekly downloads (historically high-value attack targets).
-> [What these scores mean](https://getcommit.dev/blog/npm-package-scores)
+> [What these scores mean](https://getcommit.dev/audit)
 """
 
 print(summary)
@@ -205,6 +211,12 @@ if output_file:
         f.write(summary)
         f.write("AUDIT_SUMMARY_EOF\n")
 
+# Write summary to temp file for PR comment
+summary_file = os.environ.get('COMMIT_SUMMARY_FILE', '')
+if summary_file:
+    with open(summary_file, 'w') as f:
+        f.write(summary)
+
 if has_critical and fail_on_critical:
     print(f"\n❌ Workflow failed: {critical_count} CRITICAL package(s) detected.")
     print("   Set fail-on-critical: false to continue despite CRITICAL findings.")
@@ -218,5 +230,68 @@ else:
 PYEOF
 
 EXIT_CODE=$?
+
+# ─── Post PR comment ─────────────────────────────────────────────────────────
+
+SUMMARY_FILE="$TMP_DIR/commit-audit-summary.md"
+if [ "${INPUT_COMMENT_ON_PR:-true}" = "true" ] && \
+   [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && \
+   [ -n "${PR_NUMBER:-}" ] && \
+   [ -n "${INPUT_GITHUB_TOKEN:-}" ] && \
+   [ -f "$SUMMARY_FILE" ]; then
+
+  echo ""
+  echo "📝 Posting audit results as PR comment..."
+
+  MARKER="<!-- commit-supply-chain-audit -->"
+  COMMENT_BODY=$(cat "$SUMMARY_FILE")
+
+  # Find existing comment with our marker
+  EXISTING_COMMENT_ID=$(curl -s \
+    -H "Authorization: token $INPUT_GITHUB_TOKEN" \
+    -H "Accept: application/vnd.github.v3+json" \
+    "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
+    | python3 -c "
+import json, sys
+comments = json.load(sys.stdin)
+for c in comments:
+    if '<!-- commit-supply-chain-audit -->' in c.get('body', ''):
+        print(c['id'])
+        break
+" 2>/dev/null)
+
+  if [ -n "$EXISTING_COMMENT_ID" ]; then
+    # Update existing comment
+    ESCAPED_BODY=$(python3 -c "import json, sys; print(json.dumps(sys.stdin.read()))" < "$SUMMARY_FILE")
+    HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+      -X PATCH \
+      -H "Authorization: token $INPUT_GITHUB_TOKEN" \
+      -H "Accept: application/vnd.github.v3+json" \
+      -H "Content-Type: application/json" \
+      "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING_COMMENT_ID}" \
+      -d "{\"body\": $ESCAPED_BODY}")
+    if [ "$HTTP_STATUS" = "200" ]; then
+      echo "✅ PR comment updated (comment #$EXISTING_COMMENT_ID)"
+    else
+      echo "⚠️  Failed to update PR comment (HTTP $HTTP_STATUS)"
+    fi
+  else
+    # Create new comment
+    ESCAPED_BODY=$(python3 -c "import json, sys; print(json.dumps(sys.stdin.read()))" < "$SUMMARY_FILE")
+    HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+      -X POST \
+      -H "Authorization: token $INPUT_GITHUB_TOKEN" \
+      -H "Accept: application/vnd.github.v3+json" \
+      -H "Content-Type: application/json" \
+      "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+      -d "{\"body\": $ESCAPED_BODY}")
+    if [ "$HTTP_STATUS" = "201" ]; then
+      echo "✅ PR comment posted"
+    else
+      echo "⚠️  Failed to post PR comment (HTTP $HTTP_STATUS)"
+    fi
+  fi
+fi
+
 echo "::endgroup::"
 exit $EXIT_CODE

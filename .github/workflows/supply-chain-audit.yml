@@ -22,6 +22,8 @@ jobs:
   audit:
     name: Dependency Audit
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write   # needed for PR comments
     steps:
       - uses: actions/checkout@v4
 
@@ -32,3 +34,4 @@ jobs:
           # Or specify explicitly: packages: 'axios,zod,chalk,lodash'
           fail-on-critical: false   # set to true to block merges on CRITICAL packages
           max-packages: '20'
+          comment-on-pr: true      # posts results as a PR comment (auto-updates on re-run)

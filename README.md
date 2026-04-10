@@ -38,7 +38,7 @@ Add to Claude Desktop, Cursor, Windsurf, or any MCP-compatible AI tool. Then ask
 
 ## GitHub Action
 
-Add supply chain auditing to any CI pipeline — auto-detects packages from `package.json` or `requirements.txt`, posts results to GitHub Step Summary, optionally fails on CRITICAL packages.
+Add supply chain auditing to any CI pipeline — auto-detects packages from `package.json` or `requirements.txt`, **posts results as a PR comment**, writes to GitHub Step Summary, and optionally fails on CRITICAL packages.
 
 ```yaml
 # .github/workflows/supply-chain-audit.yml
@@ -48,12 +48,17 @@ on: [push, pull_request]
 jobs:
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write   # needed for PR comments
     steps:
       - uses: actions/checkout@v4
       - uses: piiiico/proof-of-commitment@main
         with:
           fail-on-critical: false   # set true to block merges
+          comment-on-pr: true       # posts audit table directly on the PR
 ```
+
+When `comment-on-pr: true` (default), the action automatically posts the audit table as a comment on the pull request — and **updates the same comment** on re-run, so you don't get comment spam. Reviewers see the risk table without leaving the PR.
 
 **Inputs:**
 
@@ -62,10 +67,11 @@ jobs:
 | `packages` | _(auto)_ | Comma-separated package names (auto-detected from `package.json`/`requirements.txt` if not set) |
 | `fail-on-critical` | `true` | Fail the workflow if CRITICAL packages are found |
 | `max-packages` | `20` | Max packages to audit when auto-detecting |
+| `comment-on-pr` | `true` | Post audit results as a PR comment (requires `pull-requests: write` permission) |
 
 **Outputs:** `has-critical`, `critical-count`, `audit-summary` (markdown table, also written to Step Summary).
 
-Example Step Summary output:
+Example PR comment / Step Summary output:
 
 ```
 | Package | Risk        | Score | Maintainers | Downloads/wk | Age   |

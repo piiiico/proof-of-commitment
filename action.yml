@@ -23,6 +23,14 @@ inputs:
     description: 'Maximum number of packages to audit when auto-detecting from lock files'
     required: false
     default: '20'
+  comment-on-pr:
+    description: 'Post audit results as a PR comment (requires pull_request trigger and github-token)'
+    required: false
+    default: 'true'
+  github-token:
+    description: 'GitHub token for posting PR comments (defaults to github.token)'
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   has-critical:
@@ -47,3 +55,8 @@ runs:
         INPUT_ECOSYSTEM: ${{ inputs.ecosystem }}
         INPUT_FAIL_ON_CRITICAL: ${{ inputs.fail-on-critical }}
         INPUT_MAX_PACKAGES: ${{ inputs.max-packages }}
+        INPUT_COMMENT_ON_PR: ${{ inputs.comment-on-pr }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
