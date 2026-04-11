@@ -750,6 +750,202 @@ app.get("/api/badge/:ecosystem/*", async (c) => {
   });
 });
 
+// ── Dependency Graph Helpers ─────────────────────────────────────────
+
+/**
+ * Fetch the direct npm dependencies of a package (latest version).
+ * Returns { packageName: semverRange } or {} on failure.
+ */
+async function fetchNpmLatestDeps(pkg: string): Promise<Record<string, string>> {
+  const encodedName = encodeURIComponent(pkg).replace(/^%40/, "@");
+  try {
+    const res = await fetch(`https://registry.npmjs.org/${encodedName}/latest`, {
+      headers: { Accept: "application/json" },
+      // @ts-ignore CF fetch cache hint
+      cf: { cacheEverything: true, cacheTtl: 600 },
+    });
+    if (!res.ok) return {};
+    const data = (await res.json()) as {
+      dependencies?: Record<string, string>;
+    };
+    return data.dependencies ?? {};
+  } catch {
+    return {};
+  }
+}
+
+type GraphNode = {
+  name: string;
+  score: number | null;
+  maintainers: number | null;
+  weeklyDownloads: number | null;
+  ageYears: number | null;
+  trend: string | null;
+  riskFlags: string[];
+  depth: number; // 0 = root, 1 = direct dep, 2 = transitive
+  error?: string;
+};
+
+type GraphEdge = { from: string; to: string };
+
+/**
+ * Score a single npm package and return a GraphNode (depth already set by caller).
+ */
+async function scoreNpmNode(pkg: string, depth: number): Promise<GraphNode> {
+  try {
+    const profile = await buildNpmCommitmentProfile(pkg);
+    if (!profile) {
+      return { name: pkg, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], depth, error: "not found" };
+    }
+    const wdl = profile.recentWeeklyDownloads ?? 0;
+    const riskFlags: string[] = [];
+    if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
+    else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole maintainer + >1M/wk");
+    if (profile.ageYears < 1 && wdl > 100_000) riskFlags.push("HIGH: new package (<1yr) + high downloads");
+    if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
+    return {
+      name: profile.name,
+      score: profile.commitmentScore,
+      maintainers: profile.maintainerCount,
+      weeklyDownloads: wdl,
+      ageYears: Math.round(profile.ageYears * 10) / 10,
+      trend: profile.downloadTrend,
+      riskFlags,
+      depth,
+    };
+  } catch (err) {
+    return { name: pkg, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], depth, error: err instanceof Error ? err.message : "error" };
+  }
+}
+
+async function batchScoreNodes(pkgs: string[], depth: number): Promise<GraphNode[]> {
+  const BATCH = 5;
+  const results: GraphNode[] = [];
+  for (let i = 0; i < pkgs.length; i += BATCH) {
+    const batch = pkgs.slice(i, i + BATCH);
+    const batchResults = await Promise.all(batch.map((pkg) => scoreNpmNode(pkg, depth)));
+    results.push(...batchResults);
+  }
+  return results;
+}
+
+/**
+ * Build a dependency risk graph for an npm package.
+ * depth=1: root + direct deps
+ * depth=2: root + direct deps + transitive deps of CRITICAL/HIGH packages (capped at MAX_TRANSITIVE)
+ */
+async function buildNpmDepGraph(
+  rootPkg: string,
+  depth: 1 | 2 = 1
+): Promise<{
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  criticalTransitivePaths: string[];
+}> {
+  const MAX_DIRECT = 25;
+  const MAX_TRANSITIVE = 30;
+
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  const seen = new Set<string>([rootPkg.toLowerCase()]);
+
+  // Score root
+  const rootNode = await scoreNpmNode(rootPkg, 0);
+  nodes.push(rootNode);
+
+  // Fetch direct deps
+  const directDepsMap = await fetchNpmLatestDeps(rootPkg);
+  const directDeps = Object.keys(directDepsMap).slice(0, MAX_DIRECT);
+
+  // Add edges root → direct
+  for (const dep of directDeps) {
+    edges.push({ from: rootNode.name, to: dep });
+    seen.add(dep.toLowerCase());
+  }
+
+  // Score direct deps
+  const directNodes = await batchScoreNodes(directDeps, 1);
+  nodes.push(...directNodes);
+
+  if (depth >= 2) {
+    // For each CRITICAL or HIGH direct dep, fetch their deps
+    const riskyDirect = directNodes.filter(
+      (n) => n.riskFlags.some((f) => f.startsWith("CRITICAL") || f.startsWith("HIGH"))
+    );
+
+    const transitiveNew: string[] = [];
+    for (const parent of riskyDirect) {
+      const transMap = await fetchNpmLatestDeps(parent.name);
+      const transDeps = Object.keys(transMap).slice(0, 15);
+      for (const dep of transDeps) {
+        if (!seen.has(dep.toLowerCase()) && transitiveNew.length < MAX_TRANSITIVE) {
+          seen.add(dep.toLowerCase());
+          transitiveNew.push(dep);
+          edges.push({ from: parent.name, to: dep });
+        } else if (seen.has(dep.toLowerCase())) {
+          // Already in graph — still add edge if not duplicate
+          const edgeExists = edges.some((e) => e.from === parent.name && e.to === dep);
+          if (!edgeExists) edges.push({ from: parent.name, to: dep });
+        }
+      }
+    }
+
+    // Score all new transitive deps
+    const newTransitive = transitiveNew;
+    const transitiveNodes = await batchScoreNodes(newTransitive, 2);
+    nodes.push(...transitiveNodes);
+  }
+
+  // Find critical transitive paths (root → parent → critical dep)
+  const criticalNodes = nodes.filter((n) => n.depth > 0 && n.riskFlags.some((f) => f.startsWith("CRITICAL")));
+  const criticalTransitivePaths = criticalNodes.map((n) => {
+    const parentEdge = edges.find((e) => e.to === n.name);
+    if (parentEdge && parentEdge.from !== rootNode.name) {
+      return `${rootNode.name} → ${parentEdge.from} → ${n.name}`;
+    }
+    return `${rootNode.name} → ${n.name}`;
+  });
+
+  return { nodes, edges, criticalTransitivePaths };
+}
+
+/**
+ * POST /api/graph/npm
+ * Build a dependency risk graph for an npm package.
+ * Body: { package: string, depth?: 1 | 2 }
+ */
+app.post("/api/graph/npm", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const pkg: string = body?.package ?? "";
+  const depth: 1 | 2 = body?.depth === 2 ? 2 : 1;
+
+  if (!pkg || pkg.trim().length === 0) {
+    return c.json({ error: "package is required. E.g. { \"package\": \"express\" }" }, 400);
+  }
+
+  const { nodes, edges, criticalTransitivePaths } = await buildNpmDepGraph(pkg.trim(), depth);
+
+  const criticalCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("CRITICAL"))).length;
+  const highCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("HIGH"))).length;
+  const warnCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("WARN"))).length;
+  const worstScore = nodes.reduce((min, n) => n.score !== null ? Math.min(min, n.score) : min, 101);
+
+  return c.json({
+    root: pkg.trim(),
+    depth,
+    nodes,
+    edges,
+    summary: {
+      totalNodes: nodes.length,
+      criticalCount,
+      highCount,
+      warnCount,
+      worstScore: worstScore === 101 ? null : worstScore,
+      criticalTransitivePaths,
+    },
+  });
+});
+
 // ── Remote MCP Server ────────────────────────────────────────────────
 //
 // Stateless MCP endpoint. Each request creates a fresh server + transport.
@@ -761,7 +957,7 @@ app.get("/api/badge/:ecosystem/*", async (c) => {
 function createMcpServer(): McpServer {
   const mcp = new McpServer({
     name: "proof-of-commitment",
-    version: "0.6.0",
+    version: "1.0.0",
   });
 
   // Tool: query_commitment
@@ -1509,6 +1705,128 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
         content: [
           { type: "text" as const, text: summary },
           { type: "text" as const, text: JSON.stringify({ repo: `${owner}/${repo}`, results: allResults }, null, 2) },
+        ],
+      };
+    }
+  );
+
+  // Tool: audit_dependency_tree
+  mcp.tool(
+    "audit_dependency_tree",
+    `Map the full dependency tree of an npm package and identify CRITICAL supply chain risks at every level.
+
+Unlike auditing a flat list of packages, this tool traverses the dependency graph — showing not just your direct dependencies but also what your dependencies depend on. Hidden CRITICAL packages (sole maintainer + >10M weekly downloads) often lurk 1-2 levels deep.
+
+Risk flags:
+- CRITICAL: single maintainer + >10M weekly downloads — sole point of failure for a massive attack surface
+- HIGH: sole maintainer + >1M/wk, OR new package (<1yr) with high adoption
+- WARN: no release in 12+ months (potential abandonware)
+
+depth=1 (default): root package + all direct dependencies
+depth=2: also traverses one more level for any CRITICAL/HIGH direct deps (reveals hidden exposure)
+
+Examples:
+- audit_dependency_tree("express") — see all of Express's deps and their risk scores
+- audit_dependency_tree("langchain", 2) — reveal transitive CRITICAL deps 2 levels deep
+- audit_dependency_tree("@anthropic-ai/sdk") — audit Anthropic SDK full tree
+
+Use this when someone asks:
+- "What am I really depending on?"
+- "Are my dependencies' dependencies safe?"
+- "Show me the full supply chain risk for package X"`,
+    {
+      package: z
+        .string()
+        .describe('npm package name to map. Examples: "express", "langchain", "@anthropic-ai/sdk", "zod"'),
+      depth: z
+        .number()
+        .int()
+        .min(1)
+        .max(2)
+        .default(1)
+        .describe('How deep to traverse. 1 = direct deps only (fast). 2 = also traverse deps of CRITICAL/HIGH packages (slower, reveals hidden risk). Default: 1'),
+    },
+    async ({ package: pkg, depth }) => {
+      const safeDepth: 1 | 2 = depth >= 2 ? 2 : 1;
+      const { nodes, edges, criticalTransitivePaths } = await buildNpmDepGraph(pkg.trim(), safeDepth);
+
+      const criticalNodes = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("CRITICAL")));
+      const highNodes = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("HIGH")));
+      const warnNodes = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("WARN")));
+      const rootNode = nodes.find((n) => n.depth === 0);
+
+      const formatDl = (wdl: number | null) => {
+        if (wdl === null) return "N/A";
+        if (wdl >= 1_000_000) return `${(wdl / 1_000_000).toFixed(1)}M/wk`;
+        if (wdl >= 1_000) return `${Math.round(wdl / 1_000)}k/wk`;
+        return `${wdl}/wk`;
+      };
+
+      // Build risk table (sorted worst first)
+      const riskNodes = [...criticalNodes, ...highNodes, ...warnNodes];
+      const riskRows = riskNodes.map((n) => {
+        const score = n.score !== null ? `${n.score}/100` : "N/A";
+        const dl = formatDl(n.weeklyDownloads);
+        const maint = n.maintainers !== null ? `${n.maintainers} maint.` : "N/A";
+        const depthLabel = n.depth === 0 ? "root" : n.depth === 1 ? "direct" : "transitive";
+        return `  ${score.padEnd(7)} ${n.name.padEnd(35)} ${dl.padEnd(12)} ${maint.padEnd(10)} [${depthLabel}] ⚠️ ${n.riskFlags[0]}`;
+      });
+
+      const directDeps = nodes.filter((n) => n.depth === 1);
+      const transitiveDeps = nodes.filter((n) => n.depth === 2);
+
+      const lines = [
+        `Dependency Tree Risk Audit: ${pkg.trim()}`,
+        `Root score: ${rootNode?.score ?? "N/A"}/100`,
+        `Direct deps: ${directDeps.length} | Transitive scanned: ${transitiveDeps.length}`,
+        `Risk summary: ${criticalNodes.length} CRITICAL, ${highNodes.length} HIGH, ${warnNodes.length} WARN`,
+        ``,
+      ];
+
+      if (criticalTransitivePaths.length > 0) {
+        lines.push(`Critical exposure paths:`);
+        for (const path of criticalTransitivePaths) {
+          lines.push(`  ⚠️ ${path}`);
+        }
+        lines.push(``);
+      }
+
+      if (riskRows.length > 0) {
+        lines.push(`  Score   Package                             Downloads    Maintainers Depth`);
+        lines.push(`  ------  ----------------------------------  -----------  ----------- -------`);
+        lines.push(...riskRows);
+        lines.push(``);
+      } else {
+        lines.push(`No CRITICAL or HIGH risk packages found in this tree.`);
+        lines.push(``);
+      }
+
+      lines.push(`Score: 0-100 behavioral commitment. CRITICAL = sole maintainer + >10M downloads/wk.`);
+      lines.push(`Full audit: https://getcommit.dev/audit`);
+
+      if (safeDepth === 1 && criticalNodes.length === 0 && directDeps.length > 0) {
+        lines.push(`Tip: Run with depth=2 to check for hidden transitive risks.`);
+      }
+
+      return {
+        content: [
+          { type: "text" as const, text: lines.join("\n") },
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              root: pkg.trim(),
+              depth: safeDepth,
+              summary: {
+                totalNodes: nodes.length,
+                criticalCount: criticalNodes.length,
+                highCount: highNodes.length,
+                warnCount: warnNodes.length,
+                criticalTransitivePaths,
+              },
+              nodes,
+              edges,
+            }, null, 2),
+          },
         ],
       };
     }
