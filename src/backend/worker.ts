@@ -228,6 +228,18 @@ app.post("/api/commit", async (c) => {
     return c.json({ error: `Invalid World ID token: ${err instanceof Error ? err.message : "verification failed"}` }, 401);
   }
 
+  // Rate limit: max 500 new domain submissions per verified user per 24h
+  const RATE_LIMIT_PER_DAY = 500;
+  const rateLimitRow = await c.env.DB.prepare(
+    `SELECT COUNT(*) as count FROM commitments WHERE world_id_sub = ? AND submitted_at >= datetime('now', '-1 day')`
+  ).bind(worldIdSub).first<{ count: number }>();
+  if ((rateLimitRow?.count ?? 0) >= RATE_LIMIT_PER_DAY) {
+    return c.json(
+      { error: "Rate limit exceeded. Maximum 500 domain submissions per 24 hours per verified user." },
+      429
+    );
+  }
+
   const body = await c.req.json();
   const items: unknown[] = Array.isArray(body) ? body : [body];
 
