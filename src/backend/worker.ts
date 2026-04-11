@@ -468,6 +468,165 @@ app.post("/api/audit", async (c) => {
   return c.json({ count: results.length, results });
 });
 
+// ── GitHub Repo Dependency Audit ──────────────────────────────────────
+
+/**
+ * Parse a GitHub repo identifier into owner/repo.
+ * Accepts: "https://github.com/owner/repo", "github.com/owner/repo", "owner/repo"
+ */
+function parseGitHubRepo(input: string): { owner: string; repo: string } | null {
+  const cleaned = input.trim().replace(/\.git$/, "");
+  // Full URL
+  const urlMatch = cleaned.match(/github\.com\/([^/]+)\/([^/\s]+)/);
+  if (urlMatch) return { owner: urlMatch[1], repo: urlMatch[2] };
+  // owner/repo shorthand
+  const shortMatch = cleaned.match(/^([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)$/);
+  if (shortMatch) return { owner: shortMatch[1], repo: shortMatch[2] };
+  return null;
+}
+
+/**
+ * Fetch raw file content from GitHub (tries main then master branch).
+ */
+async function fetchGitHubRaw(owner: string, repo: string, path: string): Promise<string | null> {
+  for (const branch of ["HEAD", "main", "master"]) {
+    try {
+      const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (resp.ok) return resp.text();
+    } catch {}
+  }
+  return null;
+}
+
+/**
+ * Extract package names from a package.json string.
+ * Returns { npm: string[], pypi: string[] }
+ */
+function extractFromPackageJson(content: string): string[] {
+  try {
+    const pkg = JSON.parse(content);
+    const deps = Object.keys({
+      ...(pkg.dependencies ?? {}),
+      ...(pkg.devDependencies ?? {}),
+    });
+    return deps.slice(0, 20);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Extract package names from a requirements.txt string.
+ */
+function extractFromRequirementsTxt(content: string): string[] {
+  return content
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#") && !l.startsWith("-"))
+    .map((l) => l.split(/[>=<!;\s]/)[0].trim())
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+/**
+ * POST /api/audit/github
+ * Fetch dependencies from a GitHub repo and run supply chain risk scoring.
+ * Body: { repo: string }  — GitHub URL or "owner/repo"
+ */
+app.post("/api/audit/github", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const repoInput: string = body?.repo ?? "";
+
+  const parsed = parseGitHubRepo(repoInput);
+  if (!parsed) {
+    return c.json({ error: "Invalid repo. Use 'owner/repo' or a GitHub URL." }, 400);
+  }
+
+  const { owner, repo } = parsed;
+
+  // Try to fetch package.json and/or requirements.txt
+  const [packageJsonContent, requirementsTxtContent] = await Promise.all([
+    fetchGitHubRaw(owner, repo, "package.json"),
+    fetchGitHubRaw(owner, repo, "requirements.txt"),
+  ]);
+
+  const npmPackages = packageJsonContent ? extractFromPackageJson(packageJsonContent) : [];
+  const pypiPackages = requirementsTxtContent ? extractFromRequirementsTxt(requirementsTxtContent) : [];
+
+  if (npmPackages.length === 0 && pypiPackages.length === 0) {
+    return c.json({
+      error: `No dependencies found in ${owner}/${repo}. Checked: package.json, requirements.txt.`,
+    }, 404);
+  }
+
+  // Run audits in parallel across both ecosystems
+  type AuditResult = {
+    name: string;
+    ecosystem: string;
+    score: number | null;
+    maintainers: number | null;
+    weeklyDownloads: number | null;
+    ageYears: number | null;
+    trend: string | null;
+    riskFlags: string[];
+    error?: string;
+  };
+
+  const auditPackages = async (pkgs: string[], ecosystem: "npm" | "pypi"): Promise<AuditResult[]> => {
+    const MAX_CONCURRENT = 5;
+    const results: AuditResult[] = [];
+    for (let i = 0; i < pkgs.length; i += MAX_CONCURRENT) {
+      const batch = pkgs.slice(i, i + MAX_CONCURRENT);
+      const batchResults = await Promise.all(
+        batch.map(async (pkg): Promise<AuditResult> => {
+          try {
+            if (ecosystem === "pypi") {
+              const profile = await buildPyPICommitmentProfile(pkg);
+              if (!profile) return { name: pkg, ecosystem, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
+              const weeklyDl = profile.recentDailyDownloads * 7;
+              const riskFlags: string[] = [];
+              if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL");
+              else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH");
+              if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+              return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
+            } else {
+              const profile = await buildNpmCommitmentProfile(pkg);
+              if (!profile) return { name: pkg, ecosystem, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
+              const wdl = profile.recentWeeklyDownloads ?? 0;
+              const riskFlags: string[] = [];
+              if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+              else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH");
+              if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+              return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: wdl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
+            }
+          } catch (err) {
+            return { name: pkg, ecosystem, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: err instanceof Error ? err.message : "error" };
+          }
+        })
+      );
+      results.push(...batchResults);
+    }
+    return results;
+  };
+
+  const [npmResults, pypiResults] = await Promise.all([
+    auditPackages(npmPackages, "npm"),
+    auditPackages(pypiPackages, "pypi"),
+  ]);
+
+  const allResults = [...npmResults, ...pypiResults];
+  allResults.sort((a, b) => (a.score ?? 101) - (b.score ?? 101));
+
+  return c.json({
+    repo: `${owner}/${repo}`,
+    npmPackages: npmPackages.length,
+    pypiPackages: pypiPackages.length,
+    count: allResults.length,
+    results: allResults,
+  });
+});
+
 // ── SVG Badge Generator ───────────────────────────────────────────────
 
 /**
@@ -1199,6 +1358,157 @@ Examples: score all deps in a project, compare two similar packages, identify ab
             type: "text" as const,
             text: JSON.stringify(results, null, 2),
           },
+        ],
+      };
+    }
+  );
+
+  // Tool: audit_github_repo
+  mcp.tool(
+    "audit_github_repo",
+    `Audit the supply chain risk of a GitHub repository's dependencies. Fetches the repo's package.json and/or requirements.txt from GitHub and runs behavioral commitment scoring on every dependency.
+
+This is the fastest way to audit a project — just provide the GitHub URL or owner/repo slug, and get a full risk table in seconds.
+
+Risk flags:
+- CRITICAL: single maintainer + >10M weekly downloads (high-value target like chalk, zod, axios)
+- HIGH: sole maintainer + >1M/wk downloads, OR new package (<1yr) with high adoption
+- WARN: no release in 12+ months (potential abandonware)
+
+Examples:
+- "vercel/next.js" — audit Next.js dependencies
+- "https://github.com/langchain-ai/langchainjs" — audit LangChain JS
+- "facebook/react" — audit React's dependency tree
+- "anthropics/anthropic-sdk-python" — audit Anthropic Python SDK
+
+Use this when someone asks "is my project at risk?" or "audit this repo's dependencies".`,
+    {
+      repo: z
+        .string()
+        .describe(
+          'GitHub repository to audit. Accepts: "owner/repo", "https://github.com/owner/repo", or any GitHub URL. Examples: "vercel/next.js", "https://github.com/langchain-ai/langchainjs"'
+        ),
+    },
+    async ({ repo: repoInput }) => {
+      const parsed = parseGitHubRepo(repoInput);
+      if (!parsed) {
+        return {
+          content: [{ type: "text" as const, text: `Invalid repo format: "${repoInput}". Use "owner/repo" or a GitHub URL.` }],
+          isError: true,
+        };
+      }
+
+      const { owner, repo } = parsed;
+
+      const [packageJsonContent, requirementsTxtContent] = await Promise.all([
+        fetchGitHubRaw(owner, repo, "package.json"),
+        fetchGitHubRaw(owner, repo, "requirements.txt"),
+      ]);
+
+      const npmPackages = packageJsonContent ? extractFromPackageJson(packageJsonContent) : [];
+      const pypiPackages = requirementsTxtContent ? extractFromRequirementsTxt(requirementsTxtContent) : [];
+
+      if (npmPackages.length === 0 && pypiPackages.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `No dependencies found in ${owner}/${repo}. Checked: package.json, requirements.txt.` }],
+          isError: true,
+        };
+      }
+
+      type GitAuditResult = {
+        name: string;
+        ecosystem: string;
+        score: number | null;
+        maintainers: number | null;
+        weeklyDownloads: number | null;
+        ageYears: number | null;
+        trend: string | null;
+        riskFlags: string[];
+        error?: string;
+      };
+
+      const auditPkgs = async (pkgs: string[], eco: "npm" | "pypi"): Promise<GitAuditResult[]> => {
+        const results: GitAuditResult[] = [];
+        for (let i = 0; i < pkgs.length; i += 5) {
+          const batch = pkgs.slice(i, i + 5);
+          const batchResults = await Promise.all(
+            batch.map(async (pkg): Promise<GitAuditResult> => {
+              try {
+                if (eco === "pypi") {
+                  const profile = await buildPyPICommitmentProfile(pkg);
+                  if (!profile) return { name: pkg, ecosystem: eco, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
+                  const weeklyDl = profile.recentDailyDownloads * 7;
+                  const riskFlags: string[] = [];
+                  if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
+                  else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH: sole maintainer + >1M/wk");
+                  if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
+                  return { name: profile.name, ecosystem: eco, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
+                } else {
+                  const profile = await buildNpmCommitmentProfile(pkg);
+                  if (!profile) return { name: pkg, ecosystem: eco, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
+                  const wdl = profile.recentWeeklyDownloads ?? 0;
+                  const riskFlags: string[] = [];
+                  if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
+                  else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole maintainer + >1M/wk");
+                  if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
+                  return { name: profile.name, ecosystem: eco, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: wdl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
+                }
+              } catch (err) {
+                return { name: pkg, ecosystem: eco, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: err instanceof Error ? err.message : "error" };
+              }
+            })
+          );
+          results.push(...batchResults);
+        }
+        return results;
+      };
+
+      const [npmResults, pypiResults] = await Promise.all([
+        auditPkgs(npmPackages, "npm"),
+        auditPkgs(pypiPackages, "pypi"),
+      ]);
+
+      const allResults = [...npmResults, ...pypiResults];
+      allResults.sort((a, b) => {
+        if (a.score === null && b.score === null) return 0;
+        if (a.score === null) return 1;
+        if (b.score === null) return -1;
+        return a.score - b.score;
+      });
+
+      const rows = allResults.map((r) => {
+        const scoreStr = r.score !== null ? `${r.score}/100` : "N/A";
+        const dlStr = r.weeklyDownloads !== null
+          ? r.weeklyDownloads >= 1_000_000 ? `${(r.weeklyDownloads / 1_000_000).toFixed(1)}M/wk`
+          : r.weeklyDownloads >= 1_000 ? `${Math.round(r.weeklyDownloads / 1_000)}k/wk`
+          : `${r.weeklyDownloads}/wk` : "N/A";
+        const maintStr = r.maintainers !== null ? `${r.maintainers} maint.` : "N/A";
+        const ageStr = r.ageYears !== null ? r.ageYears >= 1 ? `${Math.floor(r.ageYears)}yr` : `${Math.round(r.ageYears * 12)}mo` : "N/A";
+        const flags = r.riskFlags.length > 0 ? ` ⚠️ ${r.riskFlags.join("; ")}` : "";
+        return `  ${scoreStr.padEnd(7)} ${r.name.padEnd(35)} ${dlStr.padEnd(12)} ${maintStr.padEnd(10)} ${ageStr}${flags}`;
+      });
+
+      const criticalCount = allResults.filter((r) => r.riskFlags.some((f) => f.startsWith("CRITICAL"))).length;
+      const highCount = allResults.filter((r) => r.riskFlags.some((f) => f.startsWith("HIGH"))).length;
+      const warnCount = allResults.filter((r) => r.riskFlags.some((f) => f.startsWith("WARN"))).length;
+
+      const summary = [
+        `GitHub Dependency Audit: ${owner}/${repo}`,
+        `Found: ${npmPackages.length} npm + ${pypiPackages.length} PyPI packages`,
+        `Risk: ${criticalCount} CRITICAL, ${highCount} HIGH, ${warnCount} WARN`,
+        ``,
+        `  Score   Package                             Downloads    Maintainers Age`,
+        `  ------  ----------------------------------  -----------  ----------- ---`,
+        ...rows,
+        ``,
+        `Score: 0-100 behavioral commitment. <40 = elevated risk. CRITICAL = immediate audit recommended.`,
+        `Full audit: https://getcommit.dev/audit`,
+      ].join("\n");
+
+      return {
+        content: [
+          { type: "text" as const, text: summary },
+          { type: "text" as const, text: JSON.stringify({ repo: `${owner}/${repo}`, results: allResults }, null, 2) },
         ],
       };
     }
