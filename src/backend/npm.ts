@@ -238,6 +238,7 @@ export async function buildNpmCommitmentProfile(
   const latestVersion = pkg["dist-tags"]["latest"] ?? null;
 
   // 2. Downloads (last 6 months)
+  // Download data changes slowly — cache for 1 hour to survive traffic bursts.
   const startDate = formatDate(180);
   const endDate = formatDate(1);
   let downloadData: { day: string; downloads: number }[] = [];
@@ -246,21 +247,44 @@ export async function buildNpmCommitmentProfile(
   let trend: "growing" | "stable" | "declining" | "unknown" = "unknown";
 
   try {
-    const dlRes = await fetch(
-      `${NPM_DOWNLOADS}/${startDate}:${endDate}/${encodedName}`,
-      {
-        headers: { Accept: "application/json" },
-        // @ts-ignore CF fetch cache hint
-        cf: { cacheEverything: true, cacheTtl: 300 },
-      }
-    );
+    const dlUrl = `${NPM_DOWNLOADS}/${startDate}:${endDate}/${encodedName}`;
+    const fetchOptions = {
+      headers: { Accept: "application/json" },
+      // @ts-ignore CF fetch cache hint — 1h TTL; download counts change slowly
+      cf: { cacheEverything: true, cacheTtl: 3600 },
+    };
+
+    // Retry once with 1s backoff if rate-limited or empty response
+    let dlRes = await fetch(dlUrl, fetchOptions);
+    if (!dlRes.ok || dlRes.status === 429) {
+      await new Promise((r) => setTimeout(r, 1000));
+      dlRes = await fetch(dlUrl, fetchOptions);
+    }
+
     if (dlRes.ok) {
       const dlData = (await dlRes.json()) as DownloadRange;
-      downloadData = dlData.downloads;
-      const analysis = analyzeDownloads(downloadData);
-      avg7d = analysis.avg7d;
-      avg90d = analysis.avg90d;
-      trend = analysis.trend;
+      // Treat empty/missing downloads array as a soft failure (rate-limited)
+      if (Array.isArray(dlData.downloads) && dlData.downloads.length > 0) {
+        downloadData = dlData.downloads;
+        const analysis = analyzeDownloads(downloadData);
+        avg7d = analysis.avg7d;
+        avg90d = analysis.avg90d;
+        trend = analysis.trend;
+      } else if (dlData.downloads?.length === 0) {
+        // Possibly rate-limited — retry after 1s
+        await new Promise((r) => setTimeout(r, 1000));
+        const retryRes = await fetch(dlUrl, fetchOptions);
+        if (retryRes.ok) {
+          const retryData = (await retryRes.json()) as DownloadRange;
+          if (Array.isArray(retryData.downloads) && retryData.downloads.length > 0) {
+            downloadData = retryData.downloads;
+            const analysis = analyzeDownloads(downloadData);
+            avg7d = analysis.avg7d;
+            avg90d = analysis.avg90d;
+            trend = analysis.trend;
+          }
+        }
+      }
     }
   } catch {
     // Non-fatal
