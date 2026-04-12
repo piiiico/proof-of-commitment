@@ -868,9 +868,14 @@ async function buildNpmDepGraph(
   nodes.push(...directNodes);
 
   if (depth >= 2) {
-    // For each CRITICAL or HIGH direct dep, fetch their deps
+    // For each risky direct dep, fetch their deps.
+    // "Risky" = CRITICAL/HIGH flag OR sole maintainer (downloads may be
+    // unreliable when fetched in bulk — sole-maintainer packages are high-risk
+    // regardless, so we always traverse them at depth=2).
     const riskyDirect = directNodes.filter(
-      (n) => n.riskFlags.some((f) => f.startsWith("CRITICAL") || f.startsWith("HIGH"))
+      (n) =>
+        n.riskFlags.some((f) => f.startsWith("CRITICAL") || f.startsWith("HIGH")) ||
+        (n.maintainers !== null && n.maintainers <= 1)
     );
 
     const transitiveNew: string[] = [];
