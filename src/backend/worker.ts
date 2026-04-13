@@ -427,7 +427,9 @@ app.post("/api/audit", async (c) => {
     weeklyDownloads: number | null;
     ageYears: number | null;
     trend: string | null;
+    daysSinceLastPublish: number | null;
     riskFlags: string[];
+    scoreBreakdown: { longevity: number; downloadMomentum: number; releaseConsistency: number; maintainerDepth: number; githubBacking: number } | null;
     error?: string;
   }> = [];
 
@@ -439,25 +441,25 @@ app.post("/api/audit", async (c) => {
         try {
           if (usePypi) {
             const profile = await buildPyPICommitmentProfile(pkg);
-            if (!profile) return { name: pkg, ecosystem: "pypi", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
+            if (!profile) return { name: pkg, ecosystem: "pypi", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
             const weeklyDl = profile.recentDailyDownloads * 7;
             const riskFlags: string[] = [];
             if (profile.maintainerCount === 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL");
             else if (profile.ageYears < 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH");
             else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-            return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
+            return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
           } else {
             const profile = await buildNpmCommitmentProfile(pkg);
-            if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
+            if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
             const riskFlags: string[] = [];
             const wdl = profile.recentWeeklyDownloads ?? 0;
             if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
             else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
             else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
+            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
           }
         } catch (err) {
-          return { name: pkg, ecosystem: usePypi ? "pypi" : "npm", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: err instanceof Error ? err.message : "error" };
+          return { name: pkg, ecosystem: usePypi ? "pypi" : "npm", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
         }
       })
     );
@@ -569,7 +571,9 @@ app.post("/api/audit/github", async (c) => {
     weeklyDownloads: number | null;
     ageYears: number | null;
     trend: string | null;
+    daysSinceLastPublish: number | null;
     riskFlags: string[];
+    scoreBreakdown: { longevity: number; downloadMomentum: number; releaseConsistency: number; maintainerDepth: number; githubBacking: number } | null;
     error?: string;
   };
 
@@ -583,25 +587,25 @@ app.post("/api/audit/github", async (c) => {
           try {
             if (ecosystem === "pypi") {
               const profile = await buildPyPICommitmentProfile(pkg);
-              if (!profile) return { name: pkg, ecosystem, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
+              if (!profile) return { name: pkg, ecosystem, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
               const weeklyDl = profile.recentDailyDownloads * 7;
               const riskFlags: string[] = [];
               if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL");
               else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH");
               if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-              return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
+              return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
             } else {
               const profile = await buildNpmCommitmentProfile(pkg);
-              if (!profile) return { name: pkg, ecosystem, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
+              if (!profile) return { name: pkg, ecosystem, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
               const wdl = profile.recentWeeklyDownloads ?? 0;
               const riskFlags: string[] = [];
               if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
               else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH");
               if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-              return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: wdl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
+              return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: wdl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
             }
           } catch (err) {
-            return { name: pkg, ecosystem, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: err instanceof Error ? err.message : "error" };
+            return { name: pkg, ecosystem, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
           }
         })
       );
