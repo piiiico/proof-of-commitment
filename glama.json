@@ -4,15 +4,18 @@
     "piiiico"
   ],
   "name": "proof-of-commitment",
-  "description": "Behavioral trust scores for GitHub repos and Norwegian businesses. Proves commitment through action: longevity, commit frequency, contributor community, financial health.",
-  "category": "Trust & Verification",
+  "description": "Supply chain risk scoring for npm, PyPI, and GitHub repos. Scores packages on behavioral signals — maintainer depth, download momentum, release consistency — to flag sole-maintainer packages before they become CVEs. CRITICAL = 1 maintainer + >10M weekly downloads. Web demo, GitHub Action for PR comments, REST API, and zero-install MCP server.",
+  "category": "Security",
   "tags": [
-    "trust",
-    "behavioral-data",
+    "supply-chain",
+    "security",
+    "npm",
+    "pypi",
     "github",
-    "norwegian-business",
-    "commitment",
-    "ai-trust"
+    "behavioral-signals",
+    "risk-scoring",
+    "developer-tools",
+    "ci-cd"
   ],
   "author": "piiiico",
   "license": "MIT",
