@@ -15,6 +15,15 @@ Stars and README quality don't surface this. Behavioral signals do.
 
 ## Try it now
 
+**Terminal (zero install):**
+```bash
+npx proof-of-commitment axios zod chalk
+# or scan your own project:
+npx proof-of-commitment --file package.json
+# PyPI too:
+npx proof-of-commitment --pypi litellm langchain requests
+```
+
 **Web demo (no install):** [getcommit.dev/audit](https://getcommit.dev/audit) — paste your packages, see risk scores in seconds.
 
 **MCP server (zero install):**
