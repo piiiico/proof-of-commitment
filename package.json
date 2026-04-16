@@ -1,6 +1,7 @@
 {
   "name": "proof-of-commitment",
   "version": "0.1.0",
+  "license": "MIT",
   "module": "index.ts",
   "type": "module",
   "private": true,
