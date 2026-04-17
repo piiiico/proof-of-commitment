@@ -20,6 +20,10 @@ Stars and README quality don't surface this. Behavioral signals do.
 npx proof-of-commitment axios zod chalk
 # or scan your own project:
 npx proof-of-commitment --file package.json
+# NEW: scan ALL transitive dependencies via lock file:
+npx proof-of-commitment --file package-lock.json   # npm
+npx proof-of-commitment --file yarn.lock           # yarn
+npx proof-of-commitment --file pnpm-lock.yaml      # pnpm
 # PyPI too:
 npx proof-of-commitment --pypi litellm langchain requests
 ```
