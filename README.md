@@ -204,6 +204,22 @@ registry.modelcontextprotocol.io → io.github.piiiico/proof-of-commitment
 | Data | npm registry, PyPI, GitHub API, Brønnøysund (NO) |
 | Landing | Astro + Cloudflare Pages |
 
+## Roadmap
+
+Planned, not promised. The project is early-stage — contributions welcome on any of these.
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **Cargo (Rust) registry support** | Planned | Extend the npm/pypi scoring pattern to crates.io |
+| **Go modules support** | Planned | pkg.go.dev API + GitHub backing score |
+| **Score breakdown visualization** | Planned | Chart component for the 5 dimensions on getcommit.dev/audit |
+| **`--json` flag for CLI** | Planned | Structured output for CI/CD pipelines (`jq`, `--fail-on-critical`) |
+| **pnpm workspace monorepo support** | Planned | Detect `pnpm-workspace.yaml`, audit all packages |
+| **Historical score tracking** | Planned | Trend charts — was this package getting riskier over time? |
+| **Org-level dashboards** | Planned | Aggregate risk view across all repos in a GitHub org |
+
+See [open issues](https://github.com/piiiico/proof-of-commitment/issues) for things you can help with today.
+
 ## The broader vision
 
 Supply chain auditing is the first tool. The underlying primitive is a **commitment graph** — behavioral signals that replace content-based trust across any domain.
