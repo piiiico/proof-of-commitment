@@ -1,5 +1,7 @@
 # Proof of Commitment
 
+[![Commitment Score](https://poc-backend.amdal-dev.workers.dev/badge/npm/proof-of-commitment)](https://getcommit.dev/audit?packages=proof-of-commitment)
+
 > **Stars lie. Behavioral signals don't.**
 
 An MCP server and web tool that scores npm packages, PyPI packages, and GitHub repos on **behavioral commitment** — signals that are harder to fake than stars, READMEs, or download counts.

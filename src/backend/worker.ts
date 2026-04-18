@@ -955,6 +955,72 @@ app.post("/api/graph/npm", async (c) => {
   });
 });
 
+// ── npm Badge Endpoint (public, no /api/ prefix) ─────────────────────
+//
+// GET /badge/npm/:package{.+}
+//
+// Returns a shields.io-style SVG badge for embedding in npm READMEs.
+// Usage:
+//   [![Commitment Score](https://poc-backend.amdal-dev.workers.dev/badge/npm/axios)](https://getcommit.dev/audit?packages=axios)
+//
+// Colors: green (≥70) → yellow (40-69) → red (<40) → black (CRITICAL)
+// Cache: 24h CDN-friendly
+
+app.get("/badge/npm/*", async (c) => {
+  const packageName = decodeURIComponent(c.req.path.replace("/badge/npm/", ""));
+
+  if (!packageName) {
+    const svg = generateBadge("commitment", "unknown", "#9f9f9f");
+    return new Response(svg, {
+      headers: { "Content-Type": "image/svg+xml", "Cache-Control": "max-age=60" },
+    });
+  }
+
+  let score: number | null = null;
+  let isCritical = false;
+
+  try {
+    const profile = await buildNpmCommitmentProfile(packageName);
+    if (profile) {
+      score = profile.commitmentScore;
+      const wdl = profile.recentWeeklyDownloads ?? 0;
+      if (profile.maintainerCount === 1 && wdl > 10_000_000) isCritical = true;
+    }
+  } catch {
+    // Fall through to "unknown" badge
+  }
+
+  let value: string;
+  let color: string;
+
+  if (score === null) {
+    value = "unknown";
+    color = "#9f9f9f"; // grey
+  } else if (isCritical) {
+    value = `${score}/100 CRITICAL`;
+    color = "#222222"; // black
+  } else if (score < 40) {
+    value = `${score}/100`;
+    color = "#e05d44"; // red
+  } else if (score < 70) {
+    value = `${score}/100`;
+    color = "#dfb317"; // yellow
+  } else {
+    value = `${score}/100`;
+    color = "#44cc11"; // green
+  }
+
+  const svg = generateBadge("commitment", value, color);
+
+  return new Response(svg, {
+    headers: {
+      "Content-Type": "image/svg+xml",
+      "Cache-Control": "public, max-age=86400, s-maxage=86400",
+      "X-Powered-By": "getcommit.dev",
+    },
+  });
+});
+
 // ── Remote MCP Server ────────────────────────────────────────────────
 //
 // Stateless MCP endpoint. Each request creates a fresh server + transport.
