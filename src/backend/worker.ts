@@ -1452,6 +1452,42 @@ app.get("/api/keys/usage", async (c) => {
   });
 });
 
+/**
+ * GET /api/keys/stats
+ * Admin endpoint — requires X-Admin-Secret header matching ADMIN_SECRET env var.
+ * Returns aggregate signup stats for measuring Show HN / launch conversion.
+ */
+app.get("/api/keys/stats", async (c) => {
+  const adminSecret = c.env.ADMIN_SECRET;
+  if (!adminSecret || c.req.header("X-Admin-Secret") !== adminSecret) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const [totalRow, todayRow, last24hRow, last7dRow] = await Promise.all([
+    c.env.DB.prepare(`SELECT COUNT(*) as count FROM api_keys WHERE revoked_at IS NULL`).first<{ count: number }>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as count FROM api_keys WHERE revoked_at IS NULL AND date(created_at) = date('now')`).first<{ count: number }>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as count FROM api_keys WHERE revoked_at IS NULL AND created_at >= datetime('now', '-24 hours')`).first<{ count: number }>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as count FROM api_keys WHERE revoked_at IS NULL AND created_at >= datetime('now', '-7 days')`).first<{ count: number }>(),
+  ]);
+
+  const recentRows = await c.env.DB.prepare(
+    `SELECT key_prefix, email, tier, created_at FROM api_keys WHERE revoked_at IS NULL ORDER BY created_at DESC LIMIT 20`
+  ).all<{ key_prefix: string; email: string; tier: string; created_at: string }>();
+
+  return c.json({
+    total_keys: totalRow?.count ?? 0,
+    keys_today: todayRow?.count ?? 0,
+    keys_last_24h: last24hRow?.count ?? 0,
+    keys_last_7d: last7dRow?.count ?? 0,
+    recent: (recentRows.results ?? []).map((r) => ({
+      key_prefix: r.key_prefix,
+      email: r.email,
+      tier: r.tier,
+      created_at: r.created_at,
+    })),
+  });
+});
+
 // ── Remote MCP Server ────────────────────────────────────────────────
 //
 // Stateless MCP endpoint. Each request creates a fresh server + transport.
