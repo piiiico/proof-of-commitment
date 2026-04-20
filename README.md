@@ -190,12 +190,6 @@ The LiteLLM attack (March 2026) and axios attack (April 2026) followed the same 
 
 Declarative signals (stars, README quality, CI badges) don't capture this risk. Behavioral commitment does.
 
-## Listed in the official MCP registry
-
-```
-registry.modelcontextprotocol.io → io.github.piiiico/proof-of-commitment
-```
-
 ## Stack
 
 | Layer | Technology |
