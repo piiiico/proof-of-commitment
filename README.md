@@ -8,10 +8,11 @@ An MCP server and web tool that scores npm packages, PyPI packages, and GitHub r
 
 ## The supply chain problem
 
-Three packages in a typical Node.js project are CRITICAL right now:
-- **chalk** — 399M downloads/week, **1 maintainer**
-- **zod** — 139M downloads/week, **1 maintainer**
-- **axios** — 96M downloads/week, **1 maintainer** (attacked April 1st, 2026)
+Four packages in a typical Node.js project are CRITICAL right now:
+- **chalk** — 411M downloads/week, **1 maintainer**
+- **zod** — 159M downloads/week, **1 maintainer**
+- **lodash** — 146M downloads/week, **1 maintainer**
+- **axios** — 100M downloads/week, **1 maintainer** (attacked April 1st, 2026)
 
 Stars and README quality don't surface this. Behavioral signals do.
 
@@ -175,11 +176,11 @@ Each package is scored 0–100 across:
 ## Real data points
 
 ```
-chalk     — score 75, 1 maintainer, 399M/week  ⚑ CRITICAL
-zod       — score 83, 1 maintainer, 139M/week  ⚑ CRITICAL
-axios     — score 89, 1 maintainer,  96M/week  ⚑ CRITICAL (attacked Apr 1 2026)
-lodash    — score 88, 3 maintainers, 68M/week
-express   — score 91, 5 maintainers, 35M/week
+chalk     — score 75, 1 maintainer, 411M/week  ⚑ CRITICAL
+zod       — score 83, 1 maintainer, 159M/week  ⚑ CRITICAL
+lodash    — score 87, 1 maintainer, 146M/week  ⚑ CRITICAL
+axios     — score 86, 1 maintainer, 100M/week  ⚑ CRITICAL (attacked Apr 1 2026)
+express   — score 97, 5 maintainers, 92M/week
 litellm   — score 74, 1 maintainer           ⚑ CRITICAL (supply chain attack Mar 2026)
 ```
 
