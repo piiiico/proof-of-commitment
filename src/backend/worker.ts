@@ -131,7 +131,192 @@ async function verifyWorldIdToken(token: string): Promise<JWTPayload> {
 
 type Bindings = {
   DB: D1Database;
+  RESEND_API_KEY?: string;
 };
+
+// API key context attached to requests that use Bearer authentication
+interface ApiKeyContext {
+  id: string;
+  key_prefix: string;
+  email: string;
+  tier: "free" | "pro" | "enterprise";
+  requests_this_period: number;
+  period_reset_at: string;
+}
+
+// Rate limits per tier
+const TIER_LIMITS = {
+  free: { limit: 200, period: "daily" as const },
+  pro: { limit: 10000, period: "monthly" as const },
+  enterprise: { limit: Infinity, period: "monthly" as const },
+};
+
+/** SHA-256 hash a string, returns hex */
+async function sha256Hex(input: string): Promise<string> {
+  const encoded = new TextEncoder().encode(input);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", encoded);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** Generate next period reset timestamp */
+function nextResetAt(period: "daily" | "monthly"): string {
+  const now = new Date();
+  if (period === "daily") {
+    const tomorrow = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+    return tomorrow.toISOString();
+  } else {
+    const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+    return nextMonth.toISOString();
+  }
+}
+
+/** Format seconds until a timestamp as human-readable string */
+function timeUntil(isoTimestamp: string): string {
+  const resetMs = new Date(isoTimestamp).getTime();
+  const nowMs = Date.now();
+  const diffSec = Math.max(0, Math.floor((resetMs - nowMs) / 1000));
+  const hours = Math.floor(diffSec / 3600);
+  const minutes = Math.floor((diffSec % 3600) / 60);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+/**
+ * Resolve API key from Authorization: Bearer header.
+ * Returns null if no header present (anonymous request).
+ * Returns ApiKeyContext if valid, throws on invalid/revoked/over-limit.
+ */
+async function resolveApiKey(
+  db: D1Database,
+  authHeader: string | undefined
+): Promise<{ key: ApiKeyContext | null; error?: { status: number; body: unknown } }> {
+  if (!authHeader?.startsWith("Bearer sk_commit_")) {
+    return { key: null }; // anonymous — fall through to IP rate limiting
+  }
+
+  const token = authHeader.slice(7); // "Bearer "
+  const keyHash = await sha256Hex(token);
+
+  const row = await db
+    .prepare(
+      `SELECT id, key_prefix, email, tier, requests_this_period, period_reset_at, revoked_at
+       FROM api_keys WHERE key_hash = ? LIMIT 1`
+    )
+    .bind(keyHash)
+    .first<{
+      id: string;
+      key_prefix: string;
+      email: string;
+      tier: string;
+      requests_this_period: number;
+      period_reset_at: string;
+      revoked_at: string | null;
+    }>();
+
+  if (!row) {
+    return {
+      key: null,
+      error: {
+        status: 401,
+        body: { error: "invalid_api_key", message: "API key not found. Create one at https://getcommit.dev/get-started" },
+      },
+    };
+  }
+
+  if (row.revoked_at) {
+    return {
+      key: null,
+      error: {
+        status: 401,
+        body: { error: "api_key_revoked", message: "This API key has been revoked." },
+      },
+    };
+  }
+
+  // Check if period has reset
+  const tier = (row.tier as "free" | "pro" | "enterprise") || "free";
+  const tierConfig = TIER_LIMITS[tier] || TIER_LIMITS.free;
+  let requestsThisPeriod = row.requests_this_period;
+  let periodResetAt = row.period_reset_at;
+
+  if (new Date(periodResetAt) <= new Date()) {
+    // Reset counter for new period
+    periodResetAt = nextResetAt(tierConfig.period);
+    requestsThisPeriod = 0;
+    await db
+      .prepare(`UPDATE api_keys SET requests_this_period = 0, period_reset_at = ? WHERE id = ?`)
+      .bind(periodResetAt, row.id)
+      .run();
+  }
+
+  const keyCtx: ApiKeyContext = {
+    id: row.id,
+    key_prefix: row.key_prefix,
+    email: row.email,
+    tier,
+    requests_this_period: requestsThisPeriod,
+    period_reset_at: periodResetAt,
+  };
+
+  // Check usage limits
+  if (tier !== "enterprise" && requestsThisPeriod >= tierConfig.limit) {
+    const retryAfterSec = Math.floor((new Date(periodResetAt).getTime() - Date.now()) / 1000);
+    return {
+      key: keyCtx,
+      error: {
+        status: 429,
+        body: {
+          error: "rate_limit_exceeded",
+          message: `You've used ${requestsThisPeriod}/${tierConfig.limit} requests this period. Resets in ${timeUntil(periodResetAt)}.`,
+          tier,
+          upgrade: {
+            url: "https://getcommit.dev/pricing",
+            plan: "pro",
+            price: "$29/month",
+            limit: "10,000 requests/month",
+            message: "Upgrade to Pro for 50x more requests, batch API, and dependency monitoring.",
+          },
+          retry_after: retryAfterSec,
+        },
+      },
+    };
+  }
+
+  // Increment usage counter + update last_used_at
+  await db
+    .prepare(
+      `UPDATE api_keys SET requests_this_period = requests_this_period + 1, last_used_at = datetime('now') WHERE id = ?`
+    )
+    .bind(row.id)
+    .run();
+
+  return { key: { ...keyCtx, requests_this_period: requestsThisPeriod + 1 } };
+}
+
+/** Build X-RateLimit-* headers for a response */
+function rateLimitHeaders(key: ApiKeyContext | null): Record<string, string> {
+  if (!key) {
+    return {
+      "X-RateLimit-Limit": "200",
+      "X-RateLimit-Tier": "anonymous",
+    };
+  }
+  const tierConfig = TIER_LIMITS[key.tier] || TIER_LIMITS.free;
+  const limit = tierConfig.limit === Infinity ? "unlimited" : String(tierConfig.limit);
+  const remaining = tierConfig.limit === Infinity
+    ? "unlimited"
+    : String(Math.max(0, tierConfig.limit - key.requests_this_period));
+
+  return {
+    "X-RateLimit-Limit": limit,
+    "X-RateLimit-Remaining": remaining,
+    "X-RateLimit-Reset": key.period_reset_at,
+    "X-RateLimit-Tier": key.tier,
+    "X-RateLimit-Period": tierConfig.period,
+  };
+}
 
 interface Commitment {
   domain: string;
@@ -200,12 +385,49 @@ function validateCommitment(input: unknown): ValidationResult {
 
 // ── Hono app ─────────────────────────────────────────────────────────
 
-const app = new Hono<{ Bindings: Bindings }>();
+const app = new Hono<{ Bindings: Bindings; Variables: { apiKey: ApiKeyContext | null } }>();
 
 app.use("/api/*", cors());
 
+// ── Auth Middleware ───────────────────────────────────────────────────
+// Runs before all /api/* routes.
+// - If Bearer sk_commit_... header present: validate key, enforce limits, attach to context
+// - Otherwise: anonymous (IP rate limiting handled per-route where needed)
+app.use("/api/*", async (c, next) => {
+  const authHeader = c.req.header("Authorization");
+
+  // Only intercept if it looks like a Commit API key
+  if (authHeader?.startsWith("Bearer sk_commit_")) {
+    const { key, error } = await resolveApiKey(c.env.DB, authHeader);
+    if (error) {
+      const resp = c.json(error.body, error.status as 401 | 429);
+      // Always add rate limit headers even on error
+      if (key) {
+        const headers = rateLimitHeaders(key);
+        for (const [k, v] of Object.entries(headers)) {
+          resp.headers.set(k, v);
+        }
+      }
+      return resp;
+    }
+    c.set("apiKey", key);
+  } else {
+    c.set("apiKey", null);
+  }
+
+  await next();
+
+  // Add X-RateLimit-* headers to all API responses
+  const key = c.get("apiKey");
+  const headers = rateLimitHeaders(key);
+  for (const [k, v] of Object.entries(headers)) {
+    c.res.headers.set(k, v);
+  }
+});
+
 // Health check (same path as server.ts)
 app.get("/", (c) => c.json({ status: "ok", service: "proof-of-commitment" }));
+
 
 /**
  * POST /api/commit
@@ -1018,6 +1240,215 @@ app.get("/badge/npm/*", async (c) => {
       "Cache-Control": "public, max-age=86400, s-maxage=86400",
       "X-Powered-By": "getcommit.dev",
     },
+  });
+});
+
+// ── API Key Endpoints ────────────────────────────────────────────────
+
+/**
+ * POST /api/keys/create
+ * Accept { email } → generate free-tier API key → email it → return { ok, message }
+ * Rate limit: 3 requests per IP per day
+ */
+app.post("/api/keys/create", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+
+  // Validate email
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return c.json({ error: "invalid_email", message: "A valid email address is required." }, 400);
+  }
+
+  // IP-based rate limit: 3 key creations per IP per day
+  const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
+  const now = new Date();
+  const ipRow = await c.env.DB.prepare(
+    `SELECT count, reset_at FROM key_creation_rate_limits WHERE ip = ? LIMIT 1`
+  ).bind(ip).first<{ count: number; reset_at: string }>();
+
+  let ipCount = 0;
+  if (ipRow) {
+    if (new Date(ipRow.reset_at) > now) {
+      ipCount = ipRow.count;
+    }
+    // else: period expired, treat as fresh
+  }
+
+  if (ipCount >= 3) {
+    return c.json({
+      error: "rate_limit_exceeded",
+      message: "Maximum 3 API keys per IP per day. Try again tomorrow.",
+    }, 429);
+  }
+
+  // Update IP rate limit counter
+  const tomorrowIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
+  await c.env.DB.prepare(
+    `INSERT INTO key_creation_rate_limits (ip, count, reset_at)
+     VALUES (?, 1, ?)
+     ON CONFLICT(ip) DO UPDATE SET
+       count = CASE WHEN reset_at <= datetime('now') THEN 1 ELSE count + 1 END,
+       reset_at = CASE WHEN reset_at <= datetime('now') THEN ? ELSE reset_at END`
+  ).bind(ip, tomorrowIso, tomorrowIso).run();
+
+  // Generate API key: sk_commit_ + 32 random hex chars
+  const rawBytes = new Uint8Array(16);
+  crypto.getRandomValues(rawBytes);
+  const randomHex = Array.from(rawBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const apiKey = `sk_commit_${randomHex}`;
+  const keyHash = await sha256Hex(apiKey);
+  const keyPrefix = apiKey.slice(0, 19); // "sk_commit_" + first 9 hex chars → e.g. "sk_commit_a1b2c3d4e"
+
+  // Generate ID (nanoid-style: 16 random hex chars)
+  const idBytes = new Uint8Array(8);
+  crypto.getRandomValues(idBytes);
+  const id = Array.from(idBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+  // Period reset: midnight tomorrow UTC (daily for free tier)
+  const periodResetAt = nextResetAt("daily");
+
+  // Insert into D1
+  await c.env.DB.prepare(
+    `INSERT INTO api_keys (id, key_hash, key_prefix, email, tier, requests_this_period, period_reset_at, created_at)
+     VALUES (?, ?, ?, ?, 'free', 0, ?, datetime('now'))`
+  ).bind(id, keyHash, keyPrefix, email, periodResetAt).run();
+
+  // Send via Resend email API (RESEND_API_KEY is a worker secret)
+  let emailSent = false;
+
+  const emailBody = `Your Commit API Key
+
+Here is your free API key for Commit:
+
+  ${apiKey}
+
+Keep this key safe — it won't be shown again.
+
+Usage limits (free tier):
+  • 200 requests/day
+  • Resets daily at midnight UTC
+
+Quick start:
+  curl https://poc-backend.amdal-dev.workers.dev/api/audit \\
+    -H "Authorization: Bearer ${apiKey}" \\
+    -H "Content-Type: application/json" \\
+    -d '{"packages": ["express", "lodash"]}'
+
+Check your usage:
+  curl https://poc-backend.amdal-dev.workers.dev/api/keys/usage \\
+    -H "Authorization: Bearer ${apiKey}"
+
+Need more? Upgrade to Pro ($29/month, 10K requests/month):
+  https://getcommit.dev/pricing
+
+—
+Commit by getcommit.dev`;
+
+  if (c.env.RESEND_API_KEY) {
+    try {
+      const emailResp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${c.env.RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: "Commit <noreply@getcommit.dev>",
+          to: [email],
+          subject: "Your Commit API Key",
+          text: emailBody,
+        }),
+      });
+      emailSent = emailResp.ok;
+    } catch {
+      // fall through to fallback
+    }
+  }
+
+  if (emailSent) {
+    return c.json({
+      ok: true,
+      message: `API key sent to ${email}. Check your inbox.`,
+      key_prefix: keyPrefix,
+    });
+  } else {
+    // Fallback: return key in response with warning
+    // This happens when RESEND_API_KEY is not configured or email delivery fails
+    return c.json({
+      ok: true,
+      message: "Your API key is shown below — save it now.",
+      key: apiKey,
+      key_prefix: keyPrefix,
+      note: "Email delivery unavailable. This is the only time your key will be shown.",
+    });
+  }
+});
+
+/**
+ * GET /api/keys/usage
+ * Requires valid API key in Authorization: Bearer header.
+ * Returns usage stats for the authenticated key.
+ */
+app.get("/api/keys/usage", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader?.startsWith("Bearer sk_commit_")) {
+    return c.json(
+      { error: "authentication_required", message: "Provide your API key via Authorization: Bearer sk_commit_..." },
+      401
+    );
+  }
+
+  const token = authHeader.slice(7);
+  const keyHash = await sha256Hex(token);
+
+  const row = await c.env.DB.prepare(
+    `SELECT id, key_prefix, email, tier, requests_this_period, period_reset_at, created_at, last_used_at, revoked_at
+     FROM api_keys WHERE key_hash = ? LIMIT 1`
+  ).bind(keyHash).first<{
+    id: string;
+    key_prefix: string;
+    email: string;
+    tier: string;
+    requests_this_period: number;
+    period_reset_at: string;
+    created_at: string;
+    last_used_at: string | null;
+    revoked_at: string | null;
+  }>();
+
+  if (!row) {
+    return c.json({ error: "invalid_api_key", message: "API key not found." }, 401);
+  }
+
+  if (row.revoked_at) {
+    return c.json({ error: "api_key_revoked", message: "This API key has been revoked." }, 401);
+  }
+
+  const tier = (row.tier as "free" | "pro" | "enterprise") || "free";
+  const tierConfig = TIER_LIMITS[tier] || TIER_LIMITS.free;
+
+  // Check if period has reset
+  let requestsThisPeriod = row.requests_this_period;
+  let periodResetAt = row.period_reset_at;
+  if (new Date(periodResetAt) <= new Date()) {
+    periodResetAt = nextResetAt(tierConfig.period);
+    requestsThisPeriod = 0;
+    await c.env.DB.prepare(`UPDATE api_keys SET requests_this_period = 0, period_reset_at = ? WHERE id = ?`)
+      .bind(periodResetAt, row.id).run();
+  }
+
+  const limit = tierConfig.limit === Infinity ? null : tierConfig.limit;
+
+  return c.json({
+    key_prefix: row.key_prefix,
+    tier,
+    requests_used: requestsThisPeriod,
+    requests_limit: limit,
+    period: tierConfig.period,
+    period_reset_at: periodResetAt,
+    created_at: row.created_at,
+    last_used_at: row.last_used_at,
+    upgrade_url: tier === "free" ? "https://getcommit.dev/pricing" : null,
   });
 });
 
