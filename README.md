@@ -9,9 +9,9 @@ An MCP server and web tool that scores npm packages, PyPI packages, and GitHub r
 ## The supply chain problem
 
 Four packages in a typical Node.js project are CRITICAL right now:
-- **chalk** — 411M downloads/week, **1 maintainer**
-- **zod** — 159M downloads/week, **1 maintainer**
-- **lodash** — 146M downloads/week, **1 maintainer**
+- **chalk** — 412M downloads/week, **1 maintainer**
+- **zod** — 160M downloads/week, **1 maintainer**
+- **lodash** — 147M downloads/week, **1 maintainer**
 - **axios** — 100M downloads/week, **1 maintainer** (attacked April 1st, 2026)
 
 Stars and README quality don't surface this. Behavioral signals do.
