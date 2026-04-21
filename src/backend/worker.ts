@@ -1488,6 +1488,183 @@ app.get("/api/keys/stats", async (c) => {
   });
 });
 
+// ── Watchlist Subscription ───────────────────────────────────────────
+
+/**
+ * POST /api/subscribe
+ * Accept { email, packages? } → save watchlist subscription → send welcome risk report email
+ *
+ * packages: optional array of npm package names (max 20, defaults to top CRITICAL packages)
+ */
+app.post("/api/subscribe", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+  const packagesInput: string[] = Array.isArray(body?.packages)
+    ? body.packages.filter((p: unknown) => typeof p === "string").slice(0, 20)
+    : [];
+
+  // Default watchlist: top CRITICAL + high-download packages
+  const DEFAULT_PACKAGES = [
+    "chalk", "glob", "zod", "lodash", "rimraf", "axios", "cross-env",
+    "express", "typescript", "vite", "esbuild", "prettier", "eslint",
+  ];
+  const packages = packagesInput.length > 0 ? packagesInput : DEFAULT_PACKAGES;
+
+  // Validate email
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return c.json({ error: "invalid_email", message: "A valid email address is required." }, 400);
+  }
+
+  // Generate ID
+  const idBytes = new Uint8Array(8);
+  crypto.getRandomValues(idBytes);
+  const id = Array.from(idBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+  // Upsert subscription (one record per email, update packages if re-subscribing)
+  await c.env.DB.prepare(
+    `INSERT INTO watchlist_subscriptions (id, email, packages, verified, created_at)
+     VALUES (?, ?, ?, 1, datetime('now'))
+     ON CONFLICT(email) DO UPDATE SET packages = excluded.packages`
+  ).bind(id, email, JSON.stringify(packages)).run();
+
+  // Score packages for welcome email (best-effort, same logic as /api/audit)
+  const MAX_CONCURRENT = 5;
+  const auditResults: Array<{
+    name: string;
+    score: number | null;
+    maintainers: number | null;
+    weeklyDownloads: number | null;
+    riskFlags: string[];
+  }> = [];
+
+  for (let i = 0; i < packages.length; i += MAX_CONCURRENT) {
+    const batch = packages.slice(i, i + MAX_CONCURRENT);
+    const batchResults = await Promise.all(
+      batch.map(async (pkg) => {
+        try {
+          const profile = await buildNpmCommitmentProfile(pkg);
+          if (!profile) return { name: pkg, score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] };
+          const wdl = profile.recentWeeklyDownloads ?? 0;
+          const riskFlags: string[] = [];
+          if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+          else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
+          else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+          return { name: profile.name, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: wdl, riskFlags };
+        } catch {
+          return { name: pkg, score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] };
+        }
+      })
+    );
+    auditResults.push(...batchResults);
+  }
+
+  // Sort: CRITICAL first, then by downloads
+  auditResults.sort((a, b) => {
+    const aCrit = a.riskFlags.includes("CRITICAL") ? 1 : 0;
+    const bCrit = b.riskFlags.includes("CRITICAL") ? 1 : 0;
+    if (aCrit !== bCrit) return bCrit - aCrit;
+    return (b.weeklyDownloads ?? 0) - (a.weeklyDownloads ?? 0);
+  });
+
+  const critical = auditResults.filter((p) => p.riskFlags.includes("CRITICAL"));
+  const critDL = critical.reduce((s, p) => s + (p.weeklyDownloads ?? 0), 0);
+
+  function fmtDL(n: number | null): string {
+    if (!n) return "?";
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
+    if (n >= 1e6) return Math.round(n / 1e6) + "M";
+    if (n >= 1e3) return Math.round(n / 1e3) + "K";
+    return String(n);
+  }
+
+  const pkgLines = auditResults
+    .filter((p) => p.score !== null)
+    .map((p) => {
+      const flag = p.riskFlags.includes("CRITICAL") ? "⚑ CRITICAL" : p.riskFlags.includes("HIGH") ? "⚠ HIGH" : p.riskFlags.includes("WARN") ? "↓ WARN" : "✓ OK";
+      return `  ${p.name.padEnd(22)} ${String(p.score).padStart(3)}/100  ${p.maintainers}m  ${fmtDL(p.weeklyDownloads)}/wk  ${flag}`;
+    })
+    .join("\n");
+
+  const dateStr = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  const critDLStr = fmtDL(critDL);
+
+  const emailSubject = critical.length > 0
+    ? `Supply Chain Alert: ${critical.length} CRITICAL package${critical.length > 1 ? "s" : ""} in your watchlist`
+    : "Your Commit Watchlist is active";
+
+  const emailBody = `Supply Chain Risk Report — ${dateStr}
+
+${critical.length > 0
+  ? `${critical.length} CRITICAL package${critical.length > 1 ? "s" : ""} detected (${critDLStr}/wk at risk from single-maintainer exposure):`
+  : "Your watched packages look healthy today."}
+
+${pkgLines || "(No packages scored yet)"}
+
+CRITICAL = sole maintainer + 10M+ weekly downloads.
+This is the structural profile that made the April 1st axios attack possible.
+
+Audit your own project:
+  npx proof-of-commitment --file package.json
+
+Full leaderboard: https://getcommit.dev/watchlist
+GitHub Action (auto-flag on PRs): https://github.com/piiiico/proof-of-commitment
+
+—
+Commit · getcommit.dev
+Reply "unsubscribe" to stop receiving these reports.`;
+
+  let emailSent = false;
+  if (c.env.RESEND_API_KEY) {
+    try {
+      const emailResp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${c.env.RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: "Commit <noreply@getcommit.dev>",
+          to: [email],
+          subject: emailSubject,
+          text: emailBody,
+        }),
+      });
+      emailSent = emailResp.ok;
+    } catch {
+      // best effort
+    }
+  }
+
+  return c.json({
+    ok: true,
+    subscribed: true,
+    message: emailSent
+      ? `Risk report sent to ${email}. Weekly alerts will follow.`
+      : `Subscribed! Weekly supply chain alerts will be sent to ${email}.`,
+    critical_count: critical.length,
+    package_count: auditResults.filter((p) => p.score !== null).length,
+  });
+});
+
+/**
+ * GET /api/subscribe/stats
+ * Admin endpoint — subscription count stats.
+ */
+app.get("/api/subscribe/stats", async (c) => {
+  const adminSecret = (c.env as unknown as Record<string, string>).ADMIN_SECRET;
+  if (!adminSecret || c.req.header("X-Admin-Secret") !== adminSecret) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const total = await c.env.DB.prepare(`SELECT COUNT(*) as count FROM watchlist_subscriptions`).first<{ count: number }>();
+  const recent = await c.env.DB.prepare(
+    `SELECT email, created_at FROM watchlist_subscriptions ORDER BY created_at DESC LIMIT 10`
+  ).all<{ email: string; created_at: string }>();
+  return c.json({
+    total_subscriptions: total?.count ?? 0,
+    recent: (recent.results ?? []).map((r) => ({ email: r.email, created_at: r.created_at })),
+  });
+});
+
 // ── Remote MCP Server ────────────────────────────────────────────────
 //
 // Stateless MCP endpoint. Each request creates a fresh server + transport.
