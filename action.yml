@@ -11,6 +11,10 @@ inputs:
     description: 'Comma-separated package names to audit (auto-detected from package.json/requirements.txt if not provided)'
     required: false
     default: ''
+  packages-file:
+    description: 'Path to package.json or requirements.txt (default: auto-detect in workspace root)'
+    required: false
+    default: ''
   ecosystem:
     description: 'Ecosystem hint: npm, pypi, or auto (default: auto-detected from package file)'
     required: false
@@ -23,6 +27,10 @@ inputs:
     description: 'Maximum number of packages to audit when auto-detecting from lock files'
     required: false
     default: '20'
+  include-dev-dependencies:
+    description: 'Include devDependencies when auto-detecting from package.json'
+    required: false
+    default: 'false'
   comment-on-pr:
     description: 'Post audit results as a PR comment (requires pull_request trigger and github-token)'
     required: false
@@ -31,6 +39,14 @@ inputs:
     description: 'GitHub token for posting PR comments (defaults to github.token)'
     required: false
     default: ${{ github.token }}
+  api-url:
+    description: 'Commit API base URL (default: https://poc-backend.amdal-dev.workers.dev)'
+    required: false
+    default: 'https://poc-backend.amdal-dev.workers.dev'
+  api-key:
+    description: 'Commit Pro API key — enables batch requests and higher rate limits (get one at getcommit.dev/pricing)'
+    required: false
+    default: ''
 
 outputs:
   has-critical:
@@ -52,11 +68,15 @@ runs:
       run: ${{ github.action_path }}/scripts/audit.sh
       env:
         INPUT_PACKAGES: ${{ inputs.packages }}
+        INPUT_PACKAGES_FILE: ${{ inputs.packages-file }}
         INPUT_ECOSYSTEM: ${{ inputs.ecosystem }}
         INPUT_FAIL_ON_CRITICAL: ${{ inputs.fail-on-critical }}
         INPUT_MAX_PACKAGES: ${{ inputs.max-packages }}
+        INPUT_INCLUDE_DEV_DEPENDENCIES: ${{ inputs.include-dev-dependencies }}
         INPUT_COMMENT_ON_PR: ${{ inputs.comment-on-pr }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_API_URL: ${{ inputs.api-url }}
+        INPUT_API_KEY: ${{ inputs.api-key }}
         GITHUB_EVENT_NAME: ${{ github.event_name }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         PR_NUMBER: ${{ github.event.pull_request.number }}

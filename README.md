@@ -81,11 +81,17 @@ When `comment-on-pr: true` (default), the action automatically posts the audit t
 | Input | Default | Description |
 |-------|---------|-------------|
 | `packages` | _(auto)_ | Comma-separated package names (auto-detected from `package.json`/`requirements.txt` if not set) |
+| `packages-file` | _(auto)_ | Path to `package.json` or `requirements.txt` (default: auto-detect in workspace root) |
 | `fail-on-critical` | `true` | Fail the workflow if CRITICAL packages are found |
 | `max-packages` | `20` | Max packages to audit when auto-detecting |
+| `include-dev-dependencies` | `false` | Include `devDependencies` from `package.json` |
 | `comment-on-pr` | `true` | Post audit results as a PR comment (requires `pull-requests: write` permission) |
+| `api-key` | _(none)_ | [Commit Pro](https://getcommit.dev/pricing) API key — enables batch requests and 10K requests/month |
+| `api-url` | _(prod)_ | Override API endpoint (useful for self-hosting) |
 
 **Outputs:** `has-critical`, `critical-count`, `audit-summary` (markdown table, also written to Step Summary).
+
+**Free vs Pro:** Without an API key, packages are audited one at a time (with delays to respect rate limits). With a Pro API key, all packages are audited in a single batch request — faster and with higher monthly limits.
 
 Example PR comment / Step Summary output:
 

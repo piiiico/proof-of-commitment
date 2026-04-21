@@ -32,6 +32,8 @@ jobs:
         with:
           # Auto-detects from package.json or requirements.txt
           # Or specify explicitly: packages: 'axios,zod,chalk,lodash'
-          fail-on-critical: false   # set to true to block merges on CRITICAL packages
+          fail-on-critical: false      # set to true to block merges on CRITICAL packages
           max-packages: '20'
-          comment-on-pr: true      # posts results as a PR comment (auto-updates on re-run)
+          comment-on-pr: true          # posts results as a PR comment (auto-updates on re-run)
+          include-dev-dependencies: false
+          # api-key: ${{ secrets.COMMIT_API_KEY }}  # uncomment for batch requests (Commit Pro)
