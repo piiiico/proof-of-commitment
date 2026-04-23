@@ -9,3 +9,6 @@ ENVIRONMENT = "production"
 binding = "DB"
 database_name = "poc-commits"
 database_id = "6ef7b6a9-1d09-4a0f-9ddd-c869a0582460"
+
+[triggers]
+crons = ["0 9 * * 1"]  # Every Monday at 09:00 UTC

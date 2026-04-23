@@ -2572,4 +2572,244 @@ app.all("/mcp", async (c) => {
   return transport.handleRequest(c.req.raw);
 });
 
-export default app;
+// ── Admin: trigger weekly digest manually for testing ────────────────
+app.post("/api/admin/trigger-digest", async (c) => {
+  const adminSecret = (c.env as unknown as Record<string, string>).ADMIN_SECRET;
+  if (!adminSecret || c.req.header("X-Admin-Secret") !== adminSecret) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  try {
+    const result = await runWeeklyDigest(c.env);
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    return c.json({ ok: false, error: String(err) }, 500);
+  }
+});
+
+// ── Unsubscribe endpoint ──────────────────────────────────────────────
+app.get("/api/unsubscribe", async (c) => {
+  const email = c.req.query("email")?.trim().toLowerCase() ?? "";
+  if (!email) return c.text("Invalid unsubscribe link.", 400);
+  const result = await c.env.DB.prepare(
+    `DELETE FROM watchlist_subscriptions WHERE email = ?`
+  ).bind(email).run();
+  const removed = (result.meta?.changes ?? 0) > 0;
+  return c.html(
+    `<!DOCTYPE html><html><body style="font-family:sans-serif;max-width:500px;margin:80px auto;text-align:center">` +
+    `<h2>Commit Watchlist</h2>` +
+    (removed
+      ? `<p>✅ <strong>${email}</strong> has been unsubscribed. You won't receive any more supply chain alerts.</p>`
+      : `<p>Email not found — you may have already unsubscribed.</p>`) +
+    `<p><a href="https://getcommit.dev">← Back to Commit</a></p></body></html>`
+  );
+});
+
+// ── Weekly digest scheduled handler ──────────────────────────────────
+//
+// Cron: every Monday at 09:00 UTC ("0 9 * * 1")
+// For each verified subscriber: score their watchlist packages, compare
+// to previous week, send a digest via Resend, record scores for next diff.
+
+async function runWeeklyDigest(env: Bindings): Promise<{ sent: number; skipped: number }> {
+  if (!env.RESEND_API_KEY) return { sent: 0, skipped: 0 };
+
+  const subscribers = await env.DB.prepare(
+    `SELECT id, email, packages FROM watchlist_subscriptions WHERE verified = 1`
+  ).all<{ id: string; email: string; packages: string }>();
+
+  const rows = subscribers.results ?? [];
+  if (rows.length === 0) return { sent: 0, skipped: 0 };
+
+  const dateStr = new Date().toLocaleDateString("en-US", {
+    month: "long", day: "numeric", year: "numeric",
+  });
+
+  // Score each unique package once (shared cache across subscribers)
+  const scoreCache = new Map<string, {
+    score: number | null;
+    maintainers: number | null;
+    weeklyDownloads: number | null;
+    riskFlags: string[];
+  }>();
+
+  // Collect all unique packages
+  const allPackages = new Set<string>();
+  for (const row of rows) {
+    try {
+      const pkgs = JSON.parse(row.packages ?? "[]") as string[];
+      pkgs.forEach((p) => allPackages.add(p));
+    } catch { /* ignore */ }
+  }
+
+  // Score in batches of 5 (same limit as /api/subscribe)
+  const pkgList = [...allPackages];
+  const MAX_CONCURRENT = 5;
+  for (let i = 0; i < pkgList.length; i += MAX_CONCURRENT) {
+    const batch = pkgList.slice(i, i + MAX_CONCURRENT);
+    await Promise.all(batch.map(async (pkg) => {
+      try {
+        const profile = await buildNpmCommitmentProfile(pkg);
+        if (!profile) {
+          scoreCache.set(pkg, { score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] });
+          return;
+        }
+        const wdl = profile.recentWeeklyDownloads ?? 0;
+        const riskFlags: string[] = [];
+        if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+        else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
+        else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+        scoreCache.set(pkg, {
+          score: profile.commitmentScore,
+          maintainers: profile.maintainerCount,
+          weeklyDownloads: wdl,
+          riskFlags,
+        });
+      } catch {
+        scoreCache.set(pkg, { score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] });
+      }
+    }));
+  }
+
+  // Fetch previous week scores for all packages in one pass
+  const prevScores = new Map<string, number | null>();
+  for (const pkg of pkgList) {
+    const row = await env.DB.prepare(
+      `SELECT score FROM package_score_history
+       WHERE package_name = ? AND ecosystem = 'npm'
+       ORDER BY recorded_at DESC LIMIT 1`
+    ).bind(pkg).first<{ score: number | null }>();
+    prevScores.set(pkg, row?.score ?? null);
+  }
+
+  // Insert current scores (one row per package per run)
+  for (const pkg of pkgList) {
+    const cur = scoreCache.get(pkg)!;
+    if (cur.score !== null) {
+      await env.DB.prepare(
+        `INSERT INTO package_score_history
+         (package_name, ecosystem, score, maintainers, weekly_downloads, risk_flags, recorded_at)
+         VALUES (?, 'npm', ?, ?, ?, ?, datetime('now'))`
+      ).bind(pkg, cur.score, cur.maintainers, cur.weeklyDownloads, JSON.stringify(cur.riskFlags)).run();
+    }
+  }
+
+  function fmtDL(n: number | null): string {
+    if (!n) return "?";
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
+    if (n >= 1e6) return Math.round(n / 1e6) + "M";
+    if (n >= 1e3) return Math.round(n / 1e3) + "K";
+    return String(n);
+  }
+
+  function fmtChange(curr: number | null, prev: number | null): string {
+    if (curr === null || prev === null) return "";
+    const diff = curr - prev;
+    if (diff === 0) return "";
+    return diff > 0 ? ` (+${diff})` : ` (${diff})`;
+  }
+
+  let sent = 0;
+  let skipped = 0;
+
+  for (const row of rows) {
+    let packages: string[];
+    try {
+      packages = JSON.parse(row.packages ?? "[]") as string[];
+    } catch {
+      packages = [];
+    }
+    if (packages.length === 0) { skipped++; continue; }
+
+    // Build per-subscriber results
+    const results = packages
+      .map((pkg) => {
+        const cur = scoreCache.get(pkg) ?? { score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] };
+        return { name: pkg, ...cur, prevScore: prevScores.get(pkg) ?? null };
+      })
+      .filter((r) => r.score !== null);
+
+    if (results.length === 0) { skipped++; continue; }
+
+    // Sort: CRITICAL → HIGH → by downloads
+    results.sort((a, b) => {
+      const aRank = a.riskFlags.includes("CRITICAL") ? 2 : a.riskFlags.includes("HIGH") ? 1 : 0;
+      const bRank = b.riskFlags.includes("CRITICAL") ? 2 : b.riskFlags.includes("HIGH") ? 1 : 0;
+      if (aRank !== bRank) return bRank - aRank;
+      return (b.weeklyDownloads ?? 0) - (a.weeklyDownloads ?? 0);
+    });
+
+    const critical = results.filter((r) => r.riskFlags.includes("CRITICAL"));
+    const pkgLines = results
+      .map((r) => {
+        const flag = r.riskFlags.includes("CRITICAL") ? "⚑ CRITICAL"
+          : r.riskFlags.includes("HIGH") ? "⚠ HIGH"
+          : r.riskFlags.includes("WARN") ? "↓ WARN"
+          : "✓ OK";
+        const change = fmtChange(r.score, r.prevScore);
+        const scoreStr = `${r.score}/100${change}`;
+        return `  ${r.name.padEnd(22)} ${scoreStr.padEnd(12)}  ${r.maintainers ?? "?"}m  ${fmtDL(r.weeklyDownloads)}/wk  ${flag}`;
+      })
+      .join("\n");
+
+    const unsubLink = `https://poc-backend.amdal-dev.workers.dev/api/unsubscribe?email=${encodeURIComponent(row.email)}`;
+    const auditLink = `https://getcommit.dev/audit?packages=${encodeURIComponent(packages.join(","))}`;
+
+    const subject = critical.length > 0
+      ? `⚑ ${critical.length} CRITICAL package${critical.length > 1 ? "s" : ""} in your Commit watchlist`
+      : "Your Commit Watchlist — Weekly Report";
+
+    const body = `Supply Chain Risk Report — ${dateStr}
+
+${critical.length > 0
+  ? `${critical.length} CRITICAL package${critical.length > 1 ? "s" : ""} detected in your watchlist:`
+  : "Your watched packages look healthy this week."}
+
+${pkgLines}
+
+CRITICAL = sole maintainer + 10M+ weekly downloads.
+This structural profile is what made the April 1st axios supply chain attack possible.
+
+Full audit: ${auditLink}
+Manage watchlist: https://getcommit.dev/watchlist
+
+—
+Commit · getcommit.dev
+Unsubscribe: ${unsubLink}`;
+
+    try {
+      const emailResp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: "Commit <noreply@getcommit.dev>",
+          to: [row.email],
+          subject,
+          text: body,
+        }),
+      });
+      if (emailResp.ok) {
+        await env.DB.prepare(
+          `UPDATE watchlist_subscriptions SET last_sent_at = datetime('now') WHERE id = ?`
+        ).bind(row.id).run();
+        sent++;
+      } else {
+        skipped++;
+      }
+    } catch {
+      skipped++;
+    }
+  }
+
+  return { sent, skipped };
+}
+
+// Export with scheduled handler support
+export default {
+  fetch: app.fetch.bind(app),
+  async scheduled(_event: unknown, env: Bindings, _ctx: unknown): Promise<void> {
+    await runWeeklyDigest(env);
+  },
+};
