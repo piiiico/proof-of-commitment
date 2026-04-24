@@ -238,7 +238,8 @@ export async function buildNpmCommitmentProfile(
   const latestVersion = pkg["dist-tags"]["latest"] ?? null;
 
   // 2. Downloads (last 6 months)
-  // Download data changes slowly — cache for 1 hour to survive traffic bursts.
+  // Download data changes slowly — cache for 1 hour, but ONLY cache valid non-empty responses.
+  // Previously used cf.cacheEverything which cached empty/rate-limited responses, breaking retries.
   const startDate = formatDate(180);
   const endDate = formatDate(1);
   let downloadData: { day: string; downloads: number }[] = [];
@@ -248,43 +249,75 @@ export async function buildNpmCommitmentProfile(
 
   try {
     const dlUrl = `${NPM_DOWNLOADS}/${startDate}:${endDate}/${encodedName}`;
-    const fetchOptions = {
-      headers: { Accept: "application/json" },
-      // @ts-ignore CF fetch cache hint — 1h TTL; download counts change slowly
-      cf: { cacheEverything: true, cacheTtl: 3600 },
-    };
+    // Plain fetch options — no cf.cacheEverything so CF does NOT auto-cache responses.
+    // We manage caching manually via caches.default to ensure only valid data is cached.
+    const fetchOpts = { headers: { Accept: "application/json" } };
 
-    // Retry once with 1s backoff if rate-limited or empty response
-    let dlRes = await fetch(dlUrl, fetchOptions);
-    if (!dlRes.ok || dlRes.status === 429) {
-      await new Promise((r) => setTimeout(r, 1000));
-      dlRes = await fetch(dlUrl, fetchOptions);
+    let dlData: DownloadRange | null = null;
+
+    // Check manual cache first (only valid non-empty responses are stored here)
+    try {
+      const cacheKey = new Request(dlUrl, { headers: { Accept: "application/json" } });
+      const cachedRes = await caches.default.match(cacheKey);
+      if (cachedRes) {
+        const candidate = (await cachedRes.json()) as DownloadRange;
+        if (Array.isArray(candidate.downloads) && candidate.downloads.length > 0) {
+          dlData = candidate;
+        }
+      }
+    } catch {
+      // caches.default unavailable (e.g. local dev) — fall through to fresh fetch
     }
 
-    if (dlRes.ok) {
-      const dlData = (await dlRes.json()) as DownloadRange;
-      // Treat empty/missing downloads array as a soft failure (rate-limited)
-      if (Array.isArray(dlData.downloads) && dlData.downloads.length > 0) {
-        downloadData = dlData.downloads;
-        const analysis = analyzeDownloads(downloadData);
-        avg7d = analysis.avg7d;
-        avg90d = analysis.avg90d;
-        trend = analysis.trend;
-      } else if (dlData.downloads?.length === 0) {
-        // Possibly rate-limited — retry after 1s
-        await new Promise((r) => setTimeout(r, 1000));
-        const retryRes = await fetch(dlUrl, fetchOptions);
-        if (retryRes.ok) {
-          const retryData = (await retryRes.json()) as DownloadRange;
-          if (Array.isArray(retryData.downloads) && retryData.downloads.length > 0) {
-            downloadData = retryData.downloads;
-            const analysis = analyzeDownloads(downloadData);
-            avg7d = analysis.avg7d;
-            avg90d = analysis.avg90d;
-            trend = analysis.trend;
+    if (!dlData) {
+      // Fetch fresh from npm. Retry up to 2 times with backoff on failure or empty response.
+      let dlRes = await fetch(dlUrl, fetchOpts);
+
+      if (!dlRes.ok || dlRes.status === 429) {
+        await new Promise((r) => setTimeout(r, 1500));
+        dlRes = await fetch(dlUrl, fetchOpts);
+      }
+
+      if (dlRes.ok) {
+        const candidate = (await dlRes.json()) as DownloadRange;
+        if (Array.isArray(candidate.downloads) && candidate.downloads.length > 0) {
+          dlData = candidate;
+        } else {
+          // Empty downloads array — possibly rate-limited, retry once more
+          await new Promise((r) => setTimeout(r, 1500));
+          const retryRes = await fetch(dlUrl, fetchOpts);
+          if (retryRes.ok) {
+            const retryCandidate = (await retryRes.json()) as DownloadRange;
+            if (Array.isArray(retryCandidate.downloads) && retryCandidate.downloads.length > 0) {
+              dlData = retryCandidate;
+            }
           }
         }
       }
+
+      // Cache only if we got valid data
+      if (dlData) {
+        try {
+          const cacheKey = new Request(dlUrl, { headers: { Accept: "application/json" } });
+          const toCache = new Response(JSON.stringify(dlData), {
+            headers: {
+              "Content-Type": "application/json",
+              "Cache-Control": "max-age=3600",
+            },
+          });
+          await caches.default.put(cacheKey, toCache);
+        } catch {
+          // Cache write failed — non-fatal
+        }
+      }
+    }
+
+    if (dlData) {
+      downloadData = dlData.downloads;
+      const analysis = analyzeDownloads(downloadData);
+      avg7d = analysis.avg7d;
+      avg90d = analysis.avg90d;
+      trend = analysis.trend;
     }
   } catch {
     // Non-fatal
