@@ -37,11 +37,78 @@ interface NpmPackage {
   license?: string;
 }
 
-interface DownloadRange {
+export interface DownloadRange {
   downloads: { day: string; downloads: number }[];
   package: string;
   start: string;
   end: string;
+}
+
+/** A valid download response must have entries AND at least one non-zero value. */
+function hasValidDownloads(candidate: DownloadRange): boolean {
+  return (
+    Array.isArray(candidate.downloads) &&
+    candidate.downloads.length > 0 &&
+    candidate.downloads.some((d) => d.downloads > 0)
+  );
+}
+
+/**
+ * Bulk-fetch WEEKLY download totals for multiple npm packages in ONE API call.
+ * Uses the point API (/downloads/point/last-week) which is simpler and more reliable
+ * than the range API — avoids the concurrent-request race condition that causes zeros.
+ *
+ * Supports up to 128 packages per batch call.
+ * Scoped packages (@scope/name) are NOT supported by the npm bulk API.
+ *
+ * Returns a Map from package name → weekly download count (null = not found/error).
+ */
+export async function bulkFetchNpmWeeklyDownloads(
+  packageNames: string[]
+): Promise<Map<string, number | null>> {
+  const result = new Map<string, number | null>();
+  if (packageNames.length === 0) return result;
+
+  // npm bulk API supports up to 128 packages per batch
+  const batches: string[][] = [];
+  for (let i = 0; i < packageNames.length; i += 128) {
+    batches.push(packageNames.slice(i, i + 128));
+  }
+
+  await Promise.all(
+    batches.map(async (batch) => {
+      const bulkUrl = `${NPM_DOWNLOADS_POINT}/last-week/${batch.join(",")}`;
+      try {
+        const res = await fetch(bulkUrl, { headers: { Accept: "application/json" } });
+        if (res.ok) {
+          const data = await res.json();
+          // npm returns two different response formats:
+          // - Single package:  { downloads: N, package: "rollup", start: "...", end: "..." }  (flat)
+          // - Multi-package:   { "rollup": { downloads: N }, "express": { downloads: N } }     (keyed)
+          // Detect flat format by checking if top-level "downloads" is a number.
+          const isFlatSingleResponse =
+            batch.length === 1 &&
+            typeof (data as { downloads?: unknown }).downloads === "number";
+          for (const name of batch) {
+            let count: number;
+            if (isFlatSingleResponse) {
+              count = (data as { downloads: number }).downloads;
+            } else {
+              const entry = (data as Record<string, { downloads: number } | null>)[name];
+              count = entry?.downloads ?? 0;
+            }
+            result.set(name, count > 0 ? count : null);
+          }
+        } else {
+          for (const name of batch) result.set(name, null);
+        }
+      } catch {
+        for (const name of batch) result.set(name, null);
+      }
+    })
+  );
+
+  return result;
 }
 
 export interface NpmCommitmentProfile {
@@ -196,9 +263,14 @@ function analyzeDownloads(downloads: { day: string; downloads: number }[]): {
 
 /**
  * Build a behavioral commitment profile for an npm package.
+ * @param preloadedWeekly  Optional pre-fetched weekly download count (from bulkFetchNpmWeeklyDownloads).
+ *   Pass a positive number to skip the individual download API call (batch mode).
+ *   Pass `null` to indicate the package wasn't found in the bulk response.
+ *   Omit (undefined) to fetch downloads individually (default / scoped package path).
  */
 export async function buildNpmCommitmentProfile(
-  packageName: string
+  packageName: string,
+  preloadedWeekly?: number | null
 ): Promise<NpmCommitmentProfile | null> {
   const encodedName = encodeURIComponent(packageName).replace(
     /^%40/,
@@ -239,8 +311,6 @@ export async function buildNpmCommitmentProfile(
   const latestVersion = pkg["dist-tags"]["latest"] ?? null;
 
   // 2. Downloads (last 6 months)
-  // Download data changes slowly — cache for 1 hour, but ONLY cache valid non-empty responses.
-  // Previously used cf.cacheEverything which cached empty/rate-limited responses, breaking retries.
   const startDate = formatDate(180);
   const endDate = formatDate(1);
   let downloadData: { day: string; downloads: number }[] = [];
@@ -248,89 +318,16 @@ export async function buildNpmCommitmentProfile(
   let avg90d = 0;
   let trend: "growing" | "stable" | "declining" | "unknown" = "unknown";
 
-  try {
-    const dlUrl = `${NPM_DOWNLOADS}/${startDate}:${endDate}/${encodedName}`;
-    // Plain fetch options — no cf.cacheEverything so CF does NOT auto-cache responses.
-    // We manage caching manually via caches.default to ensure only valid data is cached.
-    const fetchOpts = { headers: { Accept: "application/json" } };
-
-    let dlData: DownloadRange | null = null;
-
-    // Helper: a valid download response must have entries AND at least one non-zero value.
-    // Entries with all-zero downloads indicate a stale/corrupted cache or a transient npm error.
-    const hasValidDownloads = (candidate: DownloadRange) =>
-      Array.isArray(candidate.downloads) &&
-      candidate.downloads.length > 0 &&
-      candidate.downloads.some((d) => d.downloads > 0);
-
-    // Check manual cache first (only valid non-empty responses are stored here)
-    try {
-      const cacheKey = new Request(dlUrl, { headers: { Accept: "application/json" } });
-      const cachedRes = await caches.default.match(cacheKey);
-      if (cachedRes) {
-        const candidate = (await cachedRes.json()) as DownloadRange;
-        if (hasValidDownloads(candidate)) {
-          dlData = candidate;
-        }
-        // If cache has all-zero data, fall through to fresh fetch (stale/corrupted entry)
-      }
-    } catch {
-      // caches.default unavailable (e.g. local dev) — fall through to fresh fetch
+  if (preloadedWeekly !== undefined) {
+    // Fast path: bulk weekly count was supplied by the caller (from bulkFetchNpmWeeklyDownloads).
+    // This eliminates the per-package concurrent HTTP race condition that causes npm to return zeros.
+    // Trade-off: trend data is unavailable in batch mode (stays "unknown") — acceptable.
+    if (preloadedWeekly !== null && preloadedWeekly > 0) {
+      avg7d = Math.round(preloadedWeekly / 7);
+      // trend stays "unknown" — no day-by-day data in batch mode
     }
-
-    if (!dlData) {
-      // Fetch fresh from npm. Retry up to 2 times with backoff on failure or empty response.
-      let dlRes = await fetch(dlUrl, fetchOpts);
-
-      if (!dlRes.ok || dlRes.status === 429) {
-        await new Promise((r) => setTimeout(r, 1500));
-        dlRes = await fetch(dlUrl, fetchOpts);
-      }
-
-      if (dlRes.ok) {
-        const candidate = (await dlRes.json()) as DownloadRange;
-        if (hasValidDownloads(candidate)) {
-          dlData = candidate;
-        } else {
-          // Empty/all-zero downloads array — possibly rate-limited, retry once more
-          await new Promise((r) => setTimeout(r, 1500));
-          const retryRes = await fetch(dlUrl, fetchOpts);
-          if (retryRes.ok) {
-            const retryCandidate = (await retryRes.json()) as DownloadRange;
-            if (hasValidDownloads(retryCandidate)) {
-              dlData = retryCandidate;
-            }
-          }
-        }
-      }
-
-      // Cache only if we got valid data
-      if (dlData) {
-        try {
-          const cacheKey = new Request(dlUrl, { headers: { Accept: "application/json" } });
-          const toCache = new Response(JSON.stringify(dlData), {
-            headers: {
-              "Content-Type": "application/json",
-              "Cache-Control": "max-age=3600",
-            },
-          });
-          await caches.default.put(cacheKey, toCache);
-        } catch {
-          // Cache write failed — non-fatal
-        }
-      }
-    }
-
-    if (dlData) {
-      downloadData = dlData.downloads;
-      const analysis = analyzeDownloads(downloadData);
-      avg7d = analysis.avg7d;
-      avg90d = analysis.avg90d;
-      trend = analysis.trend;
-    }
-
-    // Fallback: if range API gave us 0 avg (all-zero or missing), use npm point API.
-    // This handles stale CF cache entries and transient npm rate-limit responses.
+    // If preloadedWeekly === null, the bulk fetch had no data for this package.
+    // Fall back to point API to ensure we never return 0 due to a bulk-fetch miss.
     if (avg7d === 0) {
       try {
         const pointUrl = `${NPM_DOWNLOADS_POINT}/last-week/${encodedName}`;
@@ -339,15 +336,109 @@ export async function buildNpmCommitmentProfile(
           const pointData = (await pointRes.json()) as { downloads: number };
           if (typeof pointData.downloads === "number" && pointData.downloads > 0) {
             avg7d = Math.round(pointData.downloads / 7);
-            // Keep trend as unknown since we don't have historical data
           }
         }
       } catch {
         // Non-fatal fallback
       }
     }
-  } catch {
-    // Non-fatal
+  } else {
+    // Slow path: individual fetch (used for scoped packages or direct single-package calls).
+    // Download data changes slowly — cache for 1 hour, but ONLY cache valid non-empty responses.
+    try {
+      const dlUrl = `${NPM_DOWNLOADS}/${startDate}:${endDate}/${encodedName}`;
+      // Plain fetch options — no cf.cacheEverything so CF does NOT auto-cache responses.
+      // We manage caching manually via caches.default to ensure only valid data is cached.
+      const fetchOpts = { headers: { Accept: "application/json" } };
+
+      let dlData: DownloadRange | null = null;
+
+      // Check manual cache first (only valid non-empty responses are stored here)
+      try {
+        const cacheKey = new Request(dlUrl, { headers: { Accept: "application/json" } });
+        const cachedRes = await caches.default.match(cacheKey);
+        if (cachedRes) {
+          const candidate = (await cachedRes.json()) as DownloadRange;
+          if (hasValidDownloads(candidate)) {
+            dlData = candidate;
+          }
+          // If cache has all-zero data, fall through to fresh fetch (stale/corrupted entry)
+        }
+      } catch {
+        // caches.default unavailable (e.g. local dev) — fall through to fresh fetch
+      }
+
+      if (!dlData) {
+        // Fetch fresh from npm. Retry up to 2 times with backoff on failure or empty response.
+        let dlRes = await fetch(dlUrl, fetchOpts);
+
+        if (!dlRes.ok || dlRes.status === 429) {
+          await new Promise((r) => setTimeout(r, 1500));
+          dlRes = await fetch(dlUrl, fetchOpts);
+        }
+
+        if (dlRes.ok) {
+          const candidate = (await dlRes.json()) as DownloadRange;
+          if (hasValidDownloads(candidate)) {
+            dlData = candidate;
+          } else {
+            // Empty/all-zero downloads array — possibly rate-limited, retry once more
+            await new Promise((r) => setTimeout(r, 1500));
+            const retryRes = await fetch(dlUrl, fetchOpts);
+            if (retryRes.ok) {
+              const retryCandidate = (await retryRes.json()) as DownloadRange;
+              if (hasValidDownloads(retryCandidate)) {
+                dlData = retryCandidate;
+              }
+            }
+          }
+        }
+
+        // Cache only if we got valid data
+        if (dlData) {
+          try {
+            const cacheKey = new Request(dlUrl, { headers: { Accept: "application/json" } });
+            const toCache = new Response(JSON.stringify(dlData), {
+              headers: {
+                "Content-Type": "application/json",
+                "Cache-Control": "max-age=3600",
+              },
+            });
+            await caches.default.put(cacheKey, toCache);
+          } catch {
+            // Cache write failed — non-fatal
+          }
+        }
+      }
+
+      if (dlData) {
+        downloadData = dlData.downloads;
+        const analysis = analyzeDownloads(downloadData);
+        avg7d = analysis.avg7d;
+        avg90d = analysis.avg90d;
+        trend = analysis.trend;
+      }
+
+      // Fallback: if range API gave us 0 avg (all-zero or missing), use npm point API.
+      // This handles stale CF cache entries and transient npm rate-limit responses.
+      if (avg7d === 0) {
+        try {
+          const pointUrl = `${NPM_DOWNLOADS_POINT}/last-week/${encodedName}`;
+          const pointRes = await fetch(pointUrl, { headers: { Accept: "application/json" } });
+          if (pointRes.ok) {
+            const pointData = (await pointRes.json()) as { downloads: number };
+            if (typeof pointData.downloads === "number" && pointData.downloads > 0) {
+              avg7d = Math.round(pointData.downloads / 7);
+              // Keep trend as unknown since we don't have historical data
+            }
+          }
+        } catch {
+          // Non-fatal fallback
+        }
+      }
+    } catch {
+      // Non-fatal
+    }
   }
 
   // 3. GitHub backing (optional, best-effort)
