@@ -87,6 +87,42 @@ if (result.success) {
   } else {
     console.warn("   Subdomain enable warning:", subdomainResult.errors);
   }
+  // Register cron schedules (PUT /schedules replaces all existing schedules)
+  const cronRes = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER_NAME}/schedules`,
+    {
+      method: "PUT",
+      headers: {
+        "X-Auth-Email": EMAIL,
+        "X-Auth-Key": API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify([{ cron: "0 9 * * 1" }]),
+    }
+  );
+  const cronResult = await cronRes.json() as any;
+  if (cronResult.success) {
+    console.log(`   Cron schedule registered: 0 9 * * 1 (Monday 09:00 UTC)`);
+  } else {
+    console.warn("   Cron schedule warning:", cronResult.errors);
+  }
+
+  // Verify cron registration
+  const verifyCronRes = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER_NAME}/schedules`,
+    {
+      headers: {
+        "X-Auth-Email": EMAIL,
+        "X-Auth-Key": API_KEY,
+      },
+    }
+  );
+  const verifyCronResult = await verifyCronRes.json() as any;
+  if (verifyCronResult.success && verifyCronResult.result?.schedules?.length > 0) {
+    console.log(`   Verified schedules: ${verifyCronResult.result.schedules.map((s: any) => s.cron).join(", ")}`);
+  } else {
+    console.warn("   Could not verify cron schedules:", verifyCronResult);
+  }
 } else {
   console.error("❌ Deploy failed:", JSON.stringify(result.errors, null, 2));
   process.exit(1);
