@@ -123,7 +123,7 @@ export interface NpmCommitmentProfile {
   versionCount: number;
   maintainerCount: number;
   recentWeeklyDownloads: number;
-  downloadTrend: "growing" | "stable" | "declining" | "unknown";
+  downloadTrend: "growing" | "stable" | "declining" | null;
   daysSinceLastPublish: number;
   repositoryUrl: string | null;
 
@@ -170,7 +170,7 @@ function scoreLongevity(ageYears: number): number {
 
 function scoreDownloads(
   weeklyAvg: number,
-  trend: "growing" | "stable" | "declining" | "unknown"
+  trend: "growing" | "stable" | "declining" | null
 ): number {
   // Base score from absolute volume
   let base = 0;
@@ -226,10 +226,10 @@ function scoreMaintainers(count: number): number {
 function analyzeDownloads(downloads: { day: string; downloads: number }[]): {
   avg7d: number;
   avg90d: number;
-  trend: "growing" | "stable" | "declining" | "unknown";
+  trend: "growing" | "stable" | "declining" | null;
 } {
   if (downloads.length < 14) {
-    return { avg7d: 0, avg90d: 0, trend: "unknown" };
+    return { avg7d: 0, avg90d: 0, trend: null };
   }
 
   const recent7 = downloads.slice(-7);
@@ -316,15 +316,15 @@ export async function buildNpmCommitmentProfile(
   let downloadData: { day: string; downloads: number }[] = [];
   let avg7d = 0;
   let avg90d = 0;
-  let trend: "growing" | "stable" | "declining" | "unknown" = "unknown";
+  let trend: "growing" | "stable" | "declining" | null = null;
 
   if (preloadedWeekly !== undefined) {
     // Fast path: bulk weekly count was supplied by the caller (from bulkFetchNpmWeeklyDownloads).
     // This eliminates the per-package concurrent HTTP race condition that causes npm to return zeros.
-    // Trade-off: trend data is unavailable in batch mode (stays "unknown") — acceptable.
+    // Trade-off: trend data is unavailable in batch mode (stays null) — acceptable.
     if (preloadedWeekly !== null && preloadedWeekly > 0) {
       avg7d = Math.round(preloadedWeekly / 7);
-      // trend stays "unknown" — no day-by-day data in batch mode
+      // trend stays null — no day-by-day data in batch mode
     }
     // If preloadedWeekly === null, the bulk fetch had no data for this package.
     // Fall back to point API to ensure we never return 0 due to a bulk-fetch miss.
@@ -429,7 +429,7 @@ export async function buildNpmCommitmentProfile(
             const pointData = (await pointRes.json()) as { downloads: number };
             if (typeof pointData.downloads === "number" && pointData.downloads > 0) {
               avg7d = Math.round(pointData.downloads / 7);
-              // Keep trend as unknown since we don't have historical data
+              // Keep trend as null since we don't have historical data
             }
           }
         } catch {
@@ -477,7 +477,7 @@ export async function buildNpmCommitmentProfile(
       ? `${Math.floor(ageYears)} year${Math.floor(ageYears) !== 1 ? "s" : ""}`
       : `${Math.round(ageYears * 12)} months`;
 
-  const trendStr = trend === "unknown" ? "" : ` (${trend})`;
+  const trendStr = trend === null ? "" : ` (${trend})`;
   const dlStr =
     avg7d > 0
       ? `~${avg7d.toLocaleString()} downloads/day avg${trendStr}`

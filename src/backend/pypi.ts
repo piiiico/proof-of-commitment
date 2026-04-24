@@ -79,7 +79,7 @@ export interface PyPICommitmentProfile {
   versionCount: number;
   maintainerCount: number;
   recentDailyDownloads: number;
-  downloadTrend: "growing" | "stable" | "declining" | "unknown";
+  downloadTrend: "growing" | "stable" | "declining" | null;
   daysSinceLastPublish: number;
   repositoryUrl: string | null;
 
@@ -145,7 +145,7 @@ function scoreLongevity(ageYears: number): number {
 
 function scoreDownloads(
   dailyAvg: number,
-  trend: "growing" | "stable" | "declining" | "unknown"
+  trend: "growing" | "stable" | "declining" | null
 ): number {
   // PyPI volumes are typically 7-10x higher than npm daily
   let base = 0;
@@ -195,12 +195,12 @@ function scoreMaintainers(count: number): number {
 function analyzeDownloads(data: PyPIStatsDay[]): {
   avg7d: number;
   avg90d: number;
-  trend: "growing" | "stable" | "declining" | "unknown";
+  trend: "growing" | "stable" | "declining" | null;
 } {
   // Filter to "without_mirrors" category only
   const withoutMirrors = data.filter((d) => d.category === "without_mirrors");
   if (withoutMirrors.length < 14) {
-    return { avg7d: 0, avg90d: 0, trend: "unknown" };
+    return { avg7d: 0, avg90d: 0, trend: null };
   }
 
   // Sort by date ascending
@@ -306,7 +306,7 @@ export async function buildPyPICommitmentProfile(
 
   // 2. Download stats
   let avg7d = 0;
-  let trend: "growing" | "stable" | "declining" | "unknown" = "unknown";
+  let trend: "growing" | "stable" | "declining" | null = null;
   let avg90d = 0;
 
   try {
@@ -364,7 +364,7 @@ export async function buildPyPICommitmentProfile(
       ? `${Math.floor(ageYears)} year${Math.floor(ageYears) !== 1 ? "s" : ""}`
       : `${Math.round(ageYears * 12)} months`;
 
-  const trendStr = trend === "unknown" ? "" : ` (${trend})`;
+  const trendStr = trend === null ? "" : ` (${trend})`;
   const dlStr =
     avg7d > 0
       ? `~${avg7d.toLocaleString()} downloads/day avg${trendStr}`
