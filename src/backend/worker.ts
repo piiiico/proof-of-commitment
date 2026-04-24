@@ -1243,6 +1243,70 @@ app.get("/badge/npm/*", async (c) => {
   });
 });
 
+// GET /badge/pypi/:package{.+}
+//
+// Returns a shields.io-style SVG badge for embedding in PyPI READMEs.
+// Usage:
+//   [![Commitment Score](https://poc-backend.amdal-dev.workers.dev/badge/pypi/requests)](https://getcommit.dev/audit?packages=requests&ecosystem=pypi)
+//
+// Colors: green (≥70) → yellow (40-69) → red (<40) → black (CRITICAL)
+// Cache: 24h CDN-friendly
+
+app.get("/badge/pypi/*", async (c) => {
+  const packageName = decodeURIComponent(c.req.path.replace("/badge/pypi/", ""));
+
+  if (!packageName) {
+    const svg = generateBadge("commitment", "unknown", "#9f9f9f");
+    return new Response(svg, {
+      headers: { "Content-Type": "image/svg+xml", "Cache-Control": "max-age=60" },
+    });
+  }
+
+  let score: number | null = null;
+  let isCritical = false;
+
+  try {
+    const profile = await buildPyPICommitmentProfile(packageName);
+    if (profile) {
+      score = profile.commitmentScore;
+      const weeklyDl = (profile.recentDailyDownloads ?? 0) * 7;
+      if (profile.maintainerCount === 1 && weeklyDl > 10_000_000) isCritical = true;
+    }
+  } catch {
+    // Fall through to "unknown" badge
+  }
+
+  let value: string;
+  let color: string;
+
+  if (score === null) {
+    value = "unknown";
+    color = "#9f9f9f"; // grey
+  } else if (isCritical) {
+    value = `${score}/100 CRITICAL`;
+    color = "#222222"; // black
+  } else if (score < 40) {
+    value = `${score}/100`;
+    color = "#e05d44"; // red
+  } else if (score < 70) {
+    value = `${score}/100`;
+    color = "#dfb317"; // yellow
+  } else {
+    value = `${score}/100`;
+    color = "#44cc11"; // green
+  }
+
+  const svg = generateBadge("commitment", value, color);
+
+  return new Response(svg, {
+    headers: {
+      "Content-Type": "image/svg+xml",
+      "Cache-Control": "public, max-age=86400, s-maxage=86400",
+      "X-Powered-By": "getcommit.dev",
+    },
+  });
+});
+
 // ── API Key Endpoints ────────────────────────────────────────────────
 
 /**
