@@ -23,6 +23,7 @@ import {
 
 const NPM_REGISTRY = "https://registry.npmjs.org";
 const NPM_DOWNLOADS = "https://api.npmjs.org/downloads/range";
+const NPM_DOWNLOADS_POINT = "https://api.npmjs.org/downloads/point";
 
 interface NpmPackage {
   name: string;
@@ -255,15 +256,23 @@ export async function buildNpmCommitmentProfile(
 
     let dlData: DownloadRange | null = null;
 
+    // Helper: a valid download response must have entries AND at least one non-zero value.
+    // Entries with all-zero downloads indicate a stale/corrupted cache or a transient npm error.
+    const hasValidDownloads = (candidate: DownloadRange) =>
+      Array.isArray(candidate.downloads) &&
+      candidate.downloads.length > 0 &&
+      candidate.downloads.some((d) => d.downloads > 0);
+
     // Check manual cache first (only valid non-empty responses are stored here)
     try {
       const cacheKey = new Request(dlUrl, { headers: { Accept: "application/json" } });
       const cachedRes = await caches.default.match(cacheKey);
       if (cachedRes) {
         const candidate = (await cachedRes.json()) as DownloadRange;
-        if (Array.isArray(candidate.downloads) && candidate.downloads.length > 0) {
+        if (hasValidDownloads(candidate)) {
           dlData = candidate;
         }
+        // If cache has all-zero data, fall through to fresh fetch (stale/corrupted entry)
       }
     } catch {
       // caches.default unavailable (e.g. local dev) — fall through to fresh fetch
@@ -280,15 +289,15 @@ export async function buildNpmCommitmentProfile(
 
       if (dlRes.ok) {
         const candidate = (await dlRes.json()) as DownloadRange;
-        if (Array.isArray(candidate.downloads) && candidate.downloads.length > 0) {
+        if (hasValidDownloads(candidate)) {
           dlData = candidate;
         } else {
-          // Empty downloads array — possibly rate-limited, retry once more
+          // Empty/all-zero downloads array — possibly rate-limited, retry once more
           await new Promise((r) => setTimeout(r, 1500));
           const retryRes = await fetch(dlUrl, fetchOpts);
           if (retryRes.ok) {
             const retryCandidate = (await retryRes.json()) as DownloadRange;
-            if (Array.isArray(retryCandidate.downloads) && retryCandidate.downloads.length > 0) {
+            if (hasValidDownloads(retryCandidate)) {
               dlData = retryCandidate;
             }
           }
@@ -318,6 +327,24 @@ export async function buildNpmCommitmentProfile(
       avg7d = analysis.avg7d;
       avg90d = analysis.avg90d;
       trend = analysis.trend;
+    }
+
+    // Fallback: if range API gave us 0 avg (all-zero or missing), use npm point API.
+    // This handles stale CF cache entries and transient npm rate-limit responses.
+    if (avg7d === 0) {
+      try {
+        const pointUrl = `${NPM_DOWNLOADS_POINT}/last-week/${encodedName}`;
+        const pointRes = await fetch(pointUrl, { headers: { Accept: "application/json" } });
+        if (pointRes.ok) {
+          const pointData = (await pointRes.json()) as { downloads: number };
+          if (typeof pointData.downloads === "number" && pointData.downloads > 0) {
+            avg7d = Math.round(pointData.downloads / 7);
+            // Keep trend as unknown since we don't have historical data
+          }
+        }
+      } catch {
+        // Non-fatal fallback
+      }
     }
   } catch {
     // Non-fatal

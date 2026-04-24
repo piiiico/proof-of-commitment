@@ -428,7 +428,6 @@ app.use("/api/*", async (c, next) => {
 // Health check (same path as server.ts)
 app.get("/", (c) => c.json({ status: "ok", service: "proof-of-commitment" }));
 
-
 /**
  * POST /api/commit
  * Body: single commitment or array of commitments.
