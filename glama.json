@@ -20,5 +20,9 @@
   "author": "piiiico",
   "license": "MIT",
   "repository": "https://github.com/piiiico/proof-of-commitment",
-  "homepage": "https://getcommit.dev"
+  "homepage": "https://getcommit.dev",
+  "transport": {
+    "type": "streamable-http",
+    "url": "https://poc-backend.amdal-dev.workers.dev/mcp"
+  }
 }

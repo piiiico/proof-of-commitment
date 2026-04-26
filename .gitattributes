@@ -1,0 +1,3 @@
+contracts/lib linguist-vendored
+contracts linguist-detectable=false
+*.sol linguist-detectable=false
