@@ -21,7 +21,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import { buildCommitmentProfile, searchAndProfile } from "./brreg.ts";
 import { buildGitHubCommitmentProfile, parseGitHubInput } from "./github.ts";
-import { buildNpmCommitmentProfile } from "./npm.ts";
+import { buildNpmCommitmentProfile, bulkFetchNpmWeeklyDownloads } from "./npm.ts";
 import { buildPyPICommitmentProfile } from "./pypi.ts";
 
 // ── World ID JWT Verification ────────────────────────────────────────
@@ -428,6 +428,7 @@ app.use("/api/*", async (c, next) => {
 // Health check (same path as server.ts)
 app.get("/", (c) => c.json({ status: "ok", service: "proof-of-commitment" }));
 
+
 /**
  * POST /api/commit
  * Body: single commitment or array of commitments.
@@ -639,7 +640,6 @@ app.post("/api/audit", async (c) => {
     return c.json({ error: "'packages' array is required (max 20)" }, 400);
   }
 
-  const MAX_CONCURRENT = 5;
   const results: Array<{
     name: string;
     ecosystem: string;
@@ -654,38 +654,54 @@ app.post("/api/audit", async (c) => {
     error?: string;
   }> = [];
 
-  for (let i = 0; i < packages.length; i += MAX_CONCURRENT) {
-    const batch = packages.slice(i, i + MAX_CONCURRENT);
-    const batchResults = await Promise.all(
-      batch.map(async (pkg) => {
-        const usePypi = ecosystem === "pypi";
-        try {
-          if (usePypi) {
-            const profile = await buildPyPICommitmentProfile(pkg);
-            if (!profile) return { name: pkg, ecosystem: "pypi", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
-            const weeklyDl = profile.recentDailyDownloads * 7;
-            const riskFlags: string[] = [];
-            if (profile.maintainerCount === 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL");
-            else if (profile.ageYears < 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH");
-            else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-            return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
-          } else {
-            const profile = await buildNpmCommitmentProfile(pkg);
-            if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
-            const riskFlags: string[] = [];
-            const wdl = profile.recentWeeklyDownloads ?? 0;
-            if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
-            else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
-            else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
-          }
-        } catch (err) {
-          return { name: pkg, ecosystem: usePypi ? "pypi" : "npm", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
+  // For npm packages: bulk-fetch all download data in ONE request before processing.
+  // This eliminates the race condition where 30-45 concurrent individual npm API calls
+  // cause the download API to silently return zeros.
+  // Scoped packages (@scope/name) are not supported by the bulk API — fetch them individually.
+  const usePypi = ecosystem === "pypi";
+  const npmPackages = usePypi ? [] : packages;
+  const unscopedNpm = npmPackages.filter((p) => !p.startsWith("@"));
+  const scopedNpm = npmPackages.filter((p) => p.startsWith("@"));
+
+  // One bulk HTTP request for all unscoped npm packages (replaces N individual requests).
+  // Uses the point API for weekly totals — simpler, more reliable, no race condition.
+  // Scoped packages (@scope/name) are not supported by the npm bulk API and are fetched individually.
+  const bulkWeekly = unscopedNpm.length > 0
+    ? await bulkFetchNpmWeeklyDownloads(unscopedNpm)
+    : new Map<string, number | null>();
+
+  // All packages processed concurrently — downloads already resolved above (no npm race)
+  const allResults = await Promise.all(
+    packages.map(async (pkg) => {
+      try {
+        if (usePypi) {
+          const profile = await buildPyPICommitmentProfile(pkg);
+          if (!profile) return { name: pkg, ecosystem: "pypi", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
+          const weeklyDl = profile.recentDailyDownloads * 7;
+          const riskFlags: string[] = [];
+          if (profile.maintainerCount === 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL");
+          else if (profile.ageYears < 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH");
+          else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+          return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
+        } else {
+          // Unscoped packages: pass preloaded weekly count (from single bulk call above)
+          // Scoped packages: pass undefined so buildNpmCommitmentProfile fetches individually
+          const preloadedWeekly = pkg.startsWith("@") ? undefined : bulkWeekly.get(pkg);
+          const profile = await buildNpmCommitmentProfile(pkg, preloadedWeekly);
+          if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
+          const riskFlags: string[] = [];
+          const wdl = profile.recentWeeklyDownloads ?? 0;
+          if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+          else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
+          else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+          return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
         }
-      })
-    );
-    results.push(...batchResults);
-  }
+      } catch (err) {
+        return { name: pkg, ecosystem: usePypi ? "pypi" : "npm", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
+      }
+    })
+  );
+  results.push(...allResults);
 
   results.sort((a, b) => (a.score ?? -1) - (b.score ?? -1));
   return c.json({ count: results.length, results });
@@ -2627,12 +2643,23 @@ app.use("/mcp", cors({
 
 // MCP Streamable HTTP endpoint — stateless (fresh server per request)
 app.all("/mcp", async (c) => {
+  // Normalize Accept header for scanners (e.g. Glama) that send only 'application/json'
+  // without 'text/event-stream'. The MCP SDK requires text/event-stream to be present
+  // or it returns 406 Not Acceptable, causing tools:[] in scanner results.
+  const req = c.req.raw;
+  const accept = req.headers.get("accept") ?? "";
+  let targetReq = req;
+  if (!accept.includes("text/event-stream")) {
+    const headers = new Headers(req.headers);
+    headers.set("accept", (accept ? accept + ", " : "") + "text/event-stream");
+    targetReq = new Request(req, { headers });
+  }
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless
   });
   const mcp = createMcpServer();
   await mcp.connect(transport);
-  return transport.handleRequest(c.req.raw);
+  return transport.handleRequest(targetReq);
 });
 
 // ── Admin: trigger weekly digest manually for testing ────────────────
