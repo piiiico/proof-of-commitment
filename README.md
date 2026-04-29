@@ -54,24 +54,28 @@ Add to Claude Desktop, Cursor, Windsurf, or any MCP-compatible AI tool. Then ask
 
 ## GitHub Action
 
-Add supply chain auditing to any CI pipeline — auto-detects packages from `package.json` or `requirements.txt`, **posts results as a PR comment**, writes to GitHub Step Summary, and optionally fails on CRITICAL packages.
+Add supply chain auditing to any CI pipeline in 30 seconds — auto-detects packages from `package.json` or `requirements.txt`, **posts results as a PR comment**, writes to GitHub Step Summary, and optionally fails on CRITICAL packages.
+
+Use the dedicated action at [piiiico/commit-action](https://github.com/piiiico/commit-action):
 
 ```yaml
-# .github/workflows/supply-chain-audit.yml
+# .github/workflows/supply-chain.yml
 name: Supply Chain Audit
-on: [push, pull_request]
+on:
+  pull_request:
+    paths: ['package.json', 'package-lock.json', 'bun.lock']
 
 jobs:
   audit:
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write   # needed for PR comments
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
-      - uses: piiiico/proof-of-commitment@main
+      - uses: piiiico/commit-action@v1
         with:
-          fail-on-critical: false   # set true to block merges
-          comment-on-pr: true       # posts audit table directly on the PR
+          fail-on-critical: true   # blocks merges on CRITICAL packages
+          comment-on-pr: true      # posts results as a PR comment
 ```
 
 When `comment-on-pr: true` (default), the action automatically posts the audit table as a comment on the pull request — and **updates the same comment** on re-run, so you don't get comment spam. Reviewers see the risk table without leaving the PR.
