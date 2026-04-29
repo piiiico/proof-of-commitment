@@ -9,7 +9,9 @@
  * GET  /api/business/search?q=  — search Norwegian businesses
  * GET  /api/business/:orgNumber — business commitment profile
  * POST /api/audit               — batch npm/PyPI supply chain risk scoring
- * GET  /api/badge/:eco/:pkg     — SVG badge for README embedding
+ * GET  /api/badge/:eco/:pkg     — SVG badge for README embedding (npm + PyPI)
+ * GET  /badge/:pkg              — Simple trust badge (npm only, shields.io-style)
+ * GET  /badge/:pkg.svg          — Same, .svg variant for img src embedding
  * ALL  /mcp                     — Remote MCP server (Streamable HTTP)
  * GET  /                        — health check
  */
@@ -388,6 +390,7 @@ function validateCommitment(input: unknown): ValidationResult {
 const app = new Hono<{ Bindings: Bindings; Variables: { apiKey: ApiKeyContext | null } }>();
 
 app.use("/api/*", cors());
+app.use("/badge/*", cors());
 
 // ── Auth Middleware ───────────────────────────────────────────────────
 // Runs before all /api/* routes.
@@ -1317,6 +1320,75 @@ app.get("/badge/pypi/*", async (c) => {
     headers: {
       "Content-Type": "image/svg+xml",
       "Cache-Control": "public, max-age=86400, s-maxage=86400",
+      "X-Powered-By": "getcommit.dev",
+    },
+  });
+});
+
+// ── Simple Trust Badge (npm-only shorthand, fallback) ─────────────────
+//
+// Must be registered AFTER /badge/npm/* and /badge/pypi/* so those match first.
+//
+// GET /badge/:package
+// GET /badge/:package.svg   (img src variant)
+//
+// Shorthand npm-only trust badge for README embedding.
+// Label: "Commit Trust"   Value: "{score} | {grade}"
+// Grades: OK (≥75, green) · WARNING (40-74, orange) · CRITICAL (<40 or solo+10M+, red)
+// Cache: 1 hour
+//
+// Usage: ![Commit Trust](https://poc-backend.amdal-dev.workers.dev/badge/chalk)
+//        ![Commit Trust](https://poc-backend.amdal-dev.workers.dev/badge/chalk.svg)
+
+app.get("/badge/*", async (c) => {
+  // Strip leading "/badge/" and optional trailing ".svg"
+  let packageName = decodeURIComponent(c.req.path.replace(/^\/badge\//, ""));
+  packageName = packageName.replace(/\.svg$/, "");
+
+  if (!packageName) {
+    const svg = generateBadge("Commit Trust", "invalid package", "#9f9f9f");
+    return new Response(svg, {
+      headers: { "Content-Type": "image/svg+xml", "Cache-Control": "max-age=60" },
+    });
+  }
+
+  let score: number | null = null;
+  let isCritical = false;
+
+  try {
+    const profile = await buildNpmCommitmentProfile(packageName);
+    if (profile) {
+      score = profile.commitmentScore;
+      const wdl = profile.recentWeeklyDownloads ?? 0;
+      if (profile.maintainerCount === 1 && wdl > 10_000_000) isCritical = true;
+    }
+  } catch {
+    // Fall through to error badge
+  }
+
+  let value: string;
+  let color: string;
+
+  if (score === null) {
+    value = "not found";
+    color = "#9f9f9f";
+  } else if (isCritical || score < 40) {
+    value = `${score} | CRITICAL`;
+    color = "#e05d44"; // red
+  } else if (score < 75) {
+    value = `${score} | WARNING`;
+    color = "#fe7d37"; // orange
+  } else {
+    value = `${score} | OK`;
+    color = "#44cc11"; // green
+  }
+
+  const svg = generateBadge("Commit Trust", value, color);
+
+  return new Response(svg, {
+    headers: {
+      "Content-Type": "image/svg+xml",
+      "Cache-Control": "max-age=3600, s-maxage=3600",
       "X-Powered-By": "getcommit.dev",
     },
   });

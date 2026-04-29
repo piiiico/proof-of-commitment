@@ -105,23 +105,31 @@ Example PR comment / Step Summary output:
 
 ## README Badges
 
-Add a commitment score badge to any package you maintain or depend on:
+Add a Commit Trust badge to any npm package you maintain or depend on:
 
 ```markdown
-![commit score](https://poc-backend.amdal-dev.workers.dev/api/badge/npm/YOUR-PACKAGE)
+![Commit Trust](https://poc-backend.amdal-dev.workers.dev/badge/YOUR-PACKAGE)
 ```
 
 Examples:
 
 | Package | Badge URL |
 |---------|-----------|
-| axios | `![commit](https://poc-backend.amdal-dev.workers.dev/api/badge/npm/axios)` |
-| zod | `![commit](https://poc-backend.amdal-dev.workers.dev/api/badge/npm/zod)` |
-| litellm | `![commit](https://poc-backend.amdal-dev.workers.dev/api/badge/pypi/litellm)` |
+| chalk | `![Commit Trust](https://poc-backend.amdal-dev.workers.dev/badge/chalk)` |
+| react | `![Commit Trust](https://poc-backend.amdal-dev.workers.dev/badge/react)` |
+| express | `![Commit Trust](https://poc-backend.amdal-dev.workers.dev/badge/express)` |
+| @babel/core | `![Commit Trust](https://poc-backend.amdal-dev.workers.dev/badge/@babel/core)` |
 
-Colors: 🟢 healthy (75+) · 🟡 good (60–74) · 🟡 moderate (40–59) · 🟠 high risk (<40) · 🔴 CRITICAL (single maintainer + >10M downloads/week)
+Grades: 🟢 OK (75+) · 🟠 WARNING (40–74) · 🔴 CRITICAL (<40 or sole maintainer with 10M+ weekly downloads)
 
-Badges are cached 5 minutes at Cloudflare's edge. No API key needed.
+Badges are cached 1 hour. No API key needed.
+
+Also supports PyPI and the full ecosystem-specific format:
+
+```markdown
+![commit score](https://poc-backend.amdal-dev.workers.dev/api/badge/npm/YOUR-PACKAGE)
+![commit score](https://poc-backend.amdal-dev.workers.dev/api/badge/pypi/YOUR-PACKAGE)
+```
 
 ## REST API
 
