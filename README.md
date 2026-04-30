@@ -100,11 +100,11 @@ When `comment-on-pr: true` (default), the action automatically posts the audit t
 Example PR comment / Step Summary output:
 
 ```
-| Package | Risk        | Score | Maintainers | Downloads/wk | Age   |
-|---------|-------------|-------|-------------|--------------|-------|
-| chalk   | 🔴 CRITICAL | 75    | 1           | 380M         | 12.7y |
-| zod     | 🔴 CRITICAL | 83    | 1           | 133M         | 6.1y  |
-| axios   | 🔴 CRITICAL | 89    | 1           | 93M          | 11.6y |
+| Package | Risk        | Score | Publishers | Downloads/wk | Age   |
+|---------|-------------|-------|------------|--------------|-------|
+| chalk   | 🔴 CRITICAL | 75    | 1          | 380M         | 12.7y |
+| zod     | 🔴 CRITICAL | 83    | 1          | 133M         | 6.1y  |
+| axios   | 🔴 CRITICAL | 89    | 1          | 93M          | 11.6y |
 ```
 
 ## README Badges
