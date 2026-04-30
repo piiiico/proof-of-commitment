@@ -8,7 +8,7 @@
  *   Longevity          (25 pts) — how long the package has existed
  *   Download momentum  (25 pts) — recent downloads + trend consistency
  *   Release consistency (20 pts) — version count + publish cadence
- *   Maintainer depth   (15 pts) — number of active maintainers
+ *   Publisher depth    (15 pts) — number of npm publishers (people with publish access)
  *   GitHub backing     (15 pts) — if linked repo, GitHub commitment score
  *
  * Uses public APIs only:
@@ -122,6 +122,7 @@ export interface NpmCommitmentProfile {
   ageYears: number;
   versionCount: number;
   maintainerCount: number;
+  githubContributors: number | null;
   recentWeeklyDownloads: number;
   downloadTrend: "growing" | "stable" | "declining" | null;
   daysSinceLastPublish: number;
@@ -444,6 +445,7 @@ export async function buildNpmCommitmentProfile(
   // 3. GitHub backing (optional, best-effort)
   let githubScore: number | null = null;
   let githubBacking = 0;
+  let githubContributors: number | null = null;
   if (repoUrl) {
     try {
       const parsed = parseGitHubInput(repoUrl);
@@ -454,6 +456,7 @@ export async function buildNpmCommitmentProfile(
         );
         if (ghProfile) {
           githubScore = ghProfile.commitmentScore;
+          githubContributors = ghProfile.contributorCount;
           // Map 0-100 GitHub score to 0-15 pts
           githubBacking = Math.round((githubScore / 100) * 15);
         }
@@ -498,7 +501,7 @@ export async function buildNpmCommitmentProfile(
     `Age: ${ageStr}`,
     `Versions published: ${versionCount} | Last: ${recentStr}`,
     `Downloads: ${dlStr}`,
-    `Maintainers: ${maintainerCount}`,
+    `npm publishers: ${maintainerCount}${githubContributors !== null ? ` | GitHub contributors: ${githubContributors === 35 ? "30+" : githubContributors}` : ""}`,
     repoUrl ? `Repository: ${repoUrl}` : "No linked repository",
     pkg.license ? `License: ${pkg.license}` : "No license specified",
     githubScore !== null
@@ -509,7 +512,7 @@ export async function buildNpmCommitmentProfile(
     `  Longevity:            ${longevity}/25 (${ageStr} old)`,
     `  Download momentum:    ${downloadMomentum}/25 (${dlStr})`,
     `  Release consistency:  ${releaseConsistency}/20 (${versionCount} versions)`,
-    `  Maintainer depth:     ${maintainerDepth}/15 (${maintainerCount} maintainer${maintainerCount !== 1 ? "s" : ""})`,
+    `  Publisher depth:      ${maintainerDepth}/15 (${maintainerCount} npm publisher${maintainerCount !== 1 ? "s" : ""})`,
     `  GitHub backing:       ${githubBacking}/15${githubScore !== null ? ` (GitHub score: ${githubScore}/100)` : " (no linked repo)"}`,
   ]
     .filter(Boolean)
@@ -524,6 +527,7 @@ export async function buildNpmCommitmentProfile(
     ageYears,
     versionCount,
     maintainerCount,
+    githubContributors,
     recentWeeklyDownloads: avg7d * 7,
     downloadTrend: trend,
     daysSinceLastPublish,

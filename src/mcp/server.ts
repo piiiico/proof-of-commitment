@@ -360,9 +360,9 @@ Examples: "vercel/next.js", "facebook/react", "https://github.com/piiiico/proof-
 
 server.tool(
   "lookup_npm_package",
-  `Get a behavioral commitment profile for any npm package. Returns real signals: package age, download volume and trend (growing/stable/declining), release consistency, maintainer count, and linked GitHub activity.
+  `Get a behavioral commitment profile for any npm package. Returns real signals: package age, download volume and trend (growing/stable/declining), release consistency, npm publisher count, GitHub contributor count, and linked GitHub activity.
 
-Supply chain attacks target packages with inconsistent release patterns or low maintainer depth. Behavioral signals reveal what download counts hide.
+Supply chain attacks target packages with low publisher depth (few people with npm publish access). Behavioral signals reveal what download counts hide.
 
 Useful for: vetting dependencies, identifying abandonware, due diligence on open-source packages.
 Examples: "langchain", "@anthropic-ai/sdk", "express", "litellm"`,
@@ -429,7 +429,7 @@ Examples: "langchain", "@anthropic-ai/sdk", "express", "litellm"`,
 
 server.tool(
   "lookup_pypi_package",
-  `Get a behavioral commitment profile for any PyPI (Python) package. Returns real signals: package age, download volume and trend, release consistency, maintainer/owner count, and linked GitHub activity.
+  `Get a behavioral commitment profile for any PyPI (Python) package. Returns real signals: package age, download volume and trend, release consistency, publisher/owner count, and linked GitHub activity.
 
 Supply chain attacks target Python packages — LiteLLM (97M downloads/mo) was compromised via stolen PyPI token in March 2026. Behavioral signals reveal what star counts hide.
 
@@ -501,7 +501,7 @@ server.tool(
   `Batch-score multiple npm or PyPI packages for supply chain risk. Takes a list of package names and returns a risk table sorted by commitment score (lowest = highest risk first).
 
 Risk flags:
-- CRITICAL: single maintainer + >10M weekly downloads (high-value target, minimal oversight)
+- CRITICAL: single npm publisher + >10M weekly downloads (publish-access concentration risk)
 - HIGH: new package (<1yr) + high downloads (unproven, rapid adoption = supply chain risk)
 - WARN: no release in 12+ months (potential abandonware)
 
@@ -558,9 +558,9 @@ Examples: score all deps in a project, compare two similar packages, identify ab
               const weeklyDl = profile.recentDailyDownloads * 7;
               const riskFlags: string[] = [];
               if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000)
-                riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
+                riskFlags.push("CRITICAL: sole publisher + >10M/wk");
               else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000)
-                riskFlags.push("HIGH: sole maintainer + >1M/wk");
+                riskFlags.push("HIGH: sole publisher + >1M/wk");
               if (profile.ageYears < 1 && weeklyDl > 100_000)
                 riskFlags.push("HIGH: new package (<1yr) + high downloads");
               if (profile.daysSinceLastPublish > 365)
@@ -589,9 +589,9 @@ Examples: score all deps in a project, compare two similar packages, identify ab
                 };
               const riskFlags: string[] = [];
               if (profile.maintainerCount <= 1 && profile.recentWeeklyDownloads > 10_000_000)
-                riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
+                riskFlags.push("CRITICAL: sole publisher + >10M/wk");
               else if (profile.maintainerCount <= 1 && profile.recentWeeklyDownloads > 1_000_000)
-                riskFlags.push("HIGH: sole maintainer + >1M/wk");
+                riskFlags.push("HIGH: sole publisher + >1M/wk");
               if (profile.ageYears < 1 && profile.recentWeeklyDownloads > 100_000)
                 riskFlags.push("HIGH: new package (<1yr) + high downloads");
               if (profile.daysSinceLastPublish > 365)
@@ -641,7 +641,7 @@ Examples: score all deps in a project, compare two similar packages, identify ab
             : `${r.weeklyDownloads}/wk`
           : "N/A";
       const maintStr = r.maintainers !== null
-        ? `${r.maintainers} maintainer${r.maintainers !== 1 ? "s" : ""}`
+        ? `${r.maintainers} publisher${r.maintainers !== 1 ? "s" : ""}`
         : "N/A";
       const ageStr = r.ageYears !== null
         ? r.ageYears >= 1 ? `${Math.floor(r.ageYears)}yr` : `${Math.round(r.ageYears * 12)}mo`

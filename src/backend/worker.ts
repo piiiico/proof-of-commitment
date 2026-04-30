@@ -648,6 +648,7 @@ app.post("/api/audit", async (c) => {
     ecosystem: string;
     score: number | null;
     maintainers: number | null;
+    githubContributors: number | null;
     weeklyDownloads: number | null;
     ageYears: number | null;
     trend: string | null;
@@ -679,28 +680,28 @@ app.post("/api/audit", async (c) => {
       try {
         if (usePypi) {
           const profile = await buildPyPICommitmentProfile(pkg);
-          if (!profile) return { name: pkg, ecosystem: "pypi", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
+          if (!profile) return { name: pkg, ecosystem: "pypi", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
           const weeklyDl = profile.recentDailyDownloads * 7;
           const riskFlags: string[] = [];
           if (profile.maintainerCount === 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL");
           else if (profile.ageYears < 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH");
           else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-          return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
+          return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: null, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
         } else {
           // Unscoped packages: pass preloaded weekly count (from single bulk call above)
           // Scoped packages: pass undefined so buildNpmCommitmentProfile fetches individually
           const preloadedWeekly = pkg.startsWith("@") ? undefined : bulkWeekly.get(pkg);
           const profile = await buildNpmCommitmentProfile(pkg, preloadedWeekly);
-          if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
+          if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
           const riskFlags: string[] = [];
           const wdl = profile.recentWeeklyDownloads ?? 0;
           if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
           else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
           else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-          return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
+          return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
         }
       } catch (err) {
-        return { name: pkg, ecosystem: usePypi ? "pypi" : "npm", score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
+        return { name: pkg, ecosystem: usePypi ? "pypi" : "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
       }
     })
   );
@@ -808,6 +809,7 @@ app.post("/api/audit/github", async (c) => {
     ecosystem: string;
     score: number | null;
     maintainers: number | null;
+    githubContributors: number | null;
     weeklyDownloads: number | null;
     ageYears: number | null;
     trend: string | null;
@@ -827,25 +829,25 @@ app.post("/api/audit/github", async (c) => {
           try {
             if (ecosystem === "pypi") {
               const profile = await buildPyPICommitmentProfile(pkg);
-              if (!profile) return { name: pkg, ecosystem, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
+              if (!profile) return { name: pkg, ecosystem, score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
               const weeklyDl = profile.recentDailyDownloads * 7;
               const riskFlags: string[] = [];
               if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL");
               else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH");
               if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-              return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
+              return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: null, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
             } else {
               const profile = await buildNpmCommitmentProfile(pkg);
-              if (!profile) return { name: pkg, ecosystem, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
+              if (!profile) return { name: pkg, ecosystem, score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
               const wdl = profile.recentWeeklyDownloads ?? 0;
               const riskFlags: string[] = [];
               if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
               else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH");
               if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-              return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: wdl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
+              return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: wdl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
             }
           } catch (err) {
-            return { name: pkg, ecosystem, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
+            return { name: pkg, ecosystem, score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
           }
         })
       );
@@ -1022,6 +1024,7 @@ type GraphNode = {
   name: string;
   score: number | null;
   maintainers: number | null;
+  githubContributors: number | null;
   weeklyDownloads: number | null;
   ageYears: number | null;
   trend: string | null;
@@ -1039,18 +1042,19 @@ async function scoreNpmNode(pkg: string, depth: number): Promise<GraphNode> {
   try {
     const profile = await buildNpmCommitmentProfile(pkg);
     if (!profile) {
-      return { name: pkg, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], depth, error: "not found" };
+      return { name: pkg, score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], depth, error: "not found" };
     }
     const wdl = profile.recentWeeklyDownloads ?? 0;
     const riskFlags: string[] = [];
-    if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
-    else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole maintainer + >1M/wk");
+    if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole publisher + >10M/wk");
+    else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole publisher + >1M/wk");
     if (profile.ageYears < 1 && wdl > 100_000) riskFlags.push("HIGH: new package (<1yr) + high downloads");
     if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
     return {
       name: profile.name,
       score: profile.commitmentScore,
       maintainers: profile.maintainerCount,
+      githubContributors: profile.githubContributors,
       weeklyDownloads: wdl,
       ageYears: Math.round(profile.ageYears * 10) / 10,
       trend: profile.downloadTrend,
@@ -1058,7 +1062,7 @@ async function scoreNpmNode(pkg: string, depth: number): Promise<GraphNode> {
       depth,
     };
   } catch (err) {
-    return { name: pkg, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], depth, error: err instanceof Error ? err.message : "error" };
+    return { name: pkg, score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], depth, error: err instanceof Error ? err.message : "error" };
   }
 }
 
@@ -1113,8 +1117,8 @@ async function buildNpmDepGraph(
 
   if (depth >= 2) {
     // For each risky direct dep, fetch their deps.
-    // "Risky" = CRITICAL/HIGH flag OR sole maintainer (downloads may be
-    // unreliable when fetched in bulk — sole-maintainer packages are high-risk
+    // "Risky" = CRITICAL/HIGH flag OR sole publisher (downloads may be
+    // unreliable when fetched in bulk — sole-publisher packages are high-risk
     // regardless, so we always traverse them at depth=2).
     const riskyDirect = directNodes.filter(
       (n) =>
@@ -1732,7 +1736,7 @@ app.post("/api/subscribe", async (c) => {
     .filter((p) => p.score !== null)
     .map((p) => {
       const flag = p.riskFlags.includes("CRITICAL") ? "⚑ CRITICAL" : p.riskFlags.includes("HIGH") ? "⚠ HIGH" : p.riskFlags.includes("WARN") ? "↓ WARN" : "✓ OK";
-      return `  ${p.name.padEnd(22)} ${String(p.score).padStart(3)}/100  ${p.maintainers}m  ${fmtDL(p.weeklyDownloads)}/wk  ${flag}`;
+      return `  ${p.name.padEnd(22)} ${String(p.score).padStart(3)}/100  ${p.maintainers}p  ${fmtDL(p.weeklyDownloads)}/wk  ${flag}`;
     })
     .join("\n");
 
@@ -1746,12 +1750,12 @@ app.post("/api/subscribe", async (c) => {
   const emailBody = `Supply Chain Risk Report — ${dateStr}
 
 ${critical.length > 0
-  ? `${critical.length} CRITICAL package${critical.length > 1 ? "s" : ""} detected (${critDLStr}/wk at risk from single-maintainer exposure):`
+  ? `${critical.length} CRITICAL package${critical.length > 1 ? "s" : ""} detected (${critDLStr}/wk at risk from single-publisher exposure):`
   : "Your watched packages look healthy today."}
 
 ${pkgLines || "(No packages scored yet)"}
 
-CRITICAL = sole maintainer + 10M+ weekly downloads.
+CRITICAL = sole npm publisher + 10M+ weekly downloads.
 This is the structural profile that made the April 1st axios attack possible.
 
 Audit your own project:
@@ -2078,9 +2082,9 @@ Examples: "vercel/next.js", "facebook/react", "https://github.com/piiiico/proof-
   // Tool: lookup_npm_package
   mcp.tool(
     "lookup_npm_package",
-    `Get a behavioral commitment profile for any npm package. Returns real signals that prove genuine investment: package age, download volume and trend (growing/stable/declining), release consistency, maintainer count, and linked GitHub activity.
+    `Get a behavioral commitment profile for any npm package. Returns real signals that prove genuine investment: package age, download volume and trend (growing/stable/declining), release consistency, npm publisher count, GitHub contributor count, and linked GitHub activity.
 
-Why behavioral signals matter: download counts, stars, and READMEs can be gamed. Download *trend* consistency and maintainer depth over years are harder to fake. Supply chain attacks often target packages that look popular but have low maintainer depth or inconsistent release patterns.
+Why behavioral signals matter: download counts, stars, and READMEs can be gamed. Download *trend* consistency and publisher depth over years are harder to fake. Supply chain attacks often target packages with low publisher depth (few people with npm publish access).
 
 Useful for: vetting dependencies before installation, due diligence on open-source packages, identifying abandonware, checking if a package is actively maintained.
 
@@ -2149,7 +2153,7 @@ Examples: "langchain", "@anthropic-ai/sdk", "express", "litellm"`,
   // Tool: lookup_pypi_package
   mcp.tool(
     "lookup_pypi_package",
-    `Get a behavioral commitment profile for any PyPI (Python) package. Returns real signals: package age, download volume and trend, release consistency, maintainer/owner count, and linked GitHub activity.
+    `Get a behavioral commitment profile for any PyPI (Python) package. Returns real signals: package age, download volume and trend, release consistency, publisher/owner count, and linked GitHub activity.
 
 Supply chain attacks target Python packages — LiteLLM (97M downloads/mo) was compromised via stolen PyPI token in March 2026. Behavioral signals reveal what star counts hide.
 
@@ -2222,9 +2226,9 @@ Examples: "langchain", "litellm", "openai", "anthropic", "requests", "fastapi", 
     `Batch-score multiple npm or PyPI packages for supply chain risk. Takes a list of package names and returns a risk table sorted by commitment score (lowest = highest risk first).
 
 Risk flags:
-- CRITICAL: single maintainer + >10M weekly downloads (high-value target, minimal oversight)
+- CRITICAL: single npm publisher + >10M weekly downloads (publish-access concentration risk)
 - HIGH: new package (<1yr) + high downloads (unproven, rapid adoption = supply chain risk)
-- WARN: low maintainer count + high downloads
+- WARN: low publisher count + high downloads
 
 Perfect for auditing a full package.json or requirements.txt — paste your dependency list and get a prioritized risk report.
 
@@ -2288,9 +2292,9 @@ Examples: score all deps in a project, compare two similar packages, identify ab
                 const weeklyDl = profile.recentDailyDownloads * 7;
                 const riskFlags: string[] = [];
                 if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000)
-                  riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
+                  riskFlags.push("CRITICAL: sole publisher + >10M/wk");
                 else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000)
-                  riskFlags.push("HIGH: sole maintainer + >1M/wk");
+                  riskFlags.push("HIGH: sole publisher + >1M/wk");
                 if (profile.ageYears < 1 && weeklyDl > 100_000)
                   riskFlags.push("HIGH: new package (<1yr) + high downloads");
                 if (profile.daysSinceLastPublish > 365)
@@ -2324,12 +2328,12 @@ Examples: score all deps in a project, compare two similar packages, identify ab
                   profile.maintainerCount <= 1 &&
                   profile.recentWeeklyDownloads > 10_000_000
                 )
-                  riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
+                  riskFlags.push("CRITICAL: sole publisher + >10M/wk");
                 else if (
                   profile.maintainerCount <= 1 &&
                   profile.recentWeeklyDownloads > 1_000_000
                 )
-                  riskFlags.push("HIGH: sole maintainer + >1M/wk");
+                  riskFlags.push("HIGH: sole publisher + >1M/wk");
                 if (profile.ageYears < 1 && profile.recentWeeklyDownloads > 100_000)
                   riskFlags.push("HIGH: new package (<1yr) + high downloads");
                 if (profile.daysSinceLastPublish > 365)
@@ -2382,7 +2386,7 @@ Examples: score all deps in a project, compare two similar packages, identify ab
               : `${r.weeklyDownloads}/wk`
             : "N/A";
         const maintStr =
-          r.maintainers !== null ? `${r.maintainers} maintainer${r.maintainers !== 1 ? "s" : ""}` : "N/A";
+          r.maintainers !== null ? `${r.maintainers} publisher${r.maintainers !== 1 ? "s" : ""}` : "N/A";
         const ageStr =
           r.ageYears !== null
             ? r.ageYears >= 1
@@ -2437,8 +2441,8 @@ Examples: score all deps in a project, compare two similar packages, identify ab
 This is the fastest way to audit a project — just provide the GitHub URL or owner/repo slug, and get a full risk table in seconds.
 
 Risk flags:
-- CRITICAL: single maintainer + >10M weekly downloads (high-value target like chalk, zod, axios)
-- HIGH: sole maintainer + >1M/wk downloads, OR new package (<1yr) with high adoption
+- CRITICAL: single npm publisher + >10M weekly downloads (publish-access concentration risk)
+- HIGH: sole publisher + >1M/wk downloads, OR new package (<1yr) with high adoption
 - WARN: no release in 12+ months (potential abandonware)
 
 Examples:
@@ -2505,8 +2509,8 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
                   if (!profile) return { name: pkg, ecosystem: eco, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
                   const weeklyDl = profile.recentDailyDownloads * 7;
                   const riskFlags: string[] = [];
-                  if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
-                  else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH: sole maintainer + >1M/wk");
+                  if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL: sole publisher + >10M/wk");
+                  else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH: sole publisher + >1M/wk");
                   if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
                   return { name: profile.name, ecosystem: eco, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
                 } else {
@@ -2514,8 +2518,8 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
                   if (!profile) return { name: pkg, ecosystem: eco, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
                   const wdl = profile.recentWeeklyDownloads ?? 0;
                   const riskFlags: string[] = [];
-                  if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
-                  else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole maintainer + >1M/wk");
+                  if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole publisher + >10M/wk");
+                  else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole publisher + >1M/wk");
                   if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
                   return { name: profile.name, ecosystem: eco, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: wdl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
                 }
@@ -2548,7 +2552,7 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
           ? r.weeklyDownloads >= 1_000_000 ? `${(r.weeklyDownloads / 1_000_000).toFixed(1)}M/wk`
           : r.weeklyDownloads >= 1_000 ? `${Math.round(r.weeklyDownloads / 1_000)}k/wk`
           : `${r.weeklyDownloads}/wk` : "N/A";
-        const maintStr = r.maintainers !== null ? `${r.maintainers} maint.` : "N/A";
+        const maintStr = r.maintainers !== null ? `${r.maintainers} pub.` : "N/A";
         const ageStr = r.ageYears !== null ? r.ageYears >= 1 ? `${Math.floor(r.ageYears)}yr` : `${Math.round(r.ageYears * 12)}mo` : "N/A";
         const flags = r.riskFlags.length > 0 ? ` ⚠️ ${r.riskFlags.join("; ")}` : "";
         return `  ${scoreStr.padEnd(7)} ${r.name.padEnd(35)} ${dlStr.padEnd(12)} ${maintStr.padEnd(10)} ${ageStr}${flags}`;
@@ -2585,11 +2589,11 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
     "audit_dependency_tree",
     `Map the full dependency tree of an npm package and identify CRITICAL supply chain risks at every level.
 
-Unlike auditing a flat list of packages, this tool traverses the dependency graph — showing not just your direct dependencies but also what your dependencies depend on. Hidden CRITICAL packages (sole maintainer + >10M weekly downloads) often lurk 1-2 levels deep.
+Unlike auditing a flat list of packages, this tool traverses the dependency graph — showing not just your direct dependencies but also what your dependencies depend on. Hidden CRITICAL packages (sole publisher + >10M weekly downloads) often lurk 1-2 levels deep.
 
 Risk flags:
-- CRITICAL: single maintainer + >10M weekly downloads — sole point of failure for a massive attack surface
-- HIGH: sole maintainer + >1M/wk, OR new package (<1yr) with high adoption
+- CRITICAL: single npm publisher + >10M weekly downloads — sole point of failure for a massive attack surface
+- HIGH: sole publisher + >1M/wk, OR new package (<1yr) with high adoption
 - WARN: no release in 12+ months (potential abandonware)
 
 depth=1 (default): root package + all direct dependencies
@@ -2637,7 +2641,7 @@ Use this when someone asks:
       const riskRows = riskNodes.map((n) => {
         const score = n.score !== null ? `${n.score}/100` : "N/A";
         const dl = formatDl(n.weeklyDownloads);
-        const maint = n.maintainers !== null ? `${n.maintainers} maint.` : "N/A";
+        const maint = n.maintainers !== null ? `${n.maintainers} pub.` : "N/A";
         const depthLabel = n.depth === 0 ? "root" : n.depth === 1 ? "direct" : "transitive";
         return `  ${score.padEnd(7)} ${n.name.padEnd(35)} ${dl.padEnd(12)} ${maint.padEnd(10)} [${depthLabel}] ⚠️ ${n.riskFlags[0]}`;
       });
@@ -2671,7 +2675,7 @@ Use this when someone asks:
         lines.push(``);
       }
 
-      lines.push(`Score: 0-100 behavioral commitment. CRITICAL = sole maintainer + >10M downloads/wk.`);
+      lines.push(`Score: 0-100 behavioral commitment. CRITICAL = sole npm publisher + >10M downloads/wk.`);
       lines.push(`Full audit: https://getcommit.dev/audit`);
 
       if (safeDepth === 1 && criticalNodes.length === 0 && directDeps.length > 0) {
@@ -2909,7 +2913,7 @@ async function runWeeklyDigest(env: Bindings): Promise<{ sent: number; skipped: 
           : "✓ OK";
         const change = fmtChange(r.score, r.prevScore);
         const scoreStr = `${r.score}/100${change}`;
-        return `  ${r.name.padEnd(22)} ${scoreStr.padEnd(12)}  ${r.maintainers ?? "?"}m  ${fmtDL(r.weeklyDownloads)}/wk  ${flag}`;
+        return `  ${r.name.padEnd(22)} ${scoreStr.padEnd(12)}  ${r.maintainers ?? "?"}p  ${fmtDL(r.weeklyDownloads)}/wk  ${flag}`;
       })
       .join("\n");
 
@@ -2928,7 +2932,7 @@ ${critical.length > 0
 
 ${pkgLines}
 
-CRITICAL = sole maintainer + 10M+ weekly downloads.
+CRITICAL = sole npm publisher + 10M+ weekly downloads.
 This structural profile is what made the April 1st axios supply chain attack possible.
 
 Full audit: ${auditLink}

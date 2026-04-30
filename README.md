@@ -9,10 +9,10 @@ An MCP server and web tool that scores npm packages, PyPI packages, and GitHub r
 ## The supply chain problem
 
 Four packages in a typical Node.js project are CRITICAL right now:
-- **chalk** — 412M downloads/week, **1 maintainer**
-- **zod** — 160M downloads/week, **1 maintainer**
-- **lodash** — 147M downloads/week, **1 maintainer**
-- **axios** — 100M downloads/week, **1 maintainer** (attacked April 1st, 2026)
+- **chalk** — 412M downloads/week, **1 npm publisher**
+- **zod** — 160M downloads/week, **1 npm publisher** (30+ GitHub contributors)
+- **lodash** — 147M downloads/week, **1 npm publisher**
+- **axios** — 100M downloads/week, **1 npm publisher** (attacked April 1st, 2026)
 
 Stars and README quality don't surface this. Behavioral signals do.
 
@@ -124,7 +124,7 @@ Examples:
 | express | `![Commit Trust](https://poc-backend.amdal-dev.workers.dev/badge/express)` |
 | @babel/core | `![Commit Trust](https://poc-backend.amdal-dev.workers.dev/badge/@babel/core)` |
 
-Grades: 🟢 OK (75+) · 🟠 WARNING (40–74) · 🔴 CRITICAL (<40 or sole maintainer with 10M+ weekly downloads)
+Grades: 🟢 OK (75+) · 🟠 WARNING (40–74) · 🔴 CRITICAL (<40 or sole npm publisher with 10M+ weekly downloads)
 
 Badges are cached 1 hour. No API key needed.
 
@@ -182,24 +182,24 @@ curl https://poc-backend.amdal-dev.workers.dev/api/audit \
 Each package is scored 0–100 across:
 
 - **Longevity** — How long has the package existed? Abandoned packages get reactivated for attacks.
-- **Maintainer depth** — Single maintainer + millions of weekly downloads = the attack surface LiteLLM exploited.
+- **Publisher depth** — Single npm publisher + millions of weekly downloads = the attack surface LiteLLM exploited. (Publisher = person with npm publish access, distinct from GitHub contributors.)
 - **Release consistency** — Regular releases signal active oversight. Long gaps = vulnerability accumulation.
 - **Download trend** — Growing packages attract more scrutiny (and attacks). Stable = lower profile.
 
 **Risk flags:**
-- `CRITICAL` — single maintainer + >10M weekly downloads (exact LiteLLM/axios attack profile)
+- `CRITICAL` — single npm publisher + >10M weekly downloads (exact LiteLLM/axios attack profile)
 - `HIGH` — package <1yr old + rapid adoption
 - `WARN` — no release in 12+ months
 
 ## Real data points
 
 ```
-chalk     — score 75, 1 maintainer, 411M/week  ⚑ CRITICAL
-zod       — score 83, 1 maintainer, 159M/week  ⚑ CRITICAL
-lodash    — score 87, 1 maintainer, 146M/week  ⚑ CRITICAL
-axios     — score 86, 1 maintainer, 100M/week  ⚑ CRITICAL (attacked Apr 1 2026)
-express   — score 97, 5 maintainers, 92M/week
-litellm   — score 74, 1 maintainer           ⚑ CRITICAL (supply chain attack Mar 2026)
+chalk     — score 75, 1 publisher, 411M/week  ⚑ CRITICAL
+zod       — score 83, 1 publisher, 159M/week  ⚑ CRITICAL  (30+ GitHub contributors)
+lodash    — score 87, 1 publisher, 146M/week  ⚑ CRITICAL
+axios     — score 86, 1 publisher, 100M/week  ⚑ CRITICAL  (attacked Apr 1 2026)
+express   — score 97, 5 publishers, 92M/week
+litellm   — score 74, 1 publisher           ⚑ CRITICAL  (supply chain attack Mar 2026)
 ```
 
 ## Why behavioral signals
@@ -237,7 +237,7 @@ See [open issues](https://github.com/piiiico/proof-of-commitment/issues) for thi
 
 Supply chain auditing is the first tool. The underlying primitive is a **commitment graph** — behavioral signals that replace content-based trust across any domain.
 
-When content is free to fake (reviews, stars, READMEs), commitment becomes the signal. A maintainer who has shipped 847 releases over 12 years is a different kind of commitment than one who published once in 2023.
+When content is free to fake (reviews, stars, READMEs), commitment becomes the signal. A publisher who has shipped 847 releases over 12 years is a different kind of commitment than one who published once in 2023.
 
 The same logic applies to websites, businesses, and AI agents. Two card networks have independently named this gap: Mastercard Verifiable Intent §9.2 explicitly lists behavioral trust as "not covered." Visa TAP identifies agents without answering whether to trust them.
 
