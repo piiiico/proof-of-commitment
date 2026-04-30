@@ -20,7 +20,7 @@ inputs:
     required: false
     default: 'auto'
   fail-on-critical:
-    description: 'Fail the workflow if CRITICAL packages are found (sole maintainer + >10M weekly downloads)'
+    description: 'Fail the workflow if CRITICAL packages are found (sole publisher + >10M weekly downloads)'
     required: false
     default: 'true'
   max-packages:

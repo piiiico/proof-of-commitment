@@ -295,7 +295,7 @@ table = "\n".join(table_lines)
 
 if has_critical:
     headline = (
-        f"🔴 **{critical_count} CRITICAL** package(s) — sole maintainer + >10M weekly downloads. "
+        f"🔴 **{critical_count} CRITICAL** package(s) — sole publisher + >10M weekly downloads. "
         f"Same risk profile as the axios (April 2026) and LiteLLM (March 2026) attacks.\n\n"
         f"Critical: {', '.join(f'`{p}`' for p in critical_packages)}"
     )
@@ -316,7 +316,7 @@ summary = f"""{COMMIT_MARKER}
 {headline}
 
 > Scored by [Commit](https://getcommit.dev) — behavioral commitment signals for supply chain trust.
-> **CRITICAL** = sole maintainer + >10M weekly downloads (historically high-value attack targets).
+> **CRITICAL** = sole publisher + >10M weekly downloads (historically high-value attack targets).
 > [What these scores mean](https://getcommit.dev/audit)
 """
 

@@ -501,7 +501,7 @@ export async function buildNpmCommitmentProfile(
     `Age: ${ageStr}`,
     `Versions published: ${versionCount} | Last: ${recentStr}`,
     `Downloads: ${dlStr}`,
-    `npm publishers: ${maintainerCount}${githubContributors !== null ? ` | GitHub contributors: ${githubContributors === 35 ? "30+" : githubContributors}` : ""}`,
+    `npm publishers: ${maintainerCount}${githubContributors !== null ? ` | GitHub contributors: ${githubContributors >= 30 ? "30+" : githubContributors}` : ""}`,
     repoUrl ? `Repository: ${repoUrl}` : "No linked repository",
     pkg.license ? `License: ${pkg.license}` : "No license specified",
     githubScore !== null
