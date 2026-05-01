@@ -2719,6 +2719,16 @@ app.use("/mcp", cors({
 
 // MCP Streamable HTTP endpoint — stateless (fresh server per request)
 app.all("/mcp", async (c) => {
+  // Stateless mode: reject GET/DELETE requests.
+  // GET would open an SSE stream that hangs forever in CF Workers (no session state to push),
+  // causing the runtime to kill the request after 30s with a scriptThrewException error.
+  if (c.req.method === "GET" || c.req.method === "DELETE") {
+    return c.json(
+      { error: "SSE streaming not supported in stateless mode. Use POST for MCP requests." },
+      405
+    );
+  }
+
   // Normalize Accept header for scanners (e.g. Glama) that send only 'application/json'
   // without 'text/event-stream'. The MCP SDK requires text/event-stream to be present
   // or it returns 406 Not Acceptable, causing tools:[] in scanner results.
