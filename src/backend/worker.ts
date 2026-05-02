@@ -2724,15 +2724,24 @@ app.use("/mcp", cors({
 
 // MCP Streamable HTTP endpoint — stateless (fresh server per request)
 app.all("/mcp", async (c) => {
-  // Normalize Accept header for scanners (e.g. Glama) that send only 'application/json'
-  // without 'text/event-stream'. The MCP SDK requires text/event-stream to be present
-  // or it returns 406 Not Acceptable, causing tools:[] in scanner results.
+  // Normalize Accept header for scanners (e.g. Glama) that send '*/*', only 'application/json',
+  // or no Accept header at all. The MCP SDK does strict string matching — it requires the
+  // Accept header to explicitly contain both "application/json" AND "text/event-stream" as
+  // literal values, or it returns 406 Not Acceptable, causing tools:[] in scanner results.
+  // Note: "*/*" does NOT satisfy this — the SDK doesn't do media-type wildcard expansion.
   const req = c.req.raw;
   const accept = req.headers.get("accept") ?? "";
   let targetReq = req;
-  if (!accept.includes("text/event-stream")) {
+  const hasExplicitJson = accept.includes("application/json");
+  const hasExplicitSse = accept.includes("text/event-stream");
+  if (!hasExplicitJson || !hasExplicitSse) {
     const headers = new Headers(req.headers);
-    headers.set("accept", (accept ? accept + ", " : "") + "text/event-stream");
+    // Build full accept value: keep original (e.g. "*/*") and append what's missing.
+    const extras: string[] = [];
+    if (!hasExplicitJson) extras.push("application/json");
+    if (!hasExplicitSse) extras.push("text/event-stream");
+    const fullAccept = accept ? `${accept}, ${extras.join(", ")}` : extras.join(", ");
+    headers.set("accept", fullAccept);
     targetReq = new Request(req, { headers });
   }
   const transport = new WebStandardStreamableHTTPServerTransport({
