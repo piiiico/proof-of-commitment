@@ -58,6 +58,19 @@ Browser extension (Chrome Manifest V3, branded "Commit")
 - Read files before editing — codebase may have changed
 - `knowledge/` folder is an Obsidian vault — use `[[wikilinks]]` in docs
 
+## Deploy guards
+
+`deploy.ts` runs a pre-deploy divergence check before uploading to Cloudflare. It:
+1. Fetches the currently-deployed `worker.js` from Cloudflare via REST (multipart response).
+2. Extracts meaningful tokens: string literals ≥3 chars + identifiers ≥7 chars (excluding common JS keywords/builtins).
+3. Computes tokens present in production but absent from the local build.
+4. If any production-only tokens are found, prints a loud warning with the token list.
+5. **Interactive (TTY):** asks `Type CONFIRM to proceed anyway`. **CI/non-TTY:** exits 1 unless `DEPLOY_FORCE=1` is set.
+
+This catches source/production divergence — the pattern where a fix is deployed directly to Cloudflare (via wrangler or dashboard) but never committed to source. Validated: detected the `time[latestVersion]` vs `time["modified"]` divergence from May 2026.
+
+Advisory only (warn + confirm, not hard-block) to keep deployment friction low while surfacing the risk clearly.
+
 ## Don't
 - Don't add blockchain/token infrastructure yet
 - Don't over-engineer aggregation — simple counts first
