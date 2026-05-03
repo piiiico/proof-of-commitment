@@ -289,9 +289,22 @@ export async function buildNpmCommitmentProfile(
 
   const now = Date.now();
   const created = new Date(pkg.time["created"] ?? "").getTime() || now;
-  const modified = new Date(pkg.time["modified"] ?? "").getTime() || now;
   const ageYears = (now - created) / (365.25 * 24 * 3600 * 1000);
-  const daysSinceLastPublish = Math.round((now - modified) / (24 * 3600 * 1000));
+
+  // Latest published version — used for the "actual last publish event" date.
+  // pkg.time["modified"] is npm's metadata-modification time (refreshes on
+  // ownership changes, deprecation flags, advisories) and is NOT the last
+  // publish event. Use pkg.time[latestVersion] for the actual publish event.
+  // Fall back to pkg.time.modified only if the latest version timestamp is
+  // missing (defensive — should not happen for published packages).
+  const latestVersion = pkg["dist-tags"]["latest"] ?? null;
+  const lastPublishMs =
+    latestVersion && pkg.time[latestVersion]
+      ? new Date(pkg.time[latestVersion]).getTime()
+      : new Date(pkg.time["modified"] ?? "").getTime() || now;
+  const daysSinceLastPublish = Math.round(
+    (now - lastPublishMs) / (24 * 3600 * 1000)
+  );
 
   // Version count (exclude "created" and "modified" metadata keys)
   const versions = Object.keys(pkg.time).filter(
@@ -307,9 +320,6 @@ export async function buildNpmCommitmentProfile(
     pkg.repository?.url ??
       pkg.versions[pkg["dist-tags"]["latest"] ?? ""]?.repository?.url
   );
-
-  // Latest version
-  const latestVersion = pkg["dist-tags"]["latest"] ?? null;
 
   // 2. Downloads (last 6 months)
   const startDate = formatDate(180);

@@ -188,8 +188,13 @@ export async function buildGitHubCommitmentProfile(
   let releaseCount = 0;
   let latestRelease: string | null = null;
   try {
+    // per_page=100 is GitHub's max — gives accurate stable-release count up to
+    // 100 (which exceeds our scoring threshold of >=10). per_page=10 truncates
+    // and under-reports both releaseCount and the displayed value when many of
+    // the latest 10 releases are prereleases (e.g. tj/commander.js: 8 stable
+    // surface vs 67 actual).
     const relRes = await ghFetch(
-      `/repos/${owner}/${repo}/releases?per_page=10`
+      `/repos/${owner}/${repo}/releases?per_page=100`
     );
     if (relRes.ok) {
       const releases = (await relRes.json()) as Release[];
