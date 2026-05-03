@@ -289,9 +289,17 @@ export async function buildNpmCommitmentProfile(
 
   const now = Date.now();
   const created = new Date(pkg.time["created"] ?? "").getTime() || now;
-  const modified = new Date(pkg.time["modified"] ?? "").getTime() || now;
   const ageYears = (now - created) / (365.25 * 24 * 3600 * 1000);
-  const daysSinceLastPublish = Math.round((now - modified) / (24 * 3600 * 1000));
+
+  // Latest version
+  const latestVersion = pkg["dist-tags"]["latest"] ?? null;
+
+  // Use the latest version's actual publish date, NOT pkg.time["modified"]
+  // (modified is updated on metadata changes like deprecations, not new releases)
+  const latestVersionTime = latestVersion && pkg.time[latestVersion]
+    ? new Date(pkg.time[latestVersion]).getTime()
+    : new Date(pkg.time["modified"] ?? "").getTime() || now;
+  const daysSinceLastPublish = Math.round((now - latestVersionTime) / (24 * 3600 * 1000));
 
   // Version count (exclude "created" and "modified" metadata keys)
   const versions = Object.keys(pkg.time).filter(
@@ -307,9 +315,6 @@ export async function buildNpmCommitmentProfile(
     pkg.repository?.url ??
       pkg.versions[pkg["dist-tags"]["latest"] ?? ""]?.repository?.url
   );
-
-  // Latest version
-  const latestVersion = pkg["dist-tags"]["latest"] ?? null;
 
   // 2. Downloads (last 6 months)
   const startDate = formatDate(180);

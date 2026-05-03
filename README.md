@@ -206,9 +206,9 @@ Each package is scored 0–100 across:
 # packages you know about:
 chalk       — score 75, 1 publisher, 413M/week  ⚑ CRITICAL
 zod         — score 86, 1 publisher, 163M/week  ⚑ CRITICAL  (30+ GitHub contributors)
-lodash      — score 83, 1 publisher, 145M/week  ⚑ CRITICAL
+lodash      — score 81, 1 publisher, 145M/week  ⚑ CRITICAL
 axios       — score 86, 1 publisher,  99M/week  ⚑ CRITICAL  (attacked Mar 30 2026)
-express     — score 94, 5 publishers, 95M/week
+express     — score 90, 5 publishers, 95M/week
 
 # packages probably not in your package.json, definitely in your lock file:
 minimatch   — score 78, 1 publisher, 562M/week  ⚑ CRITICAL
