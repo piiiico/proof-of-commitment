@@ -8,25 +8,34 @@ An MCP server and web tool that scores npm packages, PyPI packages, and GitHub r
 
 ## The supply chain problem
 
-Four packages in a typical Node.js project are CRITICAL right now:
-- **chalk** — 412M downloads/week, **1 npm publisher**
-- **zod** — 160M downloads/week, **1 npm publisher** (30+ GitHub contributors)
-- **lodash** — 147M downloads/week, **1 npm publisher**
-- **axios** — 100M downloads/week, **1 npm publisher** (attacked April 1st, 2026)
+26 of the 91 npm packages with >10M weekly downloads have a **single npm publisher**. Together they account for over 3 billion downloads per week. `npm audit` doesn't surface this. Stars don't either.
 
-Stars and README quality don't surface this. Behavioral signals do.
+Four packages in a typical Node.js project are CRITICAL right now:
+- **chalk** — 413M downloads/week, **1 npm publisher**
+- **zod** — 163M downloads/week, **1 npm publisher** (30+ GitHub contributors)
+- **lodash** — 145M downloads/week, **1 npm publisher**
+- **axios** — 99M downloads/week, **1 npm publisher** (attacked March 30, 2026)
+
+They won't appear in your `package.json` either — but these are in almost every project:
+- **minimatch** — 562M downloads/week, **1 npm publisher**
+- **glob** — 333M downloads/week, **1 npm publisher**
+- **cross-spawn** — 190M downloads/week, **1 npm publisher**
+
+Behavioral signals surface this. Stars and READMEs don't.
 
 ## Try it now
 
 **Terminal (zero install):**
 ```bash
 npx proof-of-commitment axios zod chalk
-# or scan your own project:
+# scan your own project:
 npx proof-of-commitment --file package.json
-# NEW: scan ALL transitive dependencies via lock file:
+# scan ALL transitive dependencies via lock file (finds the hidden CRITICAL packages):
 npx proof-of-commitment --file package-lock.json   # npm
 npx proof-of-commitment --file yarn.lock           # yarn
 npx proof-of-commitment --file pnpm-lock.yaml      # pnpm
+# JSON output for CI/CD pipelines (exits 1 if CRITICAL found):
+npx proof-of-commitment --file package-lock.json --json | jq '.criticalCount'
 # PyPI too:
 npx proof-of-commitment --pypi litellm langchain requests
 ```
@@ -194,17 +203,25 @@ Each package is scored 0–100 across:
 ## Real data points
 
 ```
-chalk     — score 75, 1 publisher, 411M/week  ⚑ CRITICAL
-zod       — score 83, 1 publisher, 159M/week  ⚑ CRITICAL  (30+ GitHub contributors)
-lodash    — score 87, 1 publisher, 146M/week  ⚑ CRITICAL
-axios     — score 86, 1 publisher, 100M/week  ⚑ CRITICAL  (attacked Apr 1 2026)
-express   — score 97, 5 publishers, 92M/week
-litellm   — score 74, 1 publisher           ⚑ CRITICAL  (supply chain attack Mar 2026)
+# packages you know about:
+chalk       — score 75, 1 publisher, 413M/week  ⚑ CRITICAL
+zod         — score 86, 1 publisher, 163M/week  ⚑ CRITICAL  (30+ GitHub contributors)
+lodash      — score 83, 1 publisher, 145M/week  ⚑ CRITICAL
+axios       — score 86, 1 publisher,  99M/week  ⚑ CRITICAL  (attacked Mar 30 2026)
+express     — score 94, 5 publishers, 95M/week
+
+# packages probably not in your package.json, definitely in your lock file:
+minimatch   — score 78, 1 publisher, 562M/week  ⚑ CRITICAL
+glob        — score 80, 1 publisher, 333M/week  ⚑ CRITICAL
+cross-spawn — score 72, 1 publisher, 190M/week  ⚑ CRITICAL
+
+# post-attack:
+litellm     — score 74, 1 publisher            ⚑ CRITICAL  (supply chain attack Mar 2026)
 ```
 
 ## Why behavioral signals
 
-The LiteLLM attack (March 2026) and axios attack (April 2026) followed the same pattern: stolen credentials → malicious package pushed → 97M+ machines exposed. Both packages scored CRITICAL by these metrics *before* the attacks.
+The LiteLLM attack (March 2026) and axios attack (March 30, 2026) followed the same pattern: stolen credentials → malicious package pushed → 97M+ machines exposed. Both packages scored CRITICAL by these metrics *before* the attacks.
 
 Declarative signals (stars, README quality, CI badges) don't capture this risk. Behavioral commitment does.
 
