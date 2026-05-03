@@ -134,6 +134,11 @@ async function verifyWorldIdToken(token: string): Promise<JWTPayload> {
 type Bindings = {
   DB: D1Database;
   RESEND_API_KEY?: string;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  STRIPE_PRICE_PRO?: string;       // Stripe Price ID for Pro ($29/mo recurring)
+  STRIPE_PRICE_DEV?: string;       // Stripe Price ID for Developer ($15/mo recurring)
+  ADMIN_SECRET?: string;
 };
 
 // API key context attached to requests that use Bearer authentication
@@ -2729,15 +2734,24 @@ app.all("/mcp", async (c) => {
     );
   }
 
-  // Normalize Accept header for scanners (e.g. Glama) that send only 'application/json'
-  // without 'text/event-stream'. The MCP SDK requires text/event-stream to be present
-  // or it returns 406 Not Acceptable, causing tools:[] in scanner results.
+  // Normalize Accept header for scanners (e.g. Glama) that send '*/*', only 'application/json',
+  // or no Accept header at all. The MCP SDK does strict string matching — it requires the
+  // Accept header to explicitly contain both "application/json" AND "text/event-stream" as
+  // literal values, or it returns 406 Not Acceptable, causing tools:[] in scanner results.
+  // Note: "*/*" does NOT satisfy this — the SDK doesn't do media-type wildcard expansion.
   const req = c.req.raw;
   const accept = req.headers.get("accept") ?? "";
   let targetReq = req;
-  if (!accept.includes("text/event-stream")) {
+  const hasExplicitJson = accept.includes("application/json");
+  const hasExplicitSse = accept.includes("text/event-stream");
+  if (!hasExplicitJson || !hasExplicitSse) {
     const headers = new Headers(req.headers);
-    headers.set("accept", (accept ? accept + ", " : "") + "text/event-stream");
+    // Build full accept value: keep original (e.g. "*/*") and append what's missing.
+    const extras: string[] = [];
+    if (!hasExplicitJson) extras.push("application/json");
+    if (!hasExplicitSse) extras.push("text/event-stream");
+    const fullAccept = accept ? `${accept}, ${extras.join(", ")}` : extras.join(", ");
+    headers.set("accept", fullAccept);
     targetReq = new Request(req, { headers });
   }
   const transport = new WebStandardStreamableHTTPServerTransport({
@@ -2981,6 +2995,256 @@ Unsubscribe: ${unsubLink}`;
 
   return { sent, skipped };
 }
+
+// ── Stripe Checkout ──────────────────────────────────────────────────
+
+/**
+ * Verify Stripe webhook signature (HMAC-SHA256, constant-time comparison).
+ * sig format: "t=timestamp,v1=hash,v0=legacy"
+ */
+async function verifyStripeWebhook(payload: string, sig: string, secret: string): Promise<boolean> {
+  const parts = sig.split(",").reduce((acc, pair) => {
+    const eqIdx = pair.indexOf("=");
+    if (eqIdx > 0) acc.set(pair.slice(0, eqIdx), pair.slice(eqIdx + 1));
+    return acc;
+  }, new Map<string, string>());
+
+  const timestamp = parts.get("t");
+  const v1Sig = parts.get("v1");
+  if (!timestamp || !v1Sig) return false;
+
+  // Reject events older than 5 minutes (replay attack prevention)
+  const age = Math.abs(Date.now() / 1000 - Number(timestamp));
+  if (age > 300) return false;
+
+  const signedPayload = `${timestamp}.${payload}`;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const macBuffer = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signedPayload));
+  const computedHex = Array.from(new Uint8Array(macBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+  // Constant-time comparison via timing-safe check (length check first)
+  if (computedHex.length !== v1Sig.length) return false;
+  let diff = 0;
+  for (let i = 0; i < computedHex.length; i++) {
+    diff |= computedHex.charCodeAt(i) ^ v1Sig.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+/**
+ * GET /api/checkout?tier=pro|developer
+ * Creates a Stripe Checkout Session and redirects to Stripe hosted checkout.
+ *
+ * Required env vars (set via Cloudflare dashboard → Workers → Settings → Variables):
+ *   STRIPE_SECRET_KEY  — sk_live_... or sk_test_...
+ *   STRIPE_PRICE_PRO   — Price ID for Pro $29/mo recurring
+ *   STRIPE_PRICE_DEV   — Price ID for Developer $15/mo recurring
+ */
+app.get("/api/checkout", async (c) => {
+  const stripeKey = c.env.STRIPE_SECRET_KEY;
+
+  if (!stripeKey) {
+    // Stripe not configured — redirect to pricing with notice
+    return c.redirect("https://getcommit.dev/pricing#waitlist", 302);
+  }
+
+  const tier = (c.req.query("tier") ?? "pro").toLowerCase();
+  const priceId = tier === "developer" ? c.env.STRIPE_PRICE_DEV : c.env.STRIPE_PRICE_PRO;
+
+  if (!priceId) {
+    console.error(`Stripe price not configured for tier: ${tier}`);
+    return c.redirect("https://getcommit.dev/pricing?error=tier_unavailable", 302);
+  }
+
+  const params = new URLSearchParams({
+    mode: "subscription",
+    success_url: "https://getcommit.dev/checkout/success?session_id={CHECKOUT_SESSION_ID}",
+    cancel_url: "https://getcommit.dev/pricing",
+    "line_items[0][price]": priceId,
+    "line_items[0][quantity]": "1",
+    allow_promotion_codes: "true",
+    billing_address_collection: "required",
+    "metadata[tier]": tier,
+  });
+
+  try {
+    const resp = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${stripeKey}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params.toString(),
+    });
+
+    if (!resp.ok) {
+      const err = (await resp.json()) as { error?: { message?: string } };
+      console.error("Stripe API error:", err.error?.message ?? resp.status);
+      return c.redirect("https://getcommit.dev/pricing?error=checkout_failed", 302);
+    }
+
+    const session = (await resp.json()) as { url: string };
+    return c.redirect(session.url, 302);
+  } catch (err) {
+    console.error("Checkout error:", err instanceof Error ? err.message : err);
+    return c.redirect("https://getcommit.dev/pricing?error=checkout_failed", 302);
+  }
+});
+
+/**
+ * POST /api/stripe/webhook
+ * Handles Stripe events. Register this URL in Stripe Dashboard → Webhooks.
+ *
+ * Events handled:
+ *   checkout.session.completed    — provision API key, email to customer
+ *   customer.subscription.deleted — revoke API key on cancellation
+ *
+ * Required env var:
+ *   STRIPE_WEBHOOK_SECRET  — whsec_... (from Stripe Dashboard → Webhooks → signing secret)
+ */
+app.post("/api/stripe/webhook", async (c) => {
+  const webhookSecret = c.env.STRIPE_WEBHOOK_SECRET;
+  const rawBody = await c.req.text();
+  const sig = c.req.header("stripe-signature") ?? "";
+
+  if (webhookSecret) {
+    const isValid = await verifyStripeWebhook(rawBody, sig, webhookSecret);
+    if (!isValid) {
+      return c.json({ error: "invalid_signature" }, 400);
+    }
+  }
+
+  let event: { type: string; data: { object: Record<string, unknown> } };
+  try {
+    event = JSON.parse(rawBody);
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+
+  // ── checkout.session.completed: provision API key ──────────────────
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object as {
+      customer_details?: { email?: string };
+      customer_email?: string;
+      customer?: string;
+      subscription?: string;
+      metadata?: { tier?: string };
+    };
+
+    const email = (session.customer_details?.email ?? session.customer_email ?? "").toLowerCase().trim();
+    const tier = (session.metadata?.tier ?? "pro") as "pro" | "developer";
+    const stripeCustomerId = session.customer as string | undefined;
+    const subscriptionId = session.subscription as string | undefined;
+
+    if (!email) {
+      console.error("Stripe webhook: no email in checkout session");
+      return c.json({ error: "no_email" }, 400);
+    }
+
+    // Revoke any existing active keys for this email + tier
+    await c.env.DB.prepare(
+      `UPDATE api_keys SET revoked_at = datetime('now')
+       WHERE email = ? AND tier = ? AND revoked_at IS NULL`
+    ).bind(email, tier).run();
+
+    // Generate new API key
+    const rawBytes = new Uint8Array(16);
+    crypto.getRandomValues(rawBytes);
+    const randomHex = Array.from(rawBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+    const apiKey = `sk_commit_${randomHex}`;
+    const keyHash = await sha256Hex(apiKey);
+    const keyPrefix = apiKey.slice(0, 19);
+
+    const idBytes = new Uint8Array(8);
+    crypto.getRandomValues(idBytes);
+    const id = Array.from(idBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+    const periodResetAt = nextResetAt("monthly");
+
+    await c.env.DB.prepare(
+      `INSERT INTO api_keys
+         (id, key_hash, key_prefix, email, tier, requests_this_period, period_reset_at,
+          stripe_customer_id, stripe_subscription_id, created_at)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, datetime('now'))`
+    ).bind(id, keyHash, keyPrefix, email, tier, periodResetAt, stripeCustomerId ?? null, subscriptionId ?? null).run();
+
+    // Email the API key via Resend
+    if (c.env.RESEND_API_KEY) {
+      const tierLabel = tier === "developer" ? "Developer" : "Pro";
+      const tierPrice = tier === "developer" ? "$15/mo" : "$29/mo";
+      const limits = tier === "developer"
+        ? "1,000 req/day · Batch API (5 packages) · 2,000 batch req/month"
+        : "10,000 req/month · Batch API (20 packages) · 10 monitored projects";
+
+      const emailText = `Your Commit ${tierLabel} API Key
+
+Here's your Commit ${tierLabel} (${tierPrice}) API key:
+
+  ${apiKey}
+
+This key won't be shown again — save it somewhere safe.
+
+What you get (${tierLabel}):
+  ${limits}
+
+Quick start:
+  curl https://poc-backend.amdal-dev.workers.dev/api/audit \\
+    -H "Authorization: Bearer ${apiKey}" \\
+    -H "Content-Type: application/json" \\
+    -d '{"packages": ["express", "lodash"]}'
+
+Check usage:
+  curl https://poc-backend.amdal-dev.workers.dev/api/keys/usage \\
+    -H "Authorization: Bearer ${apiKey}"
+
+Docs: https://getcommit.dev/docs
+
+—
+Commit · getcommit.dev`;
+
+      try {
+        await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${c.env.RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            from: "Commit <noreply@getcommit.dev>",
+            to: [email],
+            subject: `Your Commit ${tierLabel} API Key`,
+            text: emailText,
+          }),
+        });
+      } catch (emailErr) {
+        console.error("Failed to send API key email:", emailErr instanceof Error ? emailErr.message : emailErr);
+      }
+    }
+  }
+
+  // ── customer.subscription.deleted: revoke key on cancellation ──────
+  if (event.type === "customer.subscription.deleted") {
+    const subscription = event.data.object as { customer?: string };
+    const stripeCustomerId = subscription.customer as string | undefined;
+
+    if (stripeCustomerId) {
+      await c.env.DB.prepare(
+        `UPDATE api_keys SET revoked_at = datetime('now')
+         WHERE stripe_customer_id = ? AND revoked_at IS NULL`
+      ).bind(stripeCustomerId).run();
+    }
+  }
+
+  return c.json({ ok: true });
+});
 
 // Export with scheduled handler support
 export default {
