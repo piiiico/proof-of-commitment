@@ -243,7 +243,7 @@ Planned, not promised. The project is early-stage — contributions welcome on a
 | **Cargo (Rust) registry support** | Planned | Extend the npm/pypi scoring pattern to crates.io |
 | **Go modules support** | Planned | pkg.go.dev API + GitHub backing score |
 | **Score breakdown visualization** | Planned | Chart component for the 5 dimensions on getcommit.dev/audit |
-| **`--json` flag for CLI** | Planned | Structured output for CI/CD pipelines (`jq`, `--fail-on-critical`) |
+| **`--json` flag for CLI** | ✅ Live | `npx proof-of-commitment --file package-lock.json --json \| jq '.criticalCount'` |
 | **pnpm workspace monorepo support** | Planned | Detect `pnpm-workspace.yaml`, audit all packages |
 | **Historical score tracking** | Planned | Trend charts — was this package getting riskier over time? |
 | **Org-level dashboards** | Planned | Aggregate risk view across all repos in a GitHub org |
