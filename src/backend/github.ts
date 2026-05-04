@@ -16,6 +16,7 @@
  */
 
 const GH_API = "https://api.github.com";
+const SCORECARD_API = "https://api.securityscorecards.dev";
 const GH_HEADERS = {
   Accept: "application/vnd.github+json",
   "User-Agent": "proof-of-commitment-mcp/1.0",
@@ -73,6 +74,10 @@ export interface GitHubCommitmentProfile {
   latestRelease: string | null;
   releaseCount: number;
   daysSinceLastPush: number;
+
+  // Build/process integrity (OpenSSF Scorecard)
+  scorecardScore: number | null; // 0–10 overall Scorecard score (null = not available)
+  hasDangerousWorkflow: boolean | null; // true = Dangerous-Workflow check failed (score 0)
 
   // Score
   commitmentScore: number;
@@ -184,26 +189,37 @@ export async function buildGitHubCommitmentProfile(
     // Non-fatal
   }
 
-  // 4. Releases
+  // 4. Releases + Scorecard (concurrent)
   let releaseCount = 0;
   let latestRelease: string | null = null;
-  try {
-    // per_page=100 is GitHub's max — gives accurate stable-release count up to
-    // 100 (which exceeds our scoring threshold of >=10). per_page=10 truncates
-    // and under-reports both releaseCount and the displayed value when many of
-    // the latest 10 releases are prereleases (e.g. tj/commander.js: 8 stable
-    // surface vs 67 actual).
-    const relRes = await ghFetch(
-      `/repos/${owner}/${repo}/releases?per_page=100`
-    );
-    if (relRes.ok) {
+  let scorecardScore: number | null = null;
+  let hasDangerousWorkflow: boolean | null = null;
+
+  const [relResult, scorecardResult] = await Promise.allSettled([
+    (async () => {
+      // per_page=100 is GitHub's max — gives accurate stable-release count up to
+      // 100 (which exceeds our scoring threshold of >=10). per_page=10 truncates
+      // and under-reports both releaseCount and the displayed value when many of
+      // the latest 10 releases are prereleases (e.g. tj/commander.js: 8 stable
+      // surface vs 67 actual).
+      const relRes = await ghFetch(
+        `/repos/${owner}/${repo}/releases?per_page=100`
+      );
+      if (!relRes.ok) return { releaseCount: 0, latestRelease: null };
       const releases = (await relRes.json()) as Release[];
       const stable = releases.filter((r) => !r.prerelease);
-      releaseCount = stable.length;
-      latestRelease = stable[0]?.tag_name ?? null;
-    }
-  } catch {
-    // Non-fatal
+      return { releaseCount: stable.length, latestRelease: stable[0]?.tag_name ?? null };
+    })(),
+    fetchScorecardScore(owner, repo),
+  ]);
+
+  if (relResult.status === "fulfilled" && relResult.value) {
+    releaseCount = relResult.value.releaseCount;
+    latestRelease = relResult.value.latestRelease;
+  }
+  if (scorecardResult.status === "fulfilled" && scorecardResult.value) {
+    scorecardScore = scorecardResult.value.score;
+    hasDangerousWorkflow = scorecardResult.value.hasDangerousWorkflow;
   }
 
   // 5. Score
@@ -236,6 +252,11 @@ export async function buildGitHubCommitmentProfile(
       ? `${recentCommits30d} commits in the last 30 days`
       : `no commits in the last 30 days (last push ${Math.round(daysSinceLastPush)} days ago)`;
 
+  const scorecardStr =
+    scorecardScore !== null
+      ? `OpenSSF Scorecard: ${scorecardScore}/10${hasDangerousWorkflow ? " ⚠️  Dangerous workflow detected" : ""}`
+      : null;
+
   const lines = [
     `Repository: ${repoData.full_name}`,
     repoData.description ? `Description: ${repoData.description}` : null,
@@ -247,6 +268,7 @@ export async function buildGitHubCommitmentProfile(
     repoData.language ? `Primary language: ${repoData.language}` : null,
     repoData.license ? `License: ${repoData.license.spdx_id}` : "No license",
     repoData.archived ? "⚠️  Repository is archived (read-only)" : null,
+    scorecardStr,
     ``,
     `Commitment Score: ${adjustedScore}/100`,
     `  Longevity:       ${longevity}/30`,
@@ -276,6 +298,8 @@ export async function buildGitHubCommitmentProfile(
     latestRelease,
     releaseCount,
     daysSinceLastPush: Math.round(daysSinceLastPush),
+    scorecardScore,
+    hasDangerousWorkflow,
     commitmentScore: adjustedScore,
     scoreBreakdown: {
       longevity,
@@ -286,6 +310,41 @@ export async function buildGitHubCommitmentProfile(
     },
     summary: lines,
   };
+}
+
+/**
+ * Fetch the OpenSSF Scorecard score for a GitHub repo.
+ * Returns { score, hasDangerousWorkflow } or null on error / repo not found.
+ * Best-effort — never throws.
+ */
+export async function fetchScorecardScore(
+  owner: string,
+  repo: string
+): Promise<{ score: number; hasDangerousWorkflow: boolean } | null> {
+  try {
+    const res = await fetch(
+      `${SCORECARD_API}/projects/github.com/${owner}/${repo}`,
+      {
+        headers: { "User-Agent": "proof-of-commitment-mcp/1.0" },
+        // @ts-ignore CF Workers fetch cache hint
+        cf: { cacheEverything: true, cacheTtl: 3600 },
+      }
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      score: number;
+      checks: { name: string; score: number }[];
+    };
+    const dangerousWorkflow = data.checks?.find(
+      (c) => c.name === "Dangerous-Workflow"
+    );
+    return {
+      score: data.score,
+      hasDangerousWorkflow: dangerousWorkflow?.score === 0,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -130,6 +130,7 @@ export interface NpmCommitmentProfile {
 
   // Build integrity signals (separate from behavioral/commitment scoring)
   hasProvenance: boolean | null; // npm SLSA provenance attestation (null = check failed/skipped)
+  scorecardScore: number | null; // OpenSSF Scorecard 0–10 (null = no GitHub repo or not indexed)
 
   // Scores
   commitmentScore: number;
@@ -494,9 +495,10 @@ export async function buildNpmCommitmentProfile(
   let githubBacking = 0;
   let githubContributors: number | null = null;
   let hasProvenance: boolean | null = null;
+  let scorecardScore: number | null = null;
 
   const [ghResult, provenanceResult] = await Promise.allSettled([
-    // GitHub commitment profile
+    // GitHub commitment profile (includes Scorecard internally)
     (async () => {
       if (!repoUrl) return null;
       const parsed = parseGitHubInput(repoUrl);
@@ -510,6 +512,7 @@ export async function buildNpmCommitmentProfile(
   if (ghResult.status === "fulfilled" && ghResult.value) {
     githubScore = ghResult.value.commitmentScore;
     githubContributors = ghResult.value.contributorCount;
+    scorecardScore = ghResult.value.scorecardScore;
     // Map 0-100 GitHub score to 0-15 pts
     githubBacking = Math.round((githubScore / 100) * 15);
   }
@@ -553,6 +556,11 @@ export async function buildNpmCommitmentProfile(
       ? "⚠️  No SLSA provenance (use `npm audit signatures` to verify build integrity)"
       : null; // null = check failed, don't surface
 
+  const scorecardStr =
+    scorecardScore !== null
+      ? `OpenSSF Scorecard: ${scorecardScore}/10`
+      : null;
+
   const lines = [
     `Package: ${pkg.name}${latestVersion ? `@${latestVersion}` : ""}`,
     pkg.description ? `Description: ${pkg.description}` : null,
@@ -565,6 +573,7 @@ export async function buildNpmCommitmentProfile(
     githubScore !== null
       ? `GitHub commitment score: ${githubScore}/100`
       : null,
+    scorecardStr,
     provenanceStr,
     ``,
     `Commitment Score: ${commitmentScore}/100`,
@@ -592,6 +601,7 @@ export async function buildNpmCommitmentProfile(
     daysSinceLastPublish,
     repositoryUrl: repoUrl,
     hasProvenance,
+    scorecardScore,
     commitmentScore,
     scoreBreakdown: {
       longevity,
