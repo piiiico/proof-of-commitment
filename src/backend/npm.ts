@@ -128,6 +128,9 @@ export interface NpmCommitmentProfile {
   daysSinceLastPublish: number;
   repositoryUrl: string | null;
 
+  // Build integrity signals (separate from behavioral/commitment scoring)
+  hasProvenance: boolean | null; // npm SLSA provenance attestation (null = check failed/skipped)
+
   // Scores
   commitmentScore: number;
   scoreBreakdown: {
@@ -260,6 +263,45 @@ function analyzeDownloads(downloads: { day: string; downloads: number }[]): {
       : "stable";
 
   return { avg7d, avg90d, trend };
+}
+
+/**
+ * Check whether an npm package version has SLSA provenance attestations.
+ *
+ * npm has supported provenance statements since May 2023. When present, a
+ * package version can be verified to have been built from a specific source
+ * commit in a specific GitHub Actions run — giving cryptographic assurance
+ * that the published artifact matches the source code.
+ *
+ * This catches build-pipeline attacks (e.g. @bitwarden/cli Apr 2026) that
+ * behavioral scoring cannot detect because the credentials used were legitimate.
+ *
+ * API: GET https://registry.npmjs.org/-/npm/v1/attestations/<package>@<version>
+ * Returns 200 with attestations[] if present, 404 if not.
+ *
+ * @returns true if provenance exists, false if it doesn't, null on error.
+ */
+async function checkNpmProvenance(
+  packageName: string,
+  version: string | null
+): Promise<boolean | null> {
+  if (!version) return null;
+  const encodedName = encodeURIComponent(packageName).replace(/^%40/, "@");
+  const url = `${NPM_REGISTRY}/-/npm/v1/attestations/${encodedName}@${encodeURIComponent(version)}`;
+  try {
+    const res = await fetch(url, {
+      headers: { Accept: "application/json" },
+      // @ts-ignore CF fetch cache hint
+      cf: { cacheEverything: true, cacheTtl: 3600 },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.status === 404) return false;
+    if (!res.ok) return null; // unexpected error — don't penalize
+    const data = (await res.json()) as { attestations?: unknown[] };
+    return Array.isArray(data.attestations) && data.attestations.length > 0;
+  } catch {
+    return null; // timeout or network error — non-fatal
+  }
 }
 
 /**
@@ -447,28 +489,32 @@ export async function buildNpmCommitmentProfile(
     }
   }
 
-  // 3. GitHub backing (optional, best-effort)
+  // 3. GitHub backing + provenance (concurrent, both optional, best-effort)
   let githubScore: number | null = null;
   let githubBacking = 0;
   let githubContributors: number | null = null;
-  if (repoUrl) {
-    try {
+  let hasProvenance: boolean | null = null;
+
+  const [ghResult, provenanceResult] = await Promise.allSettled([
+    // GitHub commitment profile
+    (async () => {
+      if (!repoUrl) return null;
       const parsed = parseGitHubInput(repoUrl);
-      if (parsed) {
-        const ghProfile = await buildGitHubCommitmentProfile(
-          parsed.owner,
-          parsed.repo
-        );
-        if (ghProfile) {
-          githubScore = ghProfile.commitmentScore;
-          githubContributors = ghProfile.contributorCount;
-          // Map 0-100 GitHub score to 0-15 pts
-          githubBacking = Math.round((githubScore / 100) * 15);
-        }
-      }
-    } catch {
-      // Non-fatal
-    }
+      if (!parsed) return null;
+      return buildGitHubCommitmentProfile(parsed.owner, parsed.repo);
+    })(),
+    // SLSA provenance attestation check
+    checkNpmProvenance(packageName, latestVersion),
+  ]);
+
+  if (ghResult.status === "fulfilled" && ghResult.value) {
+    githubScore = ghResult.value.commitmentScore;
+    githubContributors = ghResult.value.contributorCount;
+    // Map 0-100 GitHub score to 0-15 pts
+    githubBacking = Math.round((githubScore / 100) * 15);
+  }
+  if (provenanceResult.status === "fulfilled") {
+    hasProvenance = provenanceResult.value;
   }
 
   // 4. Compute scores
@@ -500,6 +546,13 @@ export async function buildNpmCommitmentProfile(
       ? `published ${Math.round(daysSinceLastPublish / 30)} months ago`
       : `published ${Math.round(daysSinceLastPublish / 365)} year(s) ago`;
 
+  const provenanceStr =
+    hasProvenance === true
+      ? "✅ SLSA provenance verified (build pipeline integrity attestation present)"
+      : hasProvenance === false
+      ? "⚠️  No SLSA provenance (use `npm audit signatures` to verify build integrity)"
+      : null; // null = check failed, don't surface
+
   const lines = [
     `Package: ${pkg.name}${latestVersion ? `@${latestVersion}` : ""}`,
     pkg.description ? `Description: ${pkg.description}` : null,
@@ -512,6 +565,7 @@ export async function buildNpmCommitmentProfile(
     githubScore !== null
       ? `GitHub commitment score: ${githubScore}/100`
       : null,
+    provenanceStr,
     ``,
     `Commitment Score: ${commitmentScore}/100`,
     `  Longevity:            ${longevity}/25 (${ageStr} old)`,
@@ -537,6 +591,7 @@ export async function buildNpmCommitmentProfile(
     downloadTrend: trend,
     daysSinceLastPublish,
     repositoryUrl: repoUrl,
+    hasProvenance,
     commitmentScore,
     scoreBreakdown: {
       longevity,
