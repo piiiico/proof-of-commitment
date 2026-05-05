@@ -131,6 +131,7 @@ export interface NpmCommitmentProfile {
   // Build integrity signals (separate from behavioral/commitment scoring)
   hasProvenance: boolean | null; // npm SLSA provenance attestation (null = check failed/skipped)
   scorecardScore: number | null; // OpenSSF Scorecard 0–10 (null = no GitHub repo or not indexed)
+  hasDangerousWorkflow: boolean | null; // true = Dangerous-Workflow Scorecard check failed (null = no Scorecard data)
 
   // Scores
   commitmentScore: number;
@@ -496,6 +497,7 @@ export async function buildNpmCommitmentProfile(
   let githubContributors: number | null = null;
   let hasProvenance: boolean | null = null;
   let scorecardScore: number | null = null;
+  let hasDangerousWorkflow: boolean | null = null;
 
   const [ghResult, provenanceResult] = await Promise.allSettled([
     // GitHub commitment profile (includes Scorecard internally)
@@ -513,6 +515,7 @@ export async function buildNpmCommitmentProfile(
     githubScore = ghResult.value.commitmentScore;
     githubContributors = ghResult.value.contributorCount;
     scorecardScore = ghResult.value.scorecardScore;
+    hasDangerousWorkflow = ghResult.value.hasDangerousWorkflow;
     // Map 0-100 GitHub score to 0-15 pts
     githubBacking = Math.round((githubScore / 100) * 15);
   }
@@ -602,6 +605,7 @@ export async function buildNpmCommitmentProfile(
     repositoryUrl: repoUrl,
     hasProvenance,
     scorecardScore,
+    hasDangerousWorkflow,
     commitmentScore,
     scoreBreakdown: {
       longevity,

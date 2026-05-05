@@ -167,7 +167,9 @@ curl https://poc-backend.amdal-dev.workers.dev/api/audit \
       "weeklyDownloads": 398397580,
       "ageYears": 12.7,
       "trend": "stable",
-      "riskFlags": ["CRITICAL"]
+      "riskFlags": ["CRITICAL"],
+      "scorecardScore": 3.6,        // null if no GitHub repo
+      "hasDangerousWorkflow": false  // null if no Scorecard data
     },
     ...
   ]
@@ -194,6 +196,9 @@ Each package is scored 0–100 across:
 - **Publisher depth** — Single npm publisher + millions of weekly downloads = the attack surface LiteLLM exploited. (Publisher = person with npm publish access, distinct from GitHub contributors.)
 - **Release consistency** — Regular releases signal active oversight. Long gaps = vulnerability accumulation.
 - **Download trend** — Growing packages attract more scrutiny (and attacks). Stable = lower profile.
+- **OpenSSF Scorecard** — Process security (code review enforcement, branch protection, CI/CD safety). Separate from behavioral signals. High Scorecard ≠ safe from credential theft attacks.
+
+> Both axios (8.1/10 Scorecard) and chalk (3.6/10 Scorecard) score CRITICAL on behavioral signals. They measure different attack surfaces — Scorecard catches process gaps, behavioral signals catch publisher concentration.
 
 **Risk flags:**
 - `CRITICAL` — single npm publisher + >10M weekly downloads (exact LiteLLM/axios attack profile)
