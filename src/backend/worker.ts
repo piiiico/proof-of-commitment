@@ -782,6 +782,56 @@ function extractFromRequirementsTxt(content: string): string[] {
 
 /**
  * POST /api/audit/github
+ * GET /api/github/:owner/:repo
+ * Returns the trust/commitment profile for a GitHub repo as JSON.
+ * Used by the browser extension content script to populate the GitHub trust panel.
+ */
+app.get("/api/github/:owner/:repo", async (c) => {
+  const owner = c.req.param("owner");
+  const repo = c.req.param("repo");
+
+  if (!owner || !repo) {
+    return c.json({ error: "owner and repo are required" }, 400);
+  }
+
+  try {
+    const profile = await buildGitHubCommitmentProfile(owner, repo);
+    if (!profile) {
+      return c.json({ error: `Repository ${owner}/${repo} not found` }, 404);
+    }
+
+    // Add CORS headers so browser extensions can call this
+    return c.json(
+      {
+        owner: profile.owner,
+        repo: profile.repo,
+        fullName: profile.fullName,
+        description: profile.description,
+        score: profile.commitmentScore,
+        scoreBreakdown: profile.scoreBreakdown,
+        signals: {
+          ageYears: Math.round(profile.ageYears * 10) / 10,
+          stars: profile.stars,
+          forks: profile.forks,
+          contributors: profile.contributorCount,
+          recentCommits30d: profile.recentCommits30d,
+          daysSinceLastPush: profile.daysSinceLastPush,
+          releaseCount: profile.releaseCount,
+          latestRelease: profile.latestRelease,
+        },
+        endorsements: 0, // future: from D1 table
+        language: profile.language,
+        isArchived: profile.isArchived,
+      },
+      200,
+      { "Access-Control-Allow-Origin": "*" },
+    );
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : "Failed to fetch repo data" }, 500);
+  }
+});
+
+/**
  * Fetch dependencies from a GitHub repo and run supply chain risk scoring.
  * Body: { repo: string }  — GitHub URL or "owner/repo"
  */
