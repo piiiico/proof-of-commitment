@@ -8,6 +8,8 @@
  *    (visitor counts from poc-backend).
  */
 
+import { getCredential, signIn } from "./auth";
+
 const BACKEND_URL = "https://poc-backend.amdal-dev.workers.dev";
 
 // ── GitHub trust panel ─────────────────────────────────────────────────────
@@ -242,14 +244,15 @@ function injectGitHubPanel(data: GitHubTrustData) {
         <span class="commit-signal-key">Commits (30d)</span>
         <span class="commit-signal-val">${data.signals.recentCommits30d}</span>
       </div>
+      <div class="commit-signal">
+        <span class="commit-signal-key">Endorsements</span>
+        <span class="commit-signal-val" id="commit-endorsement-count">${data.endorsements > 0 ? data.endorsements : "None yet"}</span>
+      </div>
     </div>
 
-    <a class="commit-endorse-btn"
-       href="https://getcommit.dev/extension"
-       target="_blank"
-       rel="noopener">
+    <button class="commit-endorse-btn" id="commit-endorse-btn">
       Endorse this repo →
-    </a>
+    </button>
 
     <div class="commit-footer">
       <a href="https://getcommit.dev" target="_blank" rel="noopener">getcommit.dev</a>
@@ -268,6 +271,37 @@ function injectGitHubPanel(data: GitHubTrustData) {
     if (repoHeader?.parentElement) {
       repoHeader.parentElement.insertBefore(panel, repoHeader.nextSibling);
     }
+  }
+
+  // Wire Endorse button → POST /api/repos/:owner/:repo/endorse with World ID JWT
+  const endorseBtn = panel.querySelector<HTMLButtonElement>("#commit-endorse-btn");
+  if (endorseBtn) {
+    endorseBtn.addEventListener("click", async () => {
+      endorseBtn.disabled = true;
+      endorseBtn.textContent = "Endorsing…";
+      try {
+        let cred = await getCredential();
+        if (!cred) {
+          cred = await signIn();
+        }
+        const res = await fetch(
+          `${BACKEND_URL}/api/repos/${encodeURIComponent(data.owner)}/${encodeURIComponent(data.repo)}/endorse`,
+          { method: "POST", headers: { Authorization: `Bearer ${cred.idToken}` } }
+        );
+        if (res.ok) {
+          const json = await res.json() as { endorsements: number; alreadyEndorsed: boolean };
+          endorseBtn.textContent = json.alreadyEndorsed ? "Already endorsed ✓" : "Endorsed ✓";
+          const countEl = document.getElementById("commit-endorsement-count");
+          if (countEl) countEl.textContent = json.endorsements.toString();
+        } else {
+          endorseBtn.textContent = "Failed — try again";
+          endorseBtn.disabled = false;
+        }
+      } catch {
+        endorseBtn.textContent = "Failed — try again";
+        endorseBtn.disabled = false;
+      }
+    });
   }
 }
 
