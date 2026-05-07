@@ -4,16 +4,18 @@
  * Production deployment. Mirrors the API surface of server.ts (local
  * Bun + SQLite) but runs on CF Workers + D1.
  *
- * POST /api/commit              — submit commitment(s)
- * GET  /api/domain/:d           — stats for a specific domain
- * GET  /api/business/search?q=  — search Norwegian businesses
- * GET  /api/business/:orgNumber — business commitment profile
- * POST /api/audit               — batch npm/PyPI supply chain risk scoring
- * GET  /api/badge/:eco/:pkg     — SVG badge for README embedding (npm + PyPI)
- * GET  /badge/:pkg              — Simple trust badge (npm only, shields.io-style)
- * GET  /badge/:pkg.svg          — Same, .svg variant for img src embedding
- * ALL  /mcp                     — Remote MCP server (Streamable HTTP)
- * GET  /                        — health check
+ * POST /api/commit                      — submit commitment(s)
+ * GET  /api/domain/:d                  — stats for a specific domain
+ * GET  /api/business/search?q=         — search Norwegian businesses
+ * GET  /api/business/:orgNumber        — business commitment profile
+ * POST /api/audit                      — batch npm/PyPI supply chain risk scoring
+ * GET  /api/badge/:eco/:pkg            — SVG badge for README embedding (npm + PyPI)
+ * GET  /badge/:pkg                     — Simple trust badge (npm only, shields.io-style)
+ * GET  /badge/:pkg.svg                 — Same, .svg variant for img src embedding
+ * GET  /api/github/:owner/:repo        — GitHub repo commitment profile (with endorsements)
+ * POST /api/repos/:owner/:repo/endorse — endorse a GitHub repo (requires World ID JWT)
+ * ALL  /mcp                            — Remote MCP server (Streamable HTTP)
+ * GET  /                               — health check
  */
 
 import { Hono } from "hono";
@@ -795,10 +797,21 @@ app.get("/api/github/:owner/:repo", async (c) => {
   }
 
   try {
-    const profile = await buildGitHubCommitmentProfile(owner, repo);
+    const ownerLower = owner.toLowerCase();
+    const repoLower = repo.toLowerCase();
+
+    const [profile, endorsementRow] = await Promise.all([
+      buildGitHubCommitmentProfile(owner, repo),
+      c.env.DB.prepare(
+        `SELECT COUNT(*) as count FROM endorsements WHERE repo_owner = ? AND repo_name = ?`
+      ).bind(ownerLower, repoLower).first<{ count: number }>(),
+    ]);
+
     if (!profile) {
       return c.json({ error: `Repository ${owner}/${repo} not found` }, 404);
     }
+
+    const endorsements = endorsementRow?.count ?? 0;
 
     // Add CORS headers so browser extensions can call this
     return c.json(
@@ -819,7 +832,7 @@ app.get("/api/github/:owner/:repo", async (c) => {
           releaseCount: profile.releaseCount,
           latestRelease: profile.latestRelease,
         },
-        endorsements: 0, // future: from D1 table
+        endorsements,
         language: profile.language,
         isArchived: profile.isArchived,
       },
@@ -829,6 +842,78 @@ app.get("/api/github/:owner/:repo", async (c) => {
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : "Failed to fetch repo data" }, 500);
   }
+});
+
+/**
+ * POST /api/repos/:owner/:repo/endorse
+ * Endorse a GitHub repo with a verified World ID proof.
+ * Requires: Authorization: Bearer <world_id_jwt>
+ * One endorsement per verified human per repo (deduped by World ID nullifier).
+ */
+app.post("/api/repos/:owner/:repo/endorse", async (c) => {
+  const owner = c.req.param("owner").toLowerCase();
+  const repo = c.req.param("repo").toLowerCase();
+
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader?.startsWith("Bearer ")) {
+    return c.json(
+      { error: "missing_token", message: "Authorization: Bearer <world_id_jwt> required" },
+      401,
+      { "Access-Control-Allow-Origin": "*" }
+    );
+  }
+
+  const token = authHeader.slice(7);
+
+  let worldIdPayload: JWTPayload;
+  try {
+    worldIdPayload = await verifyWorldIdToken(token);
+  } catch (err) {
+    return c.json(
+      { error: "invalid_token", message: err instanceof Error ? err.message : "World ID token verification failed" },
+      401,
+      { "Access-Control-Allow-Origin": "*" }
+    );
+  }
+
+  const nullifier = worldIdPayload.sub;
+
+  // Check for duplicate endorsement
+  const existing = await c.env.DB.prepare(
+    `SELECT id FROM endorsements WHERE repo_owner = ? AND repo_name = ? AND world_id_nullifier = ? LIMIT 1`
+  ).bind(owner, repo, nullifier).first<{ id: string }>();
+
+  if (existing) {
+    // Return current count — idempotent
+    const countRow = await c.env.DB.prepare(
+      `SELECT COUNT(*) as count FROM endorsements WHERE repo_owner = ? AND repo_name = ?`
+    ).bind(owner, repo).first<{ count: number }>();
+    return c.json(
+      { endorsements: countRow?.count ?? 1, alreadyEndorsed: true },
+      200,
+      { "Access-Control-Allow-Origin": "*" }
+    );
+  }
+
+  // Generate ID (8 random bytes = 16 hex chars)
+  const idBytes = new Uint8Array(8);
+  crypto.getRandomValues(idBytes);
+  const id = Array.from(idBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+  await c.env.DB.prepare(
+    `INSERT INTO endorsements (id, repo_owner, repo_name, world_id_nullifier, proof, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).bind(id, owner, repo, nullifier, token, Math.floor(Date.now() / 1000)).run();
+
+  const countRow = await c.env.DB.prepare(
+    `SELECT COUNT(*) as count FROM endorsements WHERE repo_owner = ? AND repo_name = ?`
+  ).bind(owner, repo).first<{ count: number }>();
+
+  return c.json(
+    { endorsements: countRow?.count ?? 1, alreadyEndorsed: false },
+    201,
+    { "Access-Control-Allow-Origin": "*" }
+  );
 });
 
 /**
