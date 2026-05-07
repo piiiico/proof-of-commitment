@@ -221,8 +221,7 @@ function injectGitHubPanel(data: GitHubTrustData) {
       </div>
       <div class="commit-score-label">
         <strong>${data.score >= 70 ? "Healthy" : data.score >= 45 ? "Moderate" : "Early stage"}</strong><br/>
-        Behavioral trust score<br/>
-        ${data.endorsements > 0 ? `${data.endorsements} endorsement${data.endorsements !== 1 ? "s" : ""}` : "No endorsements yet"}
+        Behavioral trust score
       </div>
     </div>
 
