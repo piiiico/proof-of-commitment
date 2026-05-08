@@ -4,7 +4,7 @@
 
 > **Stars lie. Behavioral signals don't.**
 
-An MCP server and web tool that scores npm packages, PyPI packages, and GitHub repos on **behavioral commitment** — signals that are harder to fake than stars, READMEs, or download counts.
+An MCP server and web tool that scores npm packages, PyPI packages, Rust crates, and GitHub repos on **behavioral commitment** — signals that are harder to fake than stars, READMEs, or download counts.
 
 ## The supply chain problem
 
@@ -38,6 +38,10 @@ npx proof-of-commitment --file pnpm-lock.yaml      # pnpm
 npx proof-of-commitment --file package-lock.json --json | jq '.criticalCount'
 # PyPI too:
 npx proof-of-commitment --pypi litellm langchain requests
+# Cargo (Rust) via API:
+curl -s https://poc-backend.amdal-dev.workers.dev/api/audit \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"packages":["serde","tokio","reqwest"],"ecosystem":"cargo"}'
 ```
 
 **Web demo (no install):** [getcommit.dev/audit](https://getcommit.dev/audit) — paste your packages, see risk scores in seconds.
@@ -137,11 +141,12 @@ Grades: 🟢 OK (75+) · 🟠 WARNING (40–74) · 🔴 CRITICAL (<40 or sole np
 
 Badges are cached 1 hour. No API key needed.
 
-Also supports PyPI and the full ecosystem-specific format:
+Also supports PyPI, Cargo, and the full ecosystem-specific format:
 
 ```markdown
 ![commit score](https://poc-backend.amdal-dev.workers.dev/api/badge/npm/YOUR-PACKAGE)
 ![commit score](https://poc-backend.amdal-dev.workers.dev/api/badge/pypi/YOUR-PACKAGE)
+![commit score](https://poc-backend.amdal-dev.workers.dev/api/badge/cargo/YOUR-CRATE)
 ```
 
 ## REST API
@@ -176,13 +181,14 @@ curl https://poc-backend.amdal-dev.workers.dev/api/audit \
 }
 ```
 
-## 7 MCP tools
+## 8 MCP tools
 
 | Tool | Description |
 |------|-------------|
-| `audit_dependencies` | Batch risk audit for up to 20 npm/PyPI packages |
+| `audit_dependencies` | Batch risk audit for up to 20 npm/PyPI/Cargo packages |
 | `lookup_npm_package` | Single npm package behavioral profile |
 | `lookup_pypi_package` | Single PyPI package behavioral profile |
+| `lookup_cargo_crate` | Single Rust crate behavioral profile (crates.io) |
 | `lookup_github_repo` | GitHub repo commitment score (longevity, commit frequency, contributor depth) |
 | `lookup_business` | Norwegian business register — operating years, employees, financials |
 | `lookup_business_by_org` | Same, by org number |
@@ -222,6 +228,11 @@ cross-spawn — score 72, 1 publisher, 190M/week  ⚑ CRITICAL
 
 # post-attack:
 litellm     — score 74, 1 publisher            ⚑ CRITICAL  (supply chain attack Mar 2026)
+
+# Rust crates (new in v1.3.0):
+serde       — score 78, 1 owner,  13M/week  ⚑ CRITICAL  (dtolnay sole owner)
+tokio       — score 89, 2 owners, 10M/week
+reqwest     — score 85, 1 owner,   8M/week  ⚑ HIGH
 ```
 
 ## Why behavioral signals
@@ -236,7 +247,7 @@ Declarative signals (stars, README quality, CI badges) don't capture this risk. 
 |-------|-----------|
 | Backend | Cloudflare Workers + D1 |
 | MCP | Model Context Protocol SDK |
-| Data | npm registry, PyPI, GitHub API, Brønnøysund (NO) |
+| Data | npm registry, PyPI, crates.io, GitHub API, Brønnøysund (NO) |
 | Landing | Astro + Cloudflare Pages |
 
 ## Roadmap
@@ -245,7 +256,7 @@ Planned, not promised. The project is early-stage — contributions welcome on a
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **Cargo (Rust) registry support** | Planned | Extend the npm/pypi scoring pattern to crates.io |
+| **Cargo (Rust) registry support** | ✅ Live | MCP tool, REST API, badge endpoint — `ecosystem: "cargo"` |
 | **Go modules support** | Planned | pkg.go.dev API + GitHub backing score |
 | **Score breakdown visualization** | Planned | Chart component for the 5 dimensions on getcommit.dev/audit |
 | **`--json` flag for CLI** | ✅ Live | `npx proof-of-commitment --file package-lock.json --json \| jq '.criticalCount'` |
