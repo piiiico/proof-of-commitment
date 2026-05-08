@@ -1786,6 +1786,72 @@ app.get("/api/keys/stats", async (c) => {
   });
 });
 
+/**
+ * POST /api/admin/seed-endorsements
+ * Admin endpoint — requires X-Admin-Secret header.
+ * Seeds demo endorsements for a list of repos.
+ * Body: { repos: [{ owner: string, repo: string }], count?: number }
+ * Each repo gets `count` (default 1) synthetic endorsements with unique nullifiers.
+ * Used to populate demo data before Show HN launch.
+ */
+app.post("/api/admin/seed-endorsements", async (c) => {
+  const adminSecret = c.env.ADMIN_SECRET;
+  if (!adminSecret || c.req.header("X-Admin-Secret") !== adminSecret) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const body = await c.req.json().catch(() => ({})) as {
+    repos?: Array<{ owner: string; repo: string }>;
+    count?: number;
+  };
+
+  if (!Array.isArray(body?.repos) || body.repos.length === 0) {
+    return c.json({ error: "bad_request", message: "repos array required" }, 400);
+  }
+
+  const count = Math.min(Math.max(Number(body.count) || 1, 1), 50);
+  const results: Array<{ repo: string; seeded: number; total: number }> = [];
+
+  for (const { owner, repo } of body.repos) {
+    if (typeof owner !== "string" || typeof repo !== "string") continue;
+    const ownerLower = owner.toLowerCase();
+    const repoLower = repo.toLowerCase();
+
+    let seeded = 0;
+    for (let i = 0; i < count; i++) {
+      // Generate unique nullifier: seed-<owner>-<repo>-<i>-<random>
+      const randBytes = new Uint8Array(6);
+      crypto.getRandomValues(randBytes);
+      const rand = Array.from(randBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+      const nullifier = `seed-${ownerLower}-${repoLower}-${i}-${rand}`;
+
+      // Skip if somehow collides
+      const existing = await c.env.DB.prepare(
+        `SELECT id FROM endorsements WHERE repo_owner = ? AND repo_name = ? AND world_id_nullifier = ? LIMIT 1`
+      ).bind(ownerLower, repoLower, nullifier).first<{ id: string }>();
+      if (existing) continue;
+
+      const idBytes = new Uint8Array(8);
+      crypto.getRandomValues(idBytes);
+      const id = Array.from(idBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+      await c.env.DB.prepare(
+        `INSERT INTO endorsements (id, repo_owner, repo_name, world_id_nullifier, proof, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).bind(id, ownerLower, repoLower, nullifier, "demo-seed", Math.floor(Date.now() / 1000)).run();
+      seeded++;
+    }
+
+    const countRow = await c.env.DB.prepare(
+      `SELECT COUNT(*) as count FROM endorsements WHERE repo_owner = ? AND repo_name = ?`
+    ).bind(ownerLower, repoLower).first<{ count: number }>();
+
+    results.push({ repo: `${ownerLower}/${repoLower}`, seeded, total: countRow?.count ?? seeded });
+  }
+
+  return c.json({ ok: true, results });
+});
+
 // ── Watchlist Subscription ───────────────────────────────────────────
 
 /**
