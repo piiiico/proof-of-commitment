@@ -8,8 +8,8 @@
  * GET  /api/domain/:d                  — stats for a specific domain
  * GET  /api/business/search?q=         — search Norwegian businesses
  * GET  /api/business/:orgNumber        — business commitment profile
- * POST /api/audit                      — batch npm/PyPI supply chain risk scoring
- * GET  /api/badge/:eco/:pkg            — SVG badge for README embedding (npm + PyPI)
+ * POST /api/audit                      — batch npm/PyPI/Cargo supply chain risk scoring
+ * GET  /api/badge/:eco/:pkg            — SVG badge for README embedding (npm, PyPI, Cargo)
  * GET  /badge/:pkg                     — Simple trust badge (npm only, shields.io-style)
  * GET  /badge/:pkg.svg                 — Same, .svg variant for img src embedding
  * GET  /api/github/:owner/:repo        — GitHub repo commitment profile (with endorsements)
@@ -27,6 +27,7 @@ import { buildCommitmentProfile, searchAndProfile } from "./brreg.ts";
 import { buildGitHubCommitmentProfile, parseGitHubInput } from "./github.ts";
 import { buildNpmCommitmentProfile, bulkFetchNpmWeeklyDownloads } from "./npm.ts";
 import { buildPyPICommitmentProfile } from "./pypi.ts";
+import { buildCargoCommitmentProfile } from "./cargo.ts";
 
 // ── World ID JWT Verification ────────────────────────────────────────
 
@@ -637,8 +638,8 @@ app.get("/api/business/:orgNumber", async (c) => {
 
 /**
  * POST /api/audit
- * Batch-score npm or PyPI packages for supply chain risk.
- * Body: { packages: string[], ecosystem?: "npm" | "pypi" | "auto" }
+ * Batch-score npm, PyPI, or Cargo packages for supply chain risk.
+ * Body: { packages: string[], ecosystem?: "npm" | "pypi" | "cargo" | "auto" }
  * Returns JSON array sorted by commitment score (lowest = highest risk first).
  */
 app.post("/api/audit", async (c) => {
@@ -668,54 +669,61 @@ app.post("/api/audit", async (c) => {
     error?: string;
   }> = [];
 
-  // For npm packages: bulk-fetch all download data in ONE request before processing.
-  // This eliminates the race condition where 30-45 concurrent individual npm API calls
-  // cause the download API to silently return zeros.
-  // Scoped packages (@scope/name) are not supported by the bulk API — fetch them individually.
+  const useCargo = ecosystem === "cargo";
   const usePypi = ecosystem === "pypi";
-  const npmPackages = usePypi ? [] : packages;
-  const unscopedNpm = npmPackages.filter((p) => !p.startsWith("@"));
-  const scopedNpm = npmPackages.filter((p) => p.startsWith("@"));
 
-  // One bulk HTTP request for all unscoped npm packages (replaces N individual requests).
-  // Uses the point API for weekly totals — simpler, more reliable, no race condition.
-  // Scoped packages (@scope/name) are not supported by the npm bulk API and are fetched individually.
+  // For npm packages: bulk-fetch all download data in ONE request before processing.
+  const npmPackages = (!usePypi && !useCargo) ? packages : [];
+  const unscopedNpm = npmPackages.filter((p) => !p.startsWith("@"));
+
   const bulkWeekly = unscopedNpm.length > 0
     ? await bulkFetchNpmWeeklyDownloads(unscopedNpm)
     : new Map<string, number | null>();
 
-  // All packages processed concurrently — downloads already resolved above (no npm race)
-  const allResults = await Promise.all(
-    packages.map(async (pkg) => {
-      try {
-        if (usePypi) {
-          const profile = await buildPyPICommitmentProfile(pkg);
-          if (!profile) return { name: pkg, ecosystem: "pypi", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
-          const weeklyDl = profile.recentDailyDownloads * 7;
-          const riskFlags: string[] = [];
-          if (profile.maintainerCount === 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL");
-          else if (profile.ageYears < 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH");
-          else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-          return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: null, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags, scoreBreakdown: profile.scoreBreakdown };
-        } else {
-          // Unscoped packages: pass preloaded weekly count (from single bulk call above)
-          // Scoped packages: pass undefined so buildNpmCommitmentProfile fetches individually
-          const preloadedWeekly = pkg.startsWith("@") ? undefined : bulkWeekly.get(pkg);
-          const profile = await buildNpmCommitmentProfile(pkg, preloadedWeekly);
-          if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
-          const riskFlags: string[] = [];
-          const wdl = profile.recentWeeklyDownloads ?? 0;
-          if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
-          else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
-          else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-          return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown };
+  // Cargo needs lower concurrency due to crates.io rate limits (1 req/sec recommended)
+  const MAX_CONCURRENT = useCargo ? 3 : packages.length;
+
+  for (let i = 0; i < packages.length; i += MAX_CONCURRENT) {
+    const batch = packages.slice(i, i + MAX_CONCURRENT);
+    const batchResults = await Promise.all(
+      batch.map(async (pkg) => {
+        try {
+          if (useCargo) {
+            const profile = await buildCargoCommitmentProfile(pkg);
+            if (!profile) return { name: pkg, ecosystem: "cargo", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
+            const riskFlags: string[] = [];
+            if (profile.ownerCount <= 1 && profile.estimatedWeeklyDownloads > 10_000_000) riskFlags.push("CRITICAL");
+            else if (profile.ownerCount <= 1 && profile.estimatedWeeklyDownloads > 1_000_000) riskFlags.push("HIGH");
+            if (profile.ageYears < 1 && profile.estimatedWeeklyDownloads > 100_000) riskFlags.push("HIGH");
+            if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+            return { name: profile.name, ecosystem: "cargo", score: profile.commitmentScore, maintainers: profile.ownerCount, githubContributors: null, weeklyDownloads: profile.estimatedWeeklyDownloads, ageYears: Math.round(profile.ageYears * 10) / 10, trend: null, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags, scoreBreakdown: profile.scoreBreakdown as any };
+          } else if (usePypi) {
+            const profile = await buildPyPICommitmentProfile(pkg);
+            if (!profile) return { name: pkg, ecosystem: "pypi", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
+            const weeklyDl = profile.recentDailyDownloads * 7;
+            const riskFlags: string[] = [];
+            if (profile.maintainerCount === 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL");
+            else if (profile.ageYears < 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH");
+            else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+            return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: null, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags, scoreBreakdown: profile.scoreBreakdown };
+          } else {
+            const preloadedWeekly = pkg.startsWith("@") ? undefined : bulkWeekly.get(pkg);
+            const profile = await buildNpmCommitmentProfile(pkg, preloadedWeekly);
+            if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
+            const riskFlags: string[] = [];
+            const wdl = profile.recentWeeklyDownloads ?? 0;
+            if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+            else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
+            else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown };
+          }
+        } catch (err) {
+          return { name: pkg, ecosystem: useCargo ? "cargo" : usePypi ? "pypi" : "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
         }
-      } catch (err) {
-        return { name: pkg, ecosystem: usePypi ? "pypi" : "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
-      }
-    })
-  );
-  results.push(...allResults);
+      })
+    );
+    results.push(...batchResults);
+  }
 
   results.sort((a, b) => (a.score ?? -1) - (b.score ?? -1));
   return c.json({ count: results.length, results });
@@ -1075,7 +1083,7 @@ app.get("/api/badge/:ecosystem/*", async (c) => {
   // The wildcard captures the rest of the path (handles scoped packages like @scope/name)
   const packageName = decodeURIComponent(c.req.path.replace(`/api/badge/${ecosystem}/`, ""));
 
-  if (ecosystem !== "npm" && ecosystem !== "pypi") {
+  if (ecosystem !== "npm" && ecosystem !== "pypi" && ecosystem !== "cargo") {
     const svg = generateBadge("commit", "invalid ecosystem", "#9f9f9f");
     return new Response(svg, {
       headers: { "Content-Type": "image/svg+xml", "Cache-Control": "max-age=60" },
@@ -1086,7 +1094,13 @@ app.get("/api/badge/:ecosystem/*", async (c) => {
   let riskFlags: string[] = [];
 
   try {
-    if (ecosystem === "npm") {
+    if (ecosystem === "cargo") {
+      const profile = await buildCargoCommitmentProfile(packageName);
+      if (profile) {
+        score = profile.commitmentScore;
+        if (profile.ownerCount <= 1 && profile.estimatedWeeklyDownloads > 10_000_000) riskFlags.push("CRITICAL");
+      }
+    } else if (ecosystem === "npm") {
       const profile = await buildNpmCommitmentProfile(packageName);
       if (profile) {
         score = profile.commitmentScore;
@@ -2040,7 +2054,7 @@ app.get("/api/subscribe/stats", async (c) => {
 function createMcpServer(): McpServer {
   const mcp = new McpServer({
     name: "proof-of-commitment",
-    version: "1.0.0",
+    version: "1.3.0",
   });
 
   // Tool: query_commitment
@@ -2429,17 +2443,87 @@ Examples: "langchain", "litellm", "openai", "anthropic", "requests", "fastapi", 
     }
   );
 
+  // Tool: lookup_cargo_crate
+  mcp.tool(
+    "lookup_cargo_crate",
+    `Get a behavioral commitment profile for any Rust crate on crates.io. Returns real signals: crate age, download volume (estimated weekly from 90-day totals), version count, publish cadence, owner count (users with publish access), team owners, and linked GitHub activity.
+
+Supply chain risks apply to Cargo too — crate owners with publish access are the attack surface. A single owner on a high-download crate is the same risk pattern as npm.
+
+Useful for: vetting Rust dependencies before adding to Cargo.toml, identifying abandonware, supply chain risk assessment.
+Examples: "serde", "tokio", "reqwest", "clap", "rand"`,
+    {
+      crate: z
+        .string()
+        .describe(
+          'Crate name on crates.io. Examples: "serde", "tokio", "reqwest", "clap". Case-insensitive.'
+        ),
+    },
+    async ({ crate: crateName }) => {
+      try {
+        const profile = await buildCargoCommitmentProfile(crateName);
+
+        if (!profile) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Crate "${crateName}" not found on crates.io.`,
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            { type: "text" as const, text: profile.summary },
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  name: profile.name,
+                  latestVersion: profile.latestVersion,
+                  ageYears: Math.round(profile.ageYears * 10) / 10,
+                  versionCount: profile.versionCount,
+                  ownerCount: profile.ownerCount,
+                  teamCount: profile.teamCount,
+                  estimatedWeeklyDownloads: profile.estimatedWeeklyDownloads,
+                  daysSinceLastPublish: profile.daysSinceLastPublish,
+                  githubScore: profile.githubScore,
+                  commitmentScore: profile.commitmentScore,
+                  scoreBreakdown: profile.scoreBreakdown,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: ${err instanceof Error ? err.message : "Unknown"}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
   // Tool: audit_dependencies
   mcp.tool(
     "audit_dependencies",
-    `Batch-score multiple npm or PyPI packages for supply chain risk. Takes a list of package names and returns a risk table sorted by commitment score (lowest = highest risk first).
+    `Batch-score multiple npm, PyPI, or Cargo packages for supply chain risk. Takes a list of package names and returns a risk table sorted by commitment score (lowest = highest risk first).
 
 Risk flags:
-- CRITICAL: single npm publisher + >10M weekly downloads (publish-access concentration risk)
+- CRITICAL: single publisher + >10M weekly downloads (publish-access concentration risk)
 - HIGH: new package (<1yr) + high downloads (unproven, rapid adoption = supply chain risk)
 - WARN: low publisher count + high downloads
 
-Perfect for auditing a full package.json or requirements.txt — paste your dependency list and get a prioritized risk report.
+Perfect for auditing a full package.json, requirements.txt, or Cargo.toml — paste your dependency list and get a prioritized risk report.
 
 Examples: score all deps in a project, compare two similar packages, identify abandonware before it becomes a CVE.`,
     {
@@ -2451,10 +2535,10 @@ Examples: score all deps in a project, compare two similar packages, identify ab
           'List of package names to score. Up to 20 at once. Examples: ["langchain", "litellm", "openai", "axios"] or ["@anthropic-ai/sdk", "zod", "express"]'
         ),
       ecosystem: z
-        .enum(["npm", "pypi", "auto"])
+        .enum(["npm", "pypi", "cargo", "auto"])
         .default("auto")
         .describe(
-          'Package ecosystem. "auto" detects by naming convention (Python-style = pypi, otherwise npm). Force "npm" or "pypi" to override.'
+          'Package ecosystem. "auto" detects by naming convention (Python-style = pypi, otherwise npm). Force "npm", "pypi", or "cargo" to override.'
         ),
     },
     async ({ packages, ecosystem }) => {
@@ -2484,7 +2568,40 @@ Examples: score all deps in a project, compare two similar packages, identify ab
                 : ecosystem;
 
             try {
-              if (useEcosystem === "pypi") {
+              if (useEcosystem === "cargo") {
+                const profile = await buildCargoCommitmentProfile(pkg);
+                if (!profile)
+                  return {
+                    name: pkg,
+                    score: null,
+                    maintainers: null,
+                    weeklyDownloads: null,
+                    ageYears: null,
+                    trend: null,
+                    riskFlags: [],
+                    error: "not found",
+                  };
+
+                const riskFlags: string[] = [];
+                if (profile.ownerCount <= 1 && profile.estimatedWeeklyDownloads > 10_000_000)
+                  riskFlags.push("CRITICAL: sole owner + >10M/wk");
+                else if (profile.ownerCount <= 1 && profile.estimatedWeeklyDownloads > 1_000_000)
+                  riskFlags.push("HIGH: sole owner + >1M/wk");
+                if (profile.ageYears < 1 && profile.estimatedWeeklyDownloads > 100_000)
+                  riskFlags.push("HIGH: new crate (<1yr) + high downloads");
+                if (profile.daysSinceLastPublish > 365)
+                  riskFlags.push("WARN: no release in 12+ months");
+
+                return {
+                  name: pkg,
+                  score: profile.commitmentScore,
+                  maintainers: profile.ownerCount,
+                  weeklyDownloads: profile.estimatedWeeklyDownloads,
+                  ageYears: Math.round(profile.ageYears * 10) / 10,
+                  trend: null,
+                  riskFlags,
+                };
+              } else if (useEcosystem === "pypi") {
                 const profile = await buildPyPICommitmentProfile(pkg);
                 if (!profile)
                   return {
