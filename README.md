@@ -34,6 +34,8 @@ npx proof-of-commitment --file package.json
 npx proof-of-commitment --file package-lock.json   # npm
 npx proof-of-commitment --file yarn.lock           # yarn
 npx proof-of-commitment --file pnpm-lock.yaml      # pnpm
+# pnpm monorepo — scans all workspace packages, deduplicates:
+npx proof-of-commitment --file pnpm-workspace.yaml  # pnpm workspaces
 # JSON output for CI/CD pipelines (exits 1 if CRITICAL found):
 npx proof-of-commitment --file package-lock.json --json | jq '.criticalCount'
 # PyPI too:
@@ -260,7 +262,7 @@ Planned, not promised. The project is early-stage — contributions welcome on a
 | **Go modules support** | Planned | pkg.go.dev API + GitHub backing score |
 | **Score breakdown visualization** | Planned | Chart component for the 5 dimensions on getcommit.dev/audit |
 | **`--json` flag for CLI** | ✅ Live | `npx proof-of-commitment --file package-lock.json --json \| jq '.criticalCount'` |
-| **pnpm workspace monorepo support** | Planned | Detect `pnpm-workspace.yaml`, audit all packages |
+| **pnpm workspace monorepo support** | ✅ Live | `--file pnpm-workspace.yaml` or auto-detected from `pnpm-lock.yaml` |
 | **Historical score tracking** | Planned | Trend charts — was this package getting riskier over time? |
 | **Org-level dashboards** | Planned | Aggregate risk view across all repos in a GitHub org |
 
