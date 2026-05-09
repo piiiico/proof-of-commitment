@@ -4,7 +4,7 @@
 
 > **Stars lie. Behavioral signals don't.**
 
-An MCP server and web tool that scores npm packages, PyPI packages, Rust crates, and GitHub repos on **behavioral commitment** — signals that are harder to fake than stars, READMEs, or download counts.
+An MCP server and web tool that scores npm packages, PyPI packages, Rust crates, Go modules, and GitHub repos on **behavioral commitment** — signals that are harder to fake than stars, READMEs, or download counts.
 
 ## The supply chain problem
 
@@ -40,10 +40,13 @@ npx proof-of-commitment --file pnpm-workspace.yaml  # pnpm workspaces
 npx proof-of-commitment --file package-lock.json --json | jq '.criticalCount'
 # PyPI too:
 npx proof-of-commitment --pypi litellm langchain requests
-# Cargo (Rust) via API:
-curl -s https://poc-backend.amdal-dev.workers.dev/api/audit \
-  -X POST -H "Content-Type: application/json" \
-  -d '{"packages":["serde","tokio","reqwest"],"ecosystem":"cargo"}'
+# Cargo (Rust) via CLI:
+npx proof-of-commitment --cargo serde tokio reqwest
+# Go modules via CLI (full module path required):
+npx proof-of-commitment --golang github.com/gin-gonic/gin golang.org/x/net
+# Or scan a go.mod / go.sum file directly:
+npx proof-of-commitment --file go.mod
+npx proof-of-commitment --file go.sum    # full transitive set
 ```
 
 **Web demo (no install):** [getcommit.dev/audit](https://getcommit.dev/audit) — paste your packages, see risk scores in seconds.
@@ -143,12 +146,13 @@ Grades: 🟢 OK (75+) · 🟠 WARNING (40–74) · 🔴 CRITICAL (<40 or sole np
 
 Badges are cached 1 hour. No API key needed.
 
-Also supports PyPI, Cargo, and the full ecosystem-specific format:
+Also supports PyPI, Cargo, Go modules, and the full ecosystem-specific format:
 
 ```markdown
 ![commit score](https://poc-backend.amdal-dev.workers.dev/api/badge/npm/YOUR-PACKAGE)
 ![commit score](https://poc-backend.amdal-dev.workers.dev/api/badge/pypi/YOUR-PACKAGE)
 ![commit score](https://poc-backend.amdal-dev.workers.dev/api/badge/cargo/YOUR-CRATE)
+![commit score](https://poc-backend.amdal-dev.workers.dev/api/badge/golang/github.com/owner/repo)
 ```
 
 ## REST API
@@ -183,14 +187,15 @@ curl https://poc-backend.amdal-dev.workers.dev/api/audit \
 }
 ```
 
-## 8 MCP tools
+## 9 MCP tools
 
 | Tool | Description |
 |------|-------------|
-| `audit_dependencies` | Batch risk audit for up to 20 npm/PyPI/Cargo packages |
+| `audit_dependencies` | Batch risk audit for up to 20 npm/PyPI/Cargo/Go packages |
 | `lookup_npm_package` | Single npm package behavioral profile |
 | `lookup_pypi_package` | Single PyPI package behavioral profile |
 | `lookup_cargo_crate` | Single Rust crate behavioral profile (crates.io) |
+| `lookup_go_module` | Single Go module behavioral profile (proxy.golang.org + GitHub) |
 | `lookup_github_repo` | GitHub repo commitment score (longevity, commit frequency, contributor depth) |
 | `lookup_business` | Norwegian business register — operating years, employees, financials |
 | `lookup_business_by_org` | Same, by org number |
@@ -249,7 +254,7 @@ Declarative signals (stars, README quality, CI badges) don't capture this risk. 
 |-------|-----------|
 | Backend | Cloudflare Workers + D1 |
 | MCP | Model Context Protocol SDK |
-| Data | npm registry, PyPI, crates.io, GitHub API, Brønnøysund (NO) |
+| Data | npm registry, PyPI, crates.io, proxy.golang.org, deps.dev, GitHub API, Brønnøysund (NO) |
 | Landing | Astro + Cloudflare Pages |
 
 ## Roadmap
@@ -259,7 +264,7 @@ Planned, not promised. The project is early-stage — contributions welcome on a
 | Feature | Status | Notes |
 |---------|--------|-------|
 | **Cargo (Rust) registry support** | ✅ Live | MCP tool, REST API, badge endpoint — `ecosystem: "cargo"` |
-| **Go modules support** | Planned | pkg.go.dev API + GitHub backing score |
+| **Go modules support** | ✅ Live | proxy.golang.org + deps.dev + GitHub-primary scoring — `ecosystem: "golang"` |
 | **Score breakdown visualization** | Planned | Chart component for the 5 dimensions on getcommit.dev/audit |
 | **`--json` flag for CLI** | ✅ Live | `npx proof-of-commitment --file package-lock.json --json \| jq '.criticalCount'` |
 | **pnpm workspace monorepo support** | ✅ Live | `--file pnpm-workspace.yaml` or auto-detected from `pnpm-lock.yaml` |

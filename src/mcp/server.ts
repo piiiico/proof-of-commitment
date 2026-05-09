@@ -10,6 +10,7 @@
  *   lookup_github_repo({ repo })       — GitHub repo behavioral commitment profile
  *   lookup_npm_package({ package })    — npm package behavioral commitment profile
  *   lookup_pypi_package({ package })   — PyPI package behavioral commitment profile
+ *   lookup_go_module({ module })       — Go module behavioral commitment profile (GitHub-primary scoring)
  *   audit_dependencies({ packages })  — batch risk audit for multiple npm/PyPI packages
  *
  * Usage:
@@ -26,6 +27,7 @@ import {
 import { buildGitHubCommitmentProfile, parseGitHubInput } from "../backend/github.ts";
 import { buildNpmCommitmentProfile } from "../backend/npm.ts";
 import { buildPyPICommitmentProfile } from "../backend/pypi.ts";
+import { buildGolangCommitmentProfile } from "../backend/golang.ts";
 
 const BACKEND_URL =
   process.env.BACKEND_URL ?? "https://poc-backend.amdal-dev.workers.dev";
@@ -34,7 +36,7 @@ const BACKEND_URL =
 
 const server = new McpServer({
   name: "proof-of-commitment",
-  version: "0.7.0",
+  version: "0.8.0",
 });
 
 // ── Tool: query_commitment ──
@@ -494,6 +496,77 @@ Examples: "langchain", "litellm", "openai", "anthropic", "requests", "fastapi", 
   }
 );
 
+// ── Tool: lookup_go_module ──
+
+server.tool(
+  "lookup_go_module",
+  `Get a behavioral commitment profile for any Go module on proxy.golang.org. Takes a full module path (e.g., "github.com/gin-gonic/gin", "golang.org/x/net", "k8s.io/client-go", "gopkg.in/yaml.v3") and returns real signals: module age, version count, publish cadence, GitHub contributors (the closest equivalent to "publishers" since Go has no centralized publisher concept — git push access is the publish equivalent), GitHub stars, OpenSSF Scorecard score.
+
+The Go ecosystem has no centralized download counter, so this profile is GitHub-primary — the linked source repository's activity, contributor count, and Scorecard carry more weight than for npm/PyPI/Cargo. Stars are used as the popularity proxy.
+
+Useful for: vetting Go dependencies before adding to go.mod, identifying abandonware, supply chain risk assessment.
+Examples: "github.com/gin-gonic/gin", "golang.org/x/crypto", "github.com/spf13/cobra", "k8s.io/api"`,
+  {
+    module: z
+      .string()
+      .describe(
+        'Full Go module path. Must include the host. Examples: "github.com/gin-gonic/gin", "golang.org/x/net", "k8s.io/client-go", "gopkg.in/yaml.v3". Case-sensitive.'
+      ),
+  },
+  async ({ module: modulePath }) => {
+    try {
+      const profile = await buildGolangCommitmentProfile(modulePath);
+
+      if (!profile) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Module "${modulePath}" not found on proxy.golang.org. Check the path — Go modules require the full path including host (e.g., "github.com/owner/repo", not just "owner/repo").`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          { type: "text" as const, text: profile.summary },
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                modulePath: profile.modulePath,
+                latestVersion: profile.latestVersion,
+                ageYears: Math.round(profile.ageYears * 10) / 10,
+                versionCount: profile.versionCount,
+                contributorCount: profile.contributorCount,
+                starsCount: profile.starsCount,
+                daysSinceLastPublish: profile.daysSinceLastPublish,
+                repositoryUrl: profile.repositoryUrl,
+                isGitHubHosted: profile.isGitHubHosted,
+                scorecardScore: profile.scorecardScore,
+                githubScore: profile.githubScore,
+                commitmentScore: profile.commitmentScore,
+                scoreBreakdown: profile.scoreBreakdown,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return {
+        content: [
+          { type: "text" as const, text: `Error: ${message}` },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
 // ── Tool: audit_dependencies ──
 
 server.tool(
@@ -681,7 +754,7 @@ Examples: score all deps in a project, compare two similar packages, identify ab
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Proof of Commitment MCP server v0.7.0 running on stdio");
+  console.error("Proof of Commitment MCP server v0.8.0 running on stdio");
 }
 
 main().catch((err) => {

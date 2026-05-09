@@ -8,8 +8,8 @@
  * GET  /api/domain/:d                  — stats for a specific domain
  * GET  /api/business/search?q=         — search Norwegian businesses
  * GET  /api/business/:orgNumber        — business commitment profile
- * POST /api/audit                      — batch npm/PyPI/Cargo supply chain risk scoring
- * GET  /api/badge/:eco/:pkg            — SVG badge for README embedding (npm, PyPI, Cargo)
+ * POST /api/audit                      — batch npm/PyPI/Cargo/Go supply chain risk scoring
+ * GET  /api/badge/:eco/:pkg            — SVG badge for README embedding (npm, PyPI, Cargo, Go)
  * GET  /badge/:pkg                     — Simple trust badge (npm only, shields.io-style)
  * GET  /badge/:pkg.svg                 — Same, .svg variant for img src embedding
  * GET  /api/github/:owner/:repo        — GitHub repo commitment profile (with endorsements)
@@ -28,6 +28,7 @@ import { buildGitHubCommitmentProfile, parseGitHubInput } from "./github.ts";
 import { buildNpmCommitmentProfile, bulkFetchNpmWeeklyDownloads } from "./npm.ts";
 import { buildPyPICommitmentProfile } from "./pypi.ts";
 import { buildCargoCommitmentProfile } from "./cargo.ts";
+import { buildGolangCommitmentProfile } from "./golang.ts";
 
 // ── World ID JWT Verification ────────────────────────────────────────
 
@@ -638,9 +639,13 @@ app.get("/api/business/:orgNumber", async (c) => {
 
 /**
  * POST /api/audit
- * Batch-score npm, PyPI, or Cargo packages for supply chain risk.
- * Body: { packages: string[], ecosystem?: "npm" | "pypi" | "cargo" | "auto" }
+ * Batch-score npm, PyPI, Cargo, or Go packages for supply chain risk.
+ * Body: { packages: string[], ecosystem?: "npm" | "pypi" | "cargo" | "golang" | "auto" }
  * Returns JSON array sorted by commitment score (lowest = highest risk first).
+ *
+ * For Go: package names are full module paths, e.g. "github.com/gin-gonic/gin",
+ * "golang.org/x/net". The "publishers" field maps to GitHub contributor count
+ * since Go has no publisher registry — git push access is the publish equivalent.
  */
 app.post("/api/audit", async (c) => {
   const body = await c.req.json().catch(() => ({}));
@@ -671,24 +676,36 @@ app.post("/api/audit", async (c) => {
 
   const useCargo = ecosystem === "cargo";
   const usePypi = ecosystem === "pypi";
+  const useGolang = ecosystem === "golang" || ecosystem === "go";
 
   // For npm packages: bulk-fetch all download data in ONE request before processing.
-  const npmPackages = (!usePypi && !useCargo) ? packages : [];
+  const npmPackages = (!usePypi && !useCargo && !useGolang) ? packages : [];
   const unscopedNpm = npmPackages.filter((p) => !p.startsWith("@"));
 
   const bulkWeekly = unscopedNpm.length > 0
     ? await bulkFetchNpmWeeklyDownloads(unscopedNpm)
     : new Map<string, number | null>();
 
-  // Cargo needs lower concurrency due to crates.io rate limits (1 req/sec recommended)
-  const MAX_CONCURRENT = useCargo ? 3 : packages.length;
+  // Cargo needs lower concurrency due to crates.io rate limits (1 req/sec recommended).
+  // Go modules also benefit from concurrency caps (each does proxy + deps.dev + GitHub fetches).
+  const MAX_CONCURRENT = useCargo ? 3 : useGolang ? 4 : packages.length;
 
   for (let i = 0; i < packages.length; i += MAX_CONCURRENT) {
     const batch = packages.slice(i, i + MAX_CONCURRENT);
     const batchResults = await Promise.all(
       batch.map(async (pkg) => {
         try {
-          if (useCargo) {
+          if (useGolang) {
+            const profile = await buildGolangCommitmentProfile(pkg);
+            if (!profile) return { name: pkg, ecosystem: "golang", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
+            const riskFlags: string[] = [];
+            // For Go, "maintainers" in the unified output = GitHub contributor count
+            // (the closest equivalent to publish access since Go has no publisher concept)
+            if (profile.contributorCount !== null && profile.contributorCount <= 1 && profile.starsCount > 5_000) riskFlags.push("HIGH");
+            if (profile.ageYears < 1 && profile.starsCount > 1_000) riskFlags.push("HIGH");
+            if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+            return { name: profile.modulePath, ecosystem: "golang", score: profile.commitmentScore, maintainers: profile.contributorCount, githubContributors: profile.contributorCount, weeklyDownloads: null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: null, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: null, scorecardScore: profile.scorecardScore, hasDangerousWorkflow: null, riskFlags, scoreBreakdown: profile.scoreBreakdown as any };
+          } else if (useCargo) {
             const profile = await buildCargoCommitmentProfile(pkg);
             if (!profile) return { name: pkg, ecosystem: "cargo", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
             const riskFlags: string[] = [];
@@ -718,7 +735,7 @@ app.post("/api/audit", async (c) => {
             return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown };
           }
         } catch (err) {
-          return { name: pkg, ecosystem: useCargo ? "cargo" : usePypi ? "pypi" : "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
+          return { name: pkg, ecosystem: useGolang ? "golang" : useCargo ? "cargo" : usePypi ? "pypi" : "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
         }
       })
     );
@@ -1080,10 +1097,17 @@ function generateBadge(label: string, value: string, color: string): string {
  */
 app.get("/api/badge/:ecosystem/*", async (c) => {
   const ecosystem = c.req.param("ecosystem");
-  // The wildcard captures the rest of the path (handles scoped packages like @scope/name)
+  // The wildcard captures the rest of the path (handles scoped packages like @scope/name
+  // and full Go module paths like github.com/gin-gonic/gin)
   const packageName = decodeURIComponent(c.req.path.replace(`/api/badge/${ecosystem}/`, ""));
 
-  if (ecosystem !== "npm" && ecosystem !== "pypi" && ecosystem !== "cargo") {
+  if (
+    ecosystem !== "npm" &&
+    ecosystem !== "pypi" &&
+    ecosystem !== "cargo" &&
+    ecosystem !== "golang" &&
+    ecosystem !== "go"
+  ) {
     const svg = generateBadge("commit", "invalid ecosystem", "#9f9f9f");
     return new Response(svg, {
       headers: { "Content-Type": "image/svg+xml", "Cache-Control": "max-age=60" },
@@ -1094,7 +1118,15 @@ app.get("/api/badge/:ecosystem/*", async (c) => {
   let riskFlags: string[] = [];
 
   try {
-    if (ecosystem === "cargo") {
+    if (ecosystem === "golang" || ecosystem === "go") {
+      const profile = await buildGolangCommitmentProfile(packageName);
+      if (profile) {
+        score = profile.commitmentScore;
+        if (profile.contributorCount !== null && profile.contributorCount <= 1 && profile.starsCount > 10_000) {
+          riskFlags.push("CRITICAL");
+        }
+      }
+    } else if (ecosystem === "cargo") {
       const profile = await buildCargoCommitmentProfile(packageName);
       if (profile) {
         score = profile.commitmentScore;
@@ -2054,7 +2086,7 @@ app.get("/api/subscribe/stats", async (c) => {
 function createMcpServer(): McpServer {
   const mcp = new McpServer({
     name: "proof-of-commitment",
-    version: "1.3.0",
+    version: "1.6.0",
   });
 
   // Tool: query_commitment
@@ -2513,17 +2545,91 @@ Examples: "serde", "tokio", "reqwest", "clap", "rand"`,
     }
   );
 
+  // Tool: lookup_go_module
+  mcp.tool(
+    "lookup_go_module",
+    `Get a behavioral commitment profile for any Go module on proxy.golang.org. Takes a full module path (e.g., "github.com/gin-gonic/gin", "golang.org/x/net", "k8s.io/client-go", "gopkg.in/yaml.v3") and returns real signals: module age, version count, publish cadence, GitHub contributors (the closest equivalent to "publishers" since Go has no centralized publisher concept — git push access is the publish equivalent), GitHub stars, OpenSSF Scorecard score.
+
+The Go ecosystem has no centralized download counter, so this profile is GitHub-primary — the linked source repository's activity, contributor count, and Scorecard carry more weight than for npm/PyPI/Cargo. Stars are used as the popularity proxy.
+
+Useful for: vetting Go dependencies before adding to go.mod, identifying abandonware, supply chain risk assessment.
+Examples: "github.com/gin-gonic/gin", "golang.org/x/crypto", "github.com/spf13/cobra", "k8s.io/api"`,
+    {
+      module: z
+        .string()
+        .describe(
+          'Full Go module path. Must include the host. Examples: "github.com/gin-gonic/gin", "golang.org/x/net", "k8s.io/client-go", "gopkg.in/yaml.v3". Case-sensitive (preserves capitalization in path).'
+        ),
+    },
+    async ({ module: modulePath }) => {
+      try {
+        const profile = await buildGolangCommitmentProfile(modulePath);
+
+        if (!profile) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Module "${modulePath}" not found on proxy.golang.org. Check the path — Go modules require the full path including host (e.g., "github.com/owner/repo", not just "owner/repo").`,
+              },
+            ],
+          };
+        }
+
+        return {
+          content: [
+            { type: "text" as const, text: profile.summary },
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  modulePath: profile.modulePath,
+                  latestVersion: profile.latestVersion,
+                  ageYears: Math.round(profile.ageYears * 10) / 10,
+                  versionCount: profile.versionCount,
+                  contributorCount: profile.contributorCount,
+                  starsCount: profile.starsCount,
+                  daysSinceLastPublish: profile.daysSinceLastPublish,
+                  repositoryUrl: profile.repositoryUrl,
+                  isGitHubHosted: profile.isGitHubHosted,
+                  scorecardScore: profile.scorecardScore,
+                  githubScore: profile.githubScore,
+                  commitmentScore: profile.commitmentScore,
+                  scoreBreakdown: profile.scoreBreakdown,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: ${err instanceof Error ? err.message : "Unknown"}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
   // Tool: audit_dependencies
   mcp.tool(
     "audit_dependencies",
-    `Batch-score multiple npm, PyPI, or Cargo packages for supply chain risk. Takes a list of package names and returns a risk table sorted by commitment score (lowest = highest risk first).
+    `Batch-score multiple npm, PyPI, Cargo, or Go packages for supply chain risk. Takes a list of package names and returns a risk table sorted by commitment score (lowest = highest risk first).
 
 Risk flags:
 - CRITICAL: single publisher + >10M weekly downloads (publish-access concentration risk)
 - HIGH: new package (<1yr) + high downloads (unproven, rapid adoption = supply chain risk)
 - WARN: low publisher count + high downloads
 
-Perfect for auditing a full package.json, requirements.txt, or Cargo.toml — paste your dependency list and get a prioritized risk report.
+Perfect for auditing a full package.json, requirements.txt, Cargo.toml, or go.mod — paste your dependency list and get a prioritized risk report.
+
+For Go: pass full module paths (e.g., "github.com/gin-gonic/gin", "golang.org/x/net") and set ecosystem="golang". The "maintainers" column shows GitHub contributor count since Go has no centralized publisher concept.
 
 Examples: score all deps in a project, compare two similar packages, identify abandonware before it becomes a CVE.`,
     {
@@ -2532,13 +2638,13 @@ Examples: score all deps in a project, compare two similar packages, identify ab
         .min(1)
         .max(20)
         .describe(
-          'List of package names to score. Up to 20 at once. Examples: ["langchain", "litellm", "openai", "axios"] or ["@anthropic-ai/sdk", "zod", "express"]'
+          'List of package names to score. Up to 20 at once. Examples: ["langchain", "litellm", "openai", "axios"] or ["@anthropic-ai/sdk", "zod", "express"] or ["github.com/gin-gonic/gin", "golang.org/x/net"] for Go modules.'
         ),
       ecosystem: z
-        .enum(["npm", "pypi", "cargo", "auto"])
+        .enum(["npm", "pypi", "cargo", "golang", "auto"])
         .default("auto")
         .describe(
-          'Package ecosystem. "auto" detects by naming convention (Python-style = pypi, otherwise npm). Force "npm", "pypi", or "cargo" to override.'
+          'Package ecosystem. "auto" detects by naming convention (Python-style = pypi, otherwise npm). Force "npm", "pypi", "cargo", or "golang" to override. Go modules require full path (host/owner/repo) — use "golang".'
         ),
     },
     async ({ packages, ecosystem }) => {
@@ -2568,7 +2674,43 @@ Examples: score all deps in a project, compare two similar packages, identify ab
                 : ecosystem;
 
             try {
-              if (useEcosystem === "cargo") {
+              if (useEcosystem === "golang") {
+                const profile = await buildGolangCommitmentProfile(pkg);
+                if (!profile)
+                  return {
+                    name: pkg,
+                    score: null,
+                    maintainers: null,
+                    weeklyDownloads: null,
+                    ageYears: null,
+                    trend: null,
+                    riskFlags: [],
+                    error: "not found",
+                  };
+
+                const riskFlags: string[] = [];
+                if (profile.contributorCount !== null && profile.contributorCount <= 1 && profile.starsCount > 5_000)
+                  riskFlags.push("HIGH: bus factor 1 + popular");
+                if (profile.ageYears < 1 && profile.starsCount > 1_000)
+                  riskFlags.push("HIGH: new module (<1yr) + rapidly popular");
+                if (profile.daysSinceLastPublish > 365)
+                  riskFlags.push("WARN: no release in 12+ months");
+                if (profile.scorecardScore !== null && profile.scorecardScore < 3)
+                  riskFlags.push("WARN: low OpenSSF Scorecard");
+
+                return {
+                  name: pkg,
+                  score: profile.commitmentScore,
+                  // For Go, "maintainers" maps to contributor count (closest equivalent
+                  // to publish access since Go has no publisher registry)
+                  maintainers: profile.contributorCount,
+                  // Go has no download data — leave null
+                  weeklyDownloads: null,
+                  ageYears: Math.round(profile.ageYears * 10) / 10,
+                  trend: null,
+                  riskFlags,
+                };
+              } else if (useEcosystem === "cargo") {
                 const profile = await buildCargoCommitmentProfile(pkg);
                 if (!profile)
                   return {
