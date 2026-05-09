@@ -701,27 +701,28 @@ app.post("/api/audit", async (c) => {
             const riskFlags: string[] = [];
             // For Go, "maintainers" in the unified output = GitHub contributor count
             // (the closest equivalent to publish access since Go has no publisher concept)
-            if (profile.contributorCount !== null && profile.contributorCount <= 1 && profile.starsCount > 5_000) riskFlags.push("HIGH");
-            if (profile.ageYears < 1 && profile.starsCount > 1_000) riskFlags.push("HIGH");
-            if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+            if (profile.contributorCount !== null && profile.contributorCount <= 1 && profile.starsCount > 5_000) riskFlags.push("HIGH: bus factor 1 + popular");
+            if (profile.ageYears < 1 && profile.starsCount > 1_000) riskFlags.push("HIGH: new module (<1yr) + rapidly popular");
+            if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
             return { name: profile.modulePath, ecosystem: "golang", score: profile.commitmentScore, maintainers: profile.contributorCount, githubContributors: profile.contributorCount, weeklyDownloads: null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: null, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: null, scorecardScore: profile.scorecardScore, hasDangerousWorkflow: null, riskFlags, scoreBreakdown: profile.scoreBreakdown as any };
           } else if (useCargo) {
             const profile = await buildCargoCommitmentProfile(pkg);
             if (!profile) return { name: pkg, ecosystem: "cargo", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
             const riskFlags: string[] = [];
-            if (profile.ownerCount <= 1 && profile.estimatedWeeklyDownloads > 10_000_000) riskFlags.push("CRITICAL");
-            else if (profile.ownerCount <= 1 && profile.estimatedWeeklyDownloads > 1_000_000) riskFlags.push("HIGH");
-            if (profile.ageYears < 1 && profile.estimatedWeeklyDownloads > 100_000) riskFlags.push("HIGH");
-            if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+            if (profile.ownerCount <= 1 && profile.estimatedWeeklyDownloads > 10_000_000) riskFlags.push("CRITICAL: sole owner + >10M/wk");
+            else if (profile.ownerCount <= 1 && profile.estimatedWeeklyDownloads > 1_000_000) riskFlags.push("HIGH: sole owner + >1M/wk");
+            if (profile.ageYears < 1 && profile.estimatedWeeklyDownloads > 100_000) riskFlags.push("HIGH: new crate (<1yr) + high downloads");
+            if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
             return { name: profile.name, ecosystem: "cargo", score: profile.commitmentScore, maintainers: profile.ownerCount, githubContributors: null, weeklyDownloads: profile.estimatedWeeklyDownloads, ageYears: Math.round(profile.ageYears * 10) / 10, trend: null, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags, scoreBreakdown: profile.scoreBreakdown as any };
           } else if (usePypi) {
             const profile = await buildPyPICommitmentProfile(pkg);
             if (!profile) return { name: pkg, ecosystem: "pypi", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
             const weeklyDl = profile.recentDailyDownloads * 7;
             const riskFlags: string[] = [];
-            if (profile.maintainerCount === 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL");
-            else if (profile.ageYears < 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH");
-            else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+            if (profile.maintainerCount === 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
+            else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH: sole maintainer + >1M/wk");
+            if (profile.ageYears < 1 && weeklyDl > 100_000) riskFlags.push("HIGH: new package (<1yr) + high downloads");
+            if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
             return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: null, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags, scoreBreakdown: profile.scoreBreakdown };
           } else {
             const preloadedWeekly = pkg.startsWith("@") ? undefined : bulkWeekly.get(pkg);
@@ -729,9 +730,10 @@ app.post("/api/audit", async (c) => {
             if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
             const riskFlags: string[] = [];
             const wdl = profile.recentWeeklyDownloads ?? 0;
-            if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
-            else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
-            else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+            if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole npm publisher + >10M/wk");
+            else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole npm publisher + >1M/wk");
+            if (profile.ageYears < 1 && wdl > 100_000) riskFlags.push("HIGH: new package (<1yr) + high downloads");
+            if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
             return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown };
           }
         } catch (err) {
@@ -2760,9 +2762,9 @@ Examples: score all deps in a project, compare two similar packages, identify ab
                 const weeklyDl = profile.recentDailyDownloads * 7;
                 const riskFlags: string[] = [];
                 if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000)
-                  riskFlags.push("CRITICAL: sole publisher + >10M/wk");
+                  riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
                 else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000)
-                  riskFlags.push("HIGH: sole publisher + >1M/wk");
+                  riskFlags.push("HIGH: sole maintainer + >1M/wk");
                 if (profile.ageYears < 1 && weeklyDl > 100_000)
                   riskFlags.push("HIGH: new package (<1yr) + high downloads");
                 if (profile.daysSinceLastPublish > 365)
@@ -2909,8 +2911,8 @@ Examples: score all deps in a project, compare two similar packages, identify ab
 This is the fastest way to audit a project — just provide the GitHub URL or owner/repo slug, and get a full risk table in seconds.
 
 Risk flags:
-- CRITICAL: single npm publisher + >10M weekly downloads (publish-access concentration risk)
-- HIGH: sole publisher + >1M/wk downloads, OR new package (<1yr) with high adoption
+- CRITICAL: single publisher/maintainer/owner + >10M weekly downloads (publish-access concentration risk)
+- HIGH: sole publisher/maintainer + >1M/wk downloads, OR new package (<1yr) with high adoption
 - WARN: no release in 12+ months (potential abandonware)
 
 Examples:
@@ -2977,8 +2979,8 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
                   if (!profile) return { name: pkg, ecosystem: eco, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
                   const weeklyDl = profile.recentDailyDownloads * 7;
                   const riskFlags: string[] = [];
-                  if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL: sole publisher + >10M/wk");
-                  else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH: sole publisher + >1M/wk");
+                  if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
+                  else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH: sole maintainer + >1M/wk");
                   if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
                   return { name: profile.name, ecosystem: eco, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
                 } else {
@@ -2986,8 +2988,8 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
                   if (!profile) return { name: pkg, ecosystem: eco, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
                   const wdl = profile.recentWeeklyDownloads ?? 0;
                   const riskFlags: string[] = [];
-                  if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole publisher + >10M/wk");
-                  else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole publisher + >1M/wk");
+                  if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole npm publisher + >10M/wk");
+                  else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole npm publisher + >1M/wk");
                   if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
                   return { name: profile.name, ecosystem: eco, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: wdl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
                 }
@@ -3143,7 +3145,7 @@ Use this when someone asks:
         lines.push(``);
       }
 
-      lines.push(`Score: 0-100 behavioral commitment. CRITICAL = sole npm publisher + >10M downloads/wk.`);
+      lines.push(`Score: 0-100 behavioral commitment. CRITICAL = sole publisher + >10M downloads/wk.`);
       lines.push(`Full audit: https://getcommit.dev/audit`);
 
       if (safeDepth === 1 && criticalNodes.length === 0 && directDeps.length > 0) {

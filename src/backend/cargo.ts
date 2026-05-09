@@ -265,9 +265,9 @@ export async function buildCargoCommitmentProfile(
   // 5. Risk flags
   const riskFlags: string[] = [];
   if (ownerCount <= 1 && estimatedWeeklyDownloads > 10_000_000)
-    riskFlags.push("CRITICAL");
+    riskFlags.push("CRITICAL: sole owner + >10M/wk");
   else if (ownerCount <= 1 && estimatedWeeklyDownloads > 1_000_000)
-    riskFlags.push("HIGH");
+    riskFlags.push("HIGH: sole owner + >1M/wk");
   if (ageYears < 1 && estimatedWeeklyDownloads > 100_000)
     riskFlags.push("HIGH: new crate (<1yr) + high downloads");
   if (daysSinceLastPublish > 365)
