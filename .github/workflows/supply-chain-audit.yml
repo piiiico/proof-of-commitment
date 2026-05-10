@@ -5,17 +5,11 @@ on:
     branches: [main]
     paths:
       - 'package.json'
-      - 'package-lock.json'
       - 'bun.lock'
-      - 'requirements.txt'
-      - 'pyproject.toml'
   pull_request:
     paths:
       - 'package.json'
-      - 'package-lock.json'
       - 'bun.lock'
-      - 'requirements.txt'
-      - 'pyproject.toml'
   workflow_dispatch: {}
 
 jobs:
@@ -23,17 +17,14 @@ jobs:
     name: Dependency Audit
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write   # needed for PR comments
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Commit Supply Chain Audit
-        uses: piiiico/proof-of-commitment@main
+        uses: piiiico/commit-action@v1
         with:
-          # Auto-detects from package.json or requirements.txt
-          # Or specify explicitly: packages: 'axios,zod,chalk,lodash'
-          fail-on-critical: false      # set to true to block merges on CRITICAL packages
+          fail-on-critical: false
           max-packages: '20'
-          comment-on-pr: true          # posts results as a PR comment (auto-updates on re-run)
+          comment-on-pr: true
           include-dev-dependencies: false
-          # api-key: ${{ secrets.COMMIT_API_KEY }}  # uncomment for batch requests (Commit Pro)
