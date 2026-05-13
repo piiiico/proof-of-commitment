@@ -748,6 +748,23 @@ app.post("/api/audit", async (c) => {
   return c.json({ count: results.length, results });
 });
 
+/**
+ * GET /api/score/npm/:package{.+}
+ * Single-package npm commitment profile with trustedPublishing signal.
+ * Returns the full NpmCommitmentProfile JSON.
+ */
+app.get("/api/score/npm/*", async (c) => {
+  const packageName = decodeURIComponent(c.req.path.replace("/api/score/npm/", ""));
+  if (!packageName) return c.json({ error: "package name required" }, 400);
+  try {
+    const profile = await buildNpmCommitmentProfile(packageName);
+    if (!profile) return c.json({ error: "not found" }, 404);
+    return c.json(profile, 200, { "Cache-Control": "max-age=300, s-maxage=300" });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : "error" }, 500);
+  }
+});
+
 // ── GitHub Repo Dependency Audit ──────────────────────────────────────
 
 /**
@@ -2384,6 +2401,7 @@ Examples: "langchain", "@anthropic-ai/sdk", "express", "litellm"`,
                   downloadTrend: profile.downloadTrend,
                   daysSinceLastPublish: profile.daysSinceLastPublish,
                   githubScore: profile.githubScore,
+                  trustedPublishing: profile.trustedPublishing,
                   commitmentScore: profile.commitmentScore,
                   scoreBreakdown: profile.scoreBreakdown,
                 },

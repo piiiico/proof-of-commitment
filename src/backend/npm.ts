@@ -29,7 +29,10 @@ interface NpmPackage {
   name: string;
   description?: string;
   "dist-tags": Record<string, string>;
-  versions: Record<string, { repository?: { type: string; url: string } }>;
+  versions: Record<string, {
+    repository?: { type: string; url: string };
+    dist?: { attestations?: unknown; [key: string]: unknown };
+  }>;
   time: Record<string, string>; // ISO timestamps per version + "created"/"modified"
   maintainers?: { name: string; email?: string }[];
   repository?: { type: string; url: string };
@@ -133,6 +136,9 @@ export interface NpmCommitmentProfile {
   scorecardScore: number | null; // OpenSSF Scorecard 0–10 (null = no GitHub repo or not indexed)
   hasDangerousWorkflow: boolean | null; // true = Dangerous-Workflow Scorecard check failed (null = no Scorecard data)
 
+  // Trust signals
+  trustedPublishing: boolean;
+
   // Scores
   commitmentScore: number;
   scoreBreakdown: {
@@ -141,6 +147,7 @@ export interface NpmCommitmentProfile {
     releaseConsistency: number;
     maintainerDepth: number;
     githubBacking: number;
+    trustedPublishing: number;
   };
   githubScore: number | null;
 
@@ -354,6 +361,11 @@ export async function buildNpmCommitmentProfile(
   // Maintainers
   const maintainerCount = pkg.maintainers?.length ?? 1;
 
+  // Trusted Publishing (npm OIDC provenance) — detected via dist.attestations field
+  const trustedPublishing = !!(
+    latestVersion && pkg.versions[latestVersion]?.dist?.attestations
+  );
+
   // Repository URL
   const repoUrl = parseRepoUrl(
     pkg.repository?.url ??
@@ -528,8 +540,9 @@ export async function buildNpmCommitmentProfile(
   const downloadMomentum = scoreDownloads(avg7d, trend);
   const releaseConsistency = scoreReleases(versionCount, daysSinceLastPublish);
   const maintainerDepth = scoreMaintainers(maintainerCount);
+  const trustedPublishingScore = trustedPublishing ? 2 : 0;
   const commitmentScore =
-    longevity + downloadMomentum + releaseConsistency + maintainerDepth + githubBacking;
+    longevity + downloadMomentum + releaseConsistency + maintainerDepth + githubBacking + trustedPublishingScore;
 
   // 5. Build summary
   const ageStr =
@@ -571,6 +584,7 @@ export async function buildNpmCommitmentProfile(
     `Versions published: ${versionCount} | Last: ${recentStr}`,
     `Downloads: ${dlStr}`,
     `npm publishers: ${maintainerCount}${githubContributors !== null ? ` | GitHub contributors: ${githubContributors >= 30 ? "30+" : githubContributors}` : ""}`,
+    `Trusted Publishing: ${trustedPublishing ? "yes (OIDC provenance)" : "no"}`,
     repoUrl ? `Repository: ${repoUrl}` : "No linked repository",
     pkg.license ? `License: ${pkg.license}` : "No license specified",
     githubScore !== null
@@ -585,6 +599,7 @@ export async function buildNpmCommitmentProfile(
     `  Release consistency:  ${releaseConsistency}/20 (${versionCount} versions)`,
     `  Publisher depth:      ${maintainerDepth}/15 (${maintainerCount} npm publisher${maintainerCount !== 1 ? "s" : ""})`,
     `  GitHub backing:       ${githubBacking}/15${githubScore !== null ? ` (GitHub score: ${githubScore}/100)` : " (no linked repo)"}`,
+    `  Trusted Publishing:   ${trustedPublishingScore}/2 (${trustedPublishing ? "OIDC provenance detected" : "no provenance"})`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -606,6 +621,7 @@ export async function buildNpmCommitmentProfile(
     hasProvenance,
     scorecardScore,
     hasDangerousWorkflow,
+    trustedPublishing,
     commitmentScore,
     scoreBreakdown: {
       longevity,
@@ -613,6 +629,7 @@ export async function buildNpmCommitmentProfile(
       releaseConsistency,
       maintainerDepth,
       githubBacking,
+      trustedPublishing: trustedPublishingScore,
     },
     githubScore,
     summary: lines,
