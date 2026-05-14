@@ -12,6 +12,8 @@
  * GET  /api/badge/:eco/:pkg            — SVG badge for README embedding (npm, PyPI, Cargo, Go)
  * GET  /badge/:pkg                     — Simple trust badge (npm only, shields.io-style)
  * GET  /badge/:pkg.svg                 — Same, .svg variant for img src embedding
+ * GET  /og/:ecosystem/:package         — PNG OG image (1200×630) for social sharing
+ * GET  /og/blog                        — PNG OG image for blog posts (?title=...&date=...)
  * GET  /api/github/:owner/:repo        — GitHub repo commitment profile (with endorsements)
  * POST /api/repos/:owner/:repo/endorse — endorse a GitHub repo (requires World ID JWT)
  * ALL  /mcp                            — Remote MCP server (Streamable HTTP)
@@ -1204,6 +1206,284 @@ app.get("/api/badge/:ecosystem/*", async (c) => {
   });
 });
 
+// ── OG Image Generator ───────────────────────────────────────────────
+
+/**
+ * NOTE: CF Workers blocks dynamic WebAssembly.instantiate() with fetched bytes
+ * (security restriction). OG images are served as SVG — works on Discord, LinkedIn,
+ * Slack, Facebook, Telegram. Twitter/X requires PNG; use wrangler + WASM module
+ * binding for a future upgrade to native PNG.
+ */
+
+function escSvg(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Generate a 1200×630 SVG OG card for a package.
+ */
+function generatePackageOgSvg(opts: {
+  pkg: string;
+  ecosystem: string;
+  score: number | null;
+  isCritical: boolean;
+  maintainerCount?: number | null;
+  weeklyDownloads?: number | null;
+}): string {
+  const { pkg, ecosystem, score, isCritical } = opts;
+
+  // Score color
+  let scoreColor = "#9f9f9f";
+  let scoreLabel = "no data";
+  if (score !== null) {
+    if (isCritical) {
+      scoreColor = "#e05d44";
+      scoreLabel = "CRITICAL";
+    } else if (score < 40) {
+      scoreColor = "#fe7d37";
+      scoreLabel = "high risk";
+    } else if (score < 60) {
+      scoreColor = "#dfb317";
+      scoreLabel = "moderate";
+    } else if (score < 75) {
+      scoreColor = "#97ca00";
+      scoreLabel = "good";
+    } else {
+      scoreColor = "#44cc11";
+      scoreLabel = "healthy";
+    }
+  }
+
+  // Truncate long package names
+  const displayPkg = pkg.length > 40 ? pkg.slice(0, 38) + "…" : pkg;
+  const ecoLabel = ecosystem === "golang" ? "go" : ecosystem;
+
+  const scoreTxt = score !== null ? String(score) : "—";
+
+  // Layout constants
+  const W = 1200;
+  const H = 630;
+
+  // Ecosystem badge colors
+  const ecoBg: Record<string, string> = {
+    npm: "#CB3837",
+    pypi: "#3572A5",
+    cargo: "#DEA584",
+    go: "#00ADD8",
+    golang: "#00ADD8",
+  };
+  const ecoColor = ecoBg[ecosystem] ?? "#666";
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f0f11"/>
+      <stop offset="100%" stop-color="#1a1a22"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="${scoreColor}" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="${scoreColor}" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="${W}" height="${H}" fill="url(#bg)"/>
+
+  <!-- Accent stripe -->
+  <rect x="0" y="0" width="${W}" height="6" fill="${scoreColor}"/>
+
+  <!-- Score glow -->
+  <rect x="0" y="0" width="${W}" height="${H}" fill="url(#accent)"/>
+
+  <!-- Branding -->
+  <text x="64" y="76" font-family="ui-monospace, 'Courier New', monospace" font-size="22" fill="#ffffff" opacity="0.6" letter-spacing="4">COMMIT</text>
+
+  <!-- Ecosystem badge -->
+  <rect x="64" y="110" width="${ecoLabel.length * 14 + 28}" height="36" rx="6" fill="${ecoColor}"/>
+  <text x="${64 + ecoLabel.length * 7 + 14}" y="134" font-family="ui-monospace, 'Courier New', monospace" font-size="18" fill="#ffffff" text-anchor="middle" font-weight="bold">${escSvg(ecoLabel)}</text>
+
+  <!-- Package name -->
+  <text x="64" y="260" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="${displayPkg.length > 28 ? 52 : 64}" fill="#ffffff" font-weight="700" letter-spacing="-1">${escSvg(displayPkg)}</text>
+
+  <!-- Divider -->
+  <line x1="64" y1="300" x2="${W - 64}" y2="300" stroke="#ffffff" stroke-opacity="0.1" stroke-width="1"/>
+
+  <!-- Score section -->
+  <text x="64" y="420" font-family="ui-monospace, 'Courier New', monospace" font-size="18" fill="#ffffff" opacity="0.5" letter-spacing="2">COMMIT SCORE</text>
+  <text x="64" y="530" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="120" fill="${scoreColor}" font-weight="800" letter-spacing="-4">${escSvg(scoreTxt)}</text>
+
+  <!-- Score label -->
+  <text x="${score !== null ? (scoreTxt.length * 68 + 80) : 164}" y="530" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="36" fill="${scoreColor}" font-weight="600" opacity="0.85">${escSvg(scoreLabel)}</text>
+
+  <!-- Domain watermark -->
+  <text x="${W - 64}" y="${H - 40}" font-family="ui-monospace, 'Courier New', monospace" font-size="20" fill="#ffffff" opacity="0.35" text-anchor="end">getcommit.dev</text>
+</svg>`;
+}
+
+/**
+ * Generate a 1200×630 SVG OG card for a blog post.
+ */
+function generateBlogOgSvg(opts: { title: string; date?: string }): string {
+  const { title, date } = opts;
+
+  // Wrap title text (simple word-wrap at ~40 chars)
+  const words = title.split(" ");
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    if ((current + " " + word).length > 42) {
+      if (current) lines.push(current);
+      current = word;
+    } else {
+      current = current ? current + " " + word : word;
+    }
+  }
+  if (current) lines.push(current);
+  // Max 3 lines; truncate rest
+  const displayLines = lines.slice(0, 3);
+  if (lines.length > 3) displayLines[2] = displayLines[2].slice(0, 38) + "…";
+
+  const fontSize = displayLines.length === 1 ? 72 : displayLines.length === 2 ? 64 : 52;
+  const lineH = fontSize * 1.2;
+  const totalH = displayLines.length * lineH;
+  const startY = (630 - totalH) / 2 + fontSize;
+
+  const W = 1200;
+  const H = 630;
+
+  const textLines = displayLines
+    .map(
+      (l, i) =>
+        `<text x="80" y="${startY + i * lineH}" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="#ffffff" font-weight="700" letter-spacing="-1">${escSvg(l)}</text>`
+    )
+    .join("\n  ");
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f0f11"/>
+      <stop offset="100%" stop-color="#1a1a22"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="${W}" height="${H}" fill="url(#bg)"/>
+
+  <!-- Top accent -->
+  <rect x="0" y="0" width="${W}" height="6" fill="#D14D41"/>
+
+  <!-- Branding -->
+  <text x="80" y="72" font-family="ui-monospace, 'Courier New', monospace" font-size="20" fill="#ffffff" opacity="0.5" letter-spacing="4">COMMIT · WRITING</text>
+
+  <!-- Title -->
+  ${textLines}
+
+  <!-- Date -->
+  ${date ? `<text x="80" y="${H - 50}" font-family="ui-monospace, 'Courier New', monospace" font-size="20" fill="#ffffff" opacity="0.4">${escSvg(date)}</text>` : ""}
+
+  <!-- Domain -->
+  <text x="${W - 80}" y="${H - 50}" font-family="ui-monospace, 'Courier New', monospace" font-size="20" fill="#ffffff" opacity="0.35" text-anchor="end">getcommit.dev</text>
+</svg>`;
+}
+
+app.use("/og/*", cors());
+
+/**
+ * GET /og/blog
+ * Query params: title (required), date (optional)
+ *
+ * Returns a 1200×630 PNG OG card for a blog post.
+ * Usage in _worker.js: `${API_BASE}/og/blog?title=${encodeURIComponent(title)}&date=${encodeURIComponent(date)}`
+ */
+app.get("/og/blog", async (c) => {
+  const title = c.req.query("title") ?? "Commit";
+  const date = c.req.query("date") ?? "";
+
+  const svg = generateBlogOgSvg({ title, date });
+  return new Response(svg, {
+    headers: {
+      "Content-Type": "image/svg+xml",
+      "Cache-Control": "max-age=86400, s-maxage=86400",
+      "X-Powered-By": "getcommit.dev",
+    },
+  });
+});
+
+/**
+ * GET /og/:ecosystem/:package{.+}
+ *
+ * Returns a 1200×630 PNG OG card showing the commitment score for a package.
+ * Used in og:image meta tags on getcommit.dev audit pages.
+ *
+ * Example: https://poc-backend.amdal-dev.workers.dev/og/npm/axios
+ */
+app.get("/og/:ecosystem/*", async (c) => {
+  const ecosystem = c.req.param("ecosystem");
+  const packageName = decodeURIComponent(c.req.path.replace(`/og/${ecosystem}/`, ""));
+
+  let score: number | null = null;
+  let isCritical = false;
+  let maintainerCount: number | null = null;
+  let weeklyDownloads: number | null = null;
+
+  try {
+    if (ecosystem === "golang" || ecosystem === "go") {
+      const profile = await buildGolangCommitmentProfile(packageName);
+      if (profile) {
+        score = profile.commitmentScore;
+        if (profile.contributorCount !== null && profile.contributorCount <= 1 && profile.starsCount > 10_000) {
+          isCritical = true;
+        }
+      }
+    } else if (ecosystem === "cargo") {
+      const profile = await buildCargoCommitmentProfile(packageName);
+      if (profile) {
+        score = profile.commitmentScore;
+        maintainerCount = profile.ownerCount;
+        if (profile.ownerCount <= 1 && profile.estimatedWeeklyDownloads > 10_000_000) isCritical = true;
+      }
+    } else if (ecosystem === "npm") {
+      const profile = await buildNpmCommitmentProfile(packageName);
+      if (profile) {
+        score = profile.commitmentScore;
+        maintainerCount = profile.maintainerCount ?? null;
+        weeklyDownloads = profile.recentWeeklyDownloads ?? null;
+        if (profile.maintainerCount === 1 && (profile.recentWeeklyDownloads ?? 0) > 10_000_000) isCritical = true;
+      }
+    } else if (ecosystem === "pypi") {
+      const profile = await buildPyPICommitmentProfile(packageName);
+      if (profile) {
+        score = profile.commitmentScore;
+        maintainerCount = profile.maintainerCount ?? null;
+        weeklyDownloads = profile.recentDailyDownloads * 7;
+        if (profile.maintainerCount === 1 && profile.recentDailyDownloads * 7 > 10_000_000) isCritical = true;
+      }
+    }
+  } catch {
+    // Fall through — score stays null
+  }
+
+  const svg = generatePackageOgSvg({
+    pkg: packageName,
+    ecosystem,
+    score,
+    isCritical,
+    maintainerCount,
+    weeklyDownloads,
+  });
+  return new Response(svg, {
+    headers: {
+      "Content-Type": "image/svg+xml",
+      "Cache-Control": "max-age=3600, s-maxage=3600",
+      "X-Powered-By": "getcommit.dev",
+    },
+  });
+});
+
 // ── Dependency Graph Helpers ─────────────────────────────────────────
 
 /**
@@ -1393,6 +1673,39 @@ app.post("/api/graph/npm", async (c) => {
 
   return c.json({
     root: pkg.trim(),
+    depth,
+    nodes,
+    edges,
+    summary: {
+      totalNodes: nodes.length,
+      criticalCount,
+      highCount,
+      warnCount,
+      worstScore: worstScore === 101 ? null : worstScore,
+      criticalTransitivePaths,
+    },
+  });
+});
+
+/**
+ * GET /api/graph/npm/:package
+ * Build a dependency risk graph for an npm package (default depth=2).
+ * Query params: depth=1|2 (default 2)
+ */
+app.get("/api/graph/npm/*", async (c) => {
+  const packageName = decodeURIComponent(c.req.path.replace("/api/graph/npm/", ""));
+  if (!packageName) return c.json({ error: "package required" }, 400);
+  const depth: 1 | 2 = c.req.query("depth") === "1" ? 1 : 2;
+
+  const { nodes, edges, criticalTransitivePaths } = await buildNpmDepGraph(packageName, depth);
+
+  const criticalCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("CRITICAL"))).length;
+  const highCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("HIGH"))).length;
+  const warnCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("WARN"))).length;
+  const worstScore = nodes.reduce((min, n) => n.score !== null ? Math.min(min, n.score) : min, 101);
+
+  return c.json({
+    root: packageName,
     depth,
     nodes,
     edges,
