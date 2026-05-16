@@ -1,0 +1,30 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Publish npm package with provenance
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for npm Trusted Publishing (OIDC) and provenance attestation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish with provenance
+        working-directory: ./npm-package
+        run: npm publish --provenance --access public
+        # NODE_AUTH_TOKEN not needed — npm Trusted Publishing uses OIDC token directly
+        # Configure at: npmjs.com → proof-of-commitment → Settings → Trusted Publishers
+        # Repo: github.com/piiiico/proof-of-commitment, workflow: publish.yml
