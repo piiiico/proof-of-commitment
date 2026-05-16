@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.7.0
+ * proof-of-commitment CLI v1.8.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -175,9 +175,10 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.7.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.8.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
+  npx proof-of-commitment                            Auto-detect manifest in current dir
   npx proof-of-commitment [packages...]              Score npm packages
   npx proof-of-commitment --pypi [pkgs...]           Score PyPI packages
   npx proof-of-commitment --cargo [crates...]        Score Rust crates
@@ -192,20 +193,52 @@ ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment --file go.sum              Audit Go full transitive set
 
 ${clr(c.bold, 'Options:')}
-  --json        Output results as JSON (exits 1 if any CRITICAL found — useful in CI)
-  --pypi        Score PyPI packages instead of npm
-  --cargo       Score Rust crates from crates.io
-  --golang      Score Go modules from proxy.golang.org (use full path: github.com/owner/repo)
-  --file, -f    Read packages from package.json, lock file, requirements.txt, Cargo.toml, or go.mod/go.sum
+  --json              Output results as JSON
+  --fail-on=<level>   Exit 1 when findings meet the threshold. Levels:
+                        critical  any CRITICAL package (publish-access concentration)
+                        risky     any CRITICAL or HIGH (score < 40) package
+                        none      always exit 0
+                      Defaults: 'critical' in CI (env CI=true) and for --json output;
+                      'none' for interactive table output (backward-compatible).
+  --pypi              Score PyPI packages instead of npm
+  --cargo             Score Rust crates from crates.io
+  --golang            Score Go modules from proxy.golang.org (use full path: github.com/owner/repo)
+  --file, -f          Read packages from package.json, lock file, requirements.txt, Cargo.toml, or go.mod/go.sum
+
+${clr(c.bold, 'Auto-detect (no args):')}
+  Running 'npx proof-of-commitment' with no arguments scans the most-recently-modified
+  manifest in the current directory. Detection order (highest transitive coverage first):
+    npm:    package-lock.json · yarn.lock · pnpm-lock.yaml · pnpm-workspace.yaml · package.json
+    pypi:   requirements.txt
+    cargo:  Cargo.toml
+    golang: go.sum · go.mod
+  When multiple ecosystems are present, the file with the most recent mtime wins.
 
 ${clr(c.bold, 'Examples:')}
+  npx proof-of-commitment                              # scans cwd manifest
   npx proof-of-commitment axios zod chalk
   npx proof-of-commitment --pypi litellm langchain requests
   npx proof-of-commitment --cargo serde tokio reqwest
   npx proof-of-commitment --golang github.com/gin-gonic/gin golang.org/x/net
-  npx proof-of-commitment --file package-lock.json   # scans ALL transitive deps
-  npx proof-of-commitment --file go.sum              # scans full Go module graph
+  npx proof-of-commitment --file package-lock.json     # scans ALL transitive deps
+  npx proof-of-commitment --file go.sum                # scans full Go module graph
   npx proof-of-commitment axios chalk --json | jq '.criticalCount'
+  npx proof-of-commitment --fail-on=critical           # CI-friendly hard gate
+
+${clr(c.bold, 'CI integration (GitHub Actions):')}
+  # .github/workflows/supply-chain.yml
+  jobs:
+    audit:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+        - uses: actions/setup-node@v4
+          with: { node-version: '20' }
+        - run: npx -y proof-of-commitment --fail-on=critical
+
+  # Block PRs when a dependency hits CRITICAL.
+  # Use --fail-on=risky to also block HIGH-risk (score < 40) packages.
+  # Alternative: piiiico/commit-action@v1 (annotated PR checks).
 
 ${clr(c.bold, 'Score meaning:')}
   🔴 CRITICAL  Sole publisher + >10M downloads/wk (publish-access concentration risk)
@@ -221,9 +254,7 @@ ${clr(c.bold, 'Provenance (npm):')}
 ${clr(c.bold, 'Score dimensions (npm/PyPI/Cargo):')} longevity · download momentum · release consistency · publisher depth · GitHub backing · provenance
 ${clr(c.bold, 'Score dimensions (Go):')} longevity · release consistency · maintainer depth · GitHub backing · stars
 
-${clr(c.bold, 'CI integration:')}
-  GitHub Action: ${clr(c.cyan, 'github.com/piiiico/commit-action')} — fails PRs on CRITICAL packages
-  MCP server:   Add to Claude Desktop / Cursor for AI-assisted auditing
+${clr(c.bold, 'MCP:')} Add to Claude Desktop / Cursor for AI-assisted auditing — see homepage.
 
 ${clr(c.bold, 'Web:')}  ${WEB}
   `);
@@ -475,6 +506,54 @@ function parseGoSum(content) {
 }
 
 /**
+ * Auto-detect the most authoritative manifest in the current directory.
+ *
+ * Candidate set (ordered within ecosystem by transitive coverage — first preferred):
+ *   npm:    package-lock.json, yarn.lock, pnpm-lock.yaml, pnpm-workspace.yaml, package.json
+ *   pypi:   requirements.txt
+ *   cargo:  Cargo.toml
+ *   golang: go.sum, go.mod
+ *
+ * Selection: among files that exist, prefer the one with the most recent mtime.
+ * Ties (same mtime) resolved by the candidate list order above.
+ * Returns the basename of the chosen file, or null if no manifest is present.
+ */
+async function autodetectManifest(cwd) {
+  const fs = await import('fs');
+  const path = await import('path');
+
+  const candidates = [
+    'package-lock.json',
+    'yarn.lock',
+    'pnpm-lock.yaml',
+    'pnpm-lock.yml',
+    'pnpm-workspace.yaml',
+    'pnpm-workspace.yml',
+    'package.json',
+    'requirements.txt',
+    'Cargo.toml',
+    'go.sum',
+    'go.mod',
+  ];
+
+  const found = [];
+  for (let idx = 0; idx < candidates.length; idx++) {
+    const name = candidates[idx];
+    const full = path.join(cwd, name);
+    try {
+      const stat = fs.statSync(full);
+      if (stat.isFile()) found.push({ name, mtime: stat.mtimeMs, order: idx });
+    } catch {}
+  }
+
+  if (found.length === 0) return null;
+
+  // Sort: newest mtime first; ties resolved by candidate-list order.
+  found.sort((a, b) => (b.mtime - a.mtime) || (a.order - b.order));
+  return found[0].name;
+}
+
+/**
  * Audit packages in batches of 20, in parallel.
  */
 async function auditBatched(packages, ecosystem, { onProgress } = {}) {
@@ -516,10 +595,25 @@ async function auditBatched(packages, ecosystem, { onProgress } = {}) {
   return all;
 }
 
+/** Parse --fail-on=<level>. Returns one of 'critical' | 'risky' | 'none'. */
+function parseFailOn(raw) {
+  const v = String(raw || '').toLowerCase();
+  if (v === 'critical' || v === 'risky' || v === 'none') return v;
+  throw new Error(`Invalid --fail-on value: '${raw}'. Expected: critical, risky, or none.`);
+}
+
+/** Decide exit code given results + fail-on threshold. */
+function shouldFail(results, failOn) {
+  if (failOn === 'none') return false;
+  if (failOn === 'critical') return results.some(r => hasCritical(r.riskFlags));
+  if (failOn === 'risky') return results.some(r => hasCritical(r.riskFlags) || (typeof r.score === 'number' && r.score < 40));
+  return false;
+}
+
 async function main() {
   const args = process.argv.slice(2);
 
-  if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  if (args.includes('--help') || args.includes('-h')) {
     printHelp();
     process.exit(0);
   }
@@ -530,6 +624,8 @@ async function main() {
   let isLockfile = false;
   let totalInFile = 0;
   let jsonOutput = false;
+  // null means "default later" — depends on output mode and CI env.
+  let failOn = null;
 
   let i = 0;
   while (i < args.length) {
@@ -539,6 +635,16 @@ async function main() {
     else if (a === '--cargo') { ecosystem = 'cargo'; i++; }
     else if (a === '--golang' || a === '--go') { ecosystem = 'golang'; i++; }
     else if (a === '--json') { jsonOutput = true; i++; }
+    else if (a.startsWith('--fail-on=')) {
+      try { failOn = parseFailOn(a.slice('--fail-on='.length)); }
+      catch (err) { console.error(err.message); process.exit(2); }
+      i++;
+    }
+    else if (a === '--fail-on') {
+      try { failOn = parseFailOn(args[++i]); }
+      catch (err) { console.error(err.message); process.exit(2); }
+      i++;
+    }
     else if (a === '--file' || a === '-f') {
       filePath = args[++i];
       i++;
@@ -548,6 +654,20 @@ async function main() {
       process.exit(1);
     }
     else { packages.push(a); i++; }
+  }
+
+  // Zero-arg auto-detect: if no positional packages and no --file, look for a manifest in cwd.
+  if (!filePath && packages.length === 0) {
+    const detected = await autodetectManifest(process.cwd());
+    if (detected) {
+      filePath = detected;
+      if (!jsonOutput) console.log(clr(c.dim, `Auto-detected manifest: ${detected}`));
+    } else {
+      // No positional packages, no --file, and no manifest in cwd → print help.
+      // This preserves the prior "bare invocation" UX rather than failing silently.
+      printHelp();
+      process.exit(0);
+    }
   }
 
   if (filePath) {
@@ -567,6 +687,18 @@ async function main() {
   if (packages.length === 0) {
     console.error('No packages specified. Run with --help for usage.');
     process.exit(1);
+  }
+
+  // Resolve fail-on default.
+  //   - User passed --fail-on=X       → use X (already set).
+  //   - CI env (CI=true or =1)        → 'critical' (hard gate by default in CI).
+  //   - --json output (no CI)         → 'critical' (preserves v1.7.x behavior).
+  //   - interactive table output      → 'none' (backward-compatible for casual users).
+  if (failOn === null) {
+    const ciEnv = process.env.CI;
+    const inCI = ciEnv === 'true' || ciEnv === '1';
+    if (inCI || jsonOutput) failOn = 'critical';
+    else failOn = 'none';
   }
 
   const t0 = Date.now();
@@ -626,9 +758,10 @@ async function main() {
         totalScanned: allResults.length,
         criticalCount,
         provenanceCount,
+        failOn,
         results: allResults,
       }, null, 2));
-      process.exit(criticalCount > 0 ? 1 : 0);
+      process.exit(shouldFail(allResults, failOn) ? 1 : 0);
     }
 
     // Lock files: show top 25 highest-risk
@@ -636,12 +769,16 @@ async function main() {
     const displayed = allResults.slice(0, MAX_DISPLAY);
     const criticalTotal = allResults.filter(r => hasCritical(r.riskFlags)).length;
     printTable(displayed, { totalScanned: allResults.length, totalCritical: criticalTotal, lockfile: true });
+    if (shouldFail(allResults, failOn)) {
+      console.error(clr(c.red + c.bold, `\n✗ --fail-on=${failOn} threshold met. Exit 1.`));
+      process.exit(1);
+    }
     return;
   }
 
   if (!allResults || allResults.length === 0) {
     if (jsonOutput) {
-      console.log(JSON.stringify({ totalScanned: 0, criticalCount: 0, provenanceCount: 0, results: [] }, null, 2));
+      console.log(JSON.stringify({ totalScanned: 0, criticalCount: 0, provenanceCount: 0, failOn, results: [] }, null, 2));
     } else {
       console.log('No results returned. Check package names and try again.');
     }
@@ -655,12 +792,17 @@ async function main() {
       totalScanned: allResults.length,
       criticalCount,
       provenanceCount,
+      failOn,
       results: allResults,
     }, null, 2));
-    process.exit(criticalCount > 0 ? 1 : 0);
+    process.exit(shouldFail(allResults, failOn) ? 1 : 0);
   }
 
   printTable(allResults);
+  if (shouldFail(allResults, failOn)) {
+    console.error(clr(c.red + c.bold, `✗ --fail-on=${failOn} threshold met. Exit 1.`));
+    process.exit(1);
+  }
 }
 
 main().catch(err => {

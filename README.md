@@ -27,27 +27,61 @@ Behavioral signals surface this. Stars and READMEs don't.
 
 **Terminal (zero install):**
 ```bash
+# New in v1.8.0: zero-arg auto-detect — cd into any project, run once:
+npx proof-of-commitment
+# Picks the highest-coverage manifest in cwd (package-lock.json > yarn.lock >
+# pnpm-lock.yaml > pnpm-workspace.yaml > package.json; requirements.txt;
+# Cargo.toml; go.sum > go.mod). When multiple ecosystems are present, the
+# file with the most recent mtime wins.
+
+# Explicit package list still works:
 npx proof-of-commitment axios zod chalk
-# scan your own project:
+
+# Or point at a specific file:
 npx proof-of-commitment --file package.json
-# scan ALL transitive dependencies via lock file (finds the hidden CRITICAL packages):
-npx proof-of-commitment --file package-lock.json   # npm
+npx proof-of-commitment --file package-lock.json   # npm (transitive)
 npx proof-of-commitment --file yarn.lock           # yarn
 npx proof-of-commitment --file pnpm-lock.yaml      # pnpm
-# pnpm monorepo — scans all workspace packages, deduplicates:
-npx proof-of-commitment --file pnpm-workspace.yaml  # pnpm workspaces
-# JSON output for CI/CD pipelines (exits 1 if CRITICAL found):
-npx proof-of-commitment --file package-lock.json --json | jq '.criticalCount'
-# PyPI too:
+npx proof-of-commitment --file pnpm-workspace.yaml # pnpm monorepo
 npx proof-of-commitment --pypi litellm langchain requests
-# Cargo (Rust) via CLI:
 npx proof-of-commitment --cargo serde tokio reqwest
-# Go modules via CLI (full module path required):
 npx proof-of-commitment --golang github.com/gin-gonic/gin golang.org/x/net
-# Or scan a go.mod / go.sum file directly:
 npx proof-of-commitment --file go.mod
-npx proof-of-commitment --file go.sum    # full transitive set
+npx proof-of-commitment --file go.sum              # full transitive Go set
+
+# JSON output for downstream tools:
+npx proof-of-commitment --file package-lock.json --json | jq '.criticalCount'
 ```
+
+### CI integration (v1.8.0+)
+
+`--fail-on=<level>` turns the CLI into a one-line CI gate. No GitHub Action required.
+
+```yaml
+# .github/workflows/supply-chain.yml
+name: Supply Chain
+on: [pull_request]
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npx -y proof-of-commitment --fail-on=critical
+```
+
+Levels:
+
+| `--fail-on` | Exit 1 when… |
+|---|---|
+| `critical` | any package is flagged CRITICAL (publish-access concentration) |
+| `risky` | any package is CRITICAL **or** HIGH (score < 40) |
+| `none` | never — report only |
+
+Defaults: `critical` in CI (when `CI=true` is set, which every major CI runner does) and for `--json` output. Interactive (TTY, non-CI) keeps the v1.7 default of **exit 0** — running locally won't break your shell habits.
+
+The dedicated [`piiiico/commit-action@v1`](https://github.com/piiiico/commit-action) is still the right choice when you want PR comments and step summaries; `--fail-on` is for minimal pipelines that just need a yes/no answer.
 
 **Web demo (no install):** [getcommit.dev/audit](https://getcommit.dev/audit) — paste your packages, see risk scores in seconds.
 
