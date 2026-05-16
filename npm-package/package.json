@@ -1,0 +1,45 @@
+{
+  "name": "proof-of-commitment",
+  "version": "1.7.0",
+  "description": "Supply chain risk scorer for npm, PyPI, Cargo, and Go packages — behavioral signals that can't be faked",
+  "type": "module",
+  "bin": {
+    "proof-of-commitment": "./index.js",
+    "poc": "./index.js"
+  },
+  "main": "./index.js",
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "keywords": [
+    "supply-chain",
+    "security",
+    "npm",
+    "pypi",
+    "cargo",
+    "rust",
+    "golang",
+    "go",
+    "go-modules",
+    "dependencies",
+    "audit",
+    "risk",
+    "behavioral",
+    "commitment",
+    "maintainer",
+    "publisher",
+    "provenance",
+    "trusted-publishing"
+  ],
+  "author": "piiiico",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/piiiico/proof-of-commitment"
+  },
+  "homepage": "https://getcommit.dev/audit",
+  "engines": {
+    "node": ">=18"
+  }
+}
