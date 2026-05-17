@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.9.0
+ * proof-of-commitment CLI v1.10.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
 
 const API = 'https://poc-backend.amdal-dev.workers.dev/api/audit';
+const KEYS_API = 'https://poc-backend.amdal-dev.workers.dev/api/keys';
 const WATCHLIST_API = 'https://poc-backend.amdal-dev.workers.dev/api/watchlist';
 const WEB = 'https://getcommit.dev/audit';
 
@@ -25,6 +26,16 @@ const c = {
 };
 
 const NO_COLOR = process.env.NO_COLOR || !process.stdout.isTTY;
+
+// Synchronous API key check for upsell messaging (avoids async in printTable)
+let _cachedHasKey = false;
+try {
+  const _os = await import('os');
+  const _fs = await import('fs');
+  const _path = await import('path');
+  const _cfg = _fs.readFileSync(_path.join(_os.homedir(), '.commit', 'config'), 'utf-8');
+  _cachedHasKey = /^api_key\s*=\s*.+$/m.test(_cfg);
+} catch {}
 
 function clr(code, text) {
   if (NO_COLOR) return text;
@@ -174,15 +185,23 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
 
   // Contextual upsell — show when findings make monitoring relevant
   if (effectiveCritical > 0) {
-    console.log(clr(c.dim, `\n  📊 Track ${effectiveCritical === 1 ? 'this package' : 'these packages'} daily. Get alerted on score changes.`));
-    console.log(clr(c.dim, `     Commit Pro — batch API, monitoring, alerts → https://getcommit.dev/pricing`));
+    // Check for API key synchronously via env (fast path)
+    const hasKey = !!process.env.COMMIT_API_KEY || _cachedHasKey;
+    if (hasKey) {
+      console.log(clr(c.dim, `\n  📊 Monitor ${effectiveCritical === 1 ? 'this package' : 'these packages'}: `) +
+        clr(c.cyan, `poc watch ${results.find(r => hasCritical(r.riskFlags))?.name || results[0]?.name}`));
+    } else {
+      console.log(clr(c.dim, `\n  📊 Monitor ${effectiveCritical === 1 ? 'this' : 'these ' + effectiveCritical} CRITICAL ${effectiveCritical === 1 ? 'package' : 'packages'} — get alerted when scores change.`));
+      console.log(clr(c.dim, '     Get a free API key: ') + clr(c.cyan, 'https://getcommit.dev/get-started'));
+      console.log(clr(c.dim, '     Then run: ') + clr(c.cyan, 'poc login'));
+    }
   }
   console.log();
 }
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.9.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.10.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -199,14 +218,19 @@ ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment --file go.mod              Audit Go direct + indirect deps
   npx proof-of-commitment --file go.sum              Audit Go full transitive set
 
-${clr(c.bold, 'Commit Pro monitoring (poc watch):')}
+${clr(c.bold, 'Account:')}
+  poc login [key]     Save and validate your API key (interactive or direct)
+  poc status          Show current tier, usage, and limits
+  poc logout          Remove saved API key
+
+${clr(c.bold, 'Monitoring (Pro):')}
   poc watch <package> [--ecosystem npm|pypi|cargo|golang]
-                      Add a package to daily monitoring (Pro tier)
+                      Add a package to daily monitoring
   poc watchlist       List monitored packages with current scores + risk
   poc unwatch <pkg>   Remove a package from monitoring
 
-  API key: set COMMIT_API_KEY env or add api_key=<key> to ~/.commit/config
-  Get a key: https://getcommit.dev/pricing
+  Get a free key: https://getcommit.dev/get-started
+  Upgrade to Pro:  https://getcommit.dev/pricing
 
 ${clr(c.bold, 'Options:')}
   --json              Output results as JSON
@@ -647,6 +671,174 @@ async function readApiKey() {
 }
 
 /**
+ * Write API key to ~/.commit/config, creating dir if needed.
+ */
+async function writeApiKey(key) {
+  const os = await import('os');
+  const fs = await import('fs');
+  const path = await import('path');
+  const dir = path.join(os.homedir(), '.commit');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const configPath = path.join(dir, 'config');
+  let lines = [];
+  try {
+    lines = fs.readFileSync(configPath, 'utf-8').split('\n');
+  } catch {}
+
+  // Replace existing api_key line or append
+  let found = false;
+  lines = lines.map(l => {
+    if (/^api_key\s*=/.test(l)) { found = true; return `api_key = ${key}`; }
+    return l;
+  });
+  if (!found) lines.push(`api_key = ${key}`);
+
+  fs.writeFileSync(configPath, lines.filter(l => l !== '').join('\n') + '\n');
+  return configPath;
+}
+
+/**
+ * Remove API key from ~/.commit/config.
+ */
+async function removeApiKey() {
+  const os = await import('os');
+  const fs = await import('fs');
+  const path = await import('path');
+  const configPath = path.join(os.homedir(), '.commit', 'config');
+  try {
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const filtered = content.split('\n').filter(l => !/^api_key\s*=/.test(l)).join('\n');
+    fs.writeFileSync(configPath, filtered.trim() ? filtered.trim() + '\n' : '');
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * Validate an API key against the usage endpoint. Returns tier info or null.
+ */
+async function validateApiKey(key) {
+  try {
+    const res = await fetch(`${KEYS_API}/usage`, {
+      headers: { 'Authorization': `Bearer ${key}` },
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+/**
+ * poc login [key] — save and validate API key
+ */
+async function cmdLogin(keyArg) {
+  let key = keyArg;
+
+  if (!key) {
+    // Check if stdin has data (piped input)
+    const { createInterface } = await import('readline');
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    key = await new Promise(resolve => {
+      rl.question(clr(c.dim, '  Enter your API key: '), answer => {
+        rl.close();
+        resolve(answer.trim());
+      });
+    });
+  }
+
+  if (!key || !key.startsWith('sk_commit_')) {
+    console.error(clr(c.red, '\n  Invalid API key format. Keys start with sk_commit_'));
+    console.error(clr(c.dim, '  Get one at https://getcommit.dev/get-started\n'));
+    process.exit(1);
+  }
+
+  process.stdout.write(clr(c.dim, '  Validating...'));
+  const info = await validateApiKey(key);
+
+  if (!info || info.error) {
+    console.error(clr(c.red, ' ✗ Invalid or expired API key.'));
+    console.error(clr(c.dim, `  ${info?.message || 'Key not recognized.'}`));
+    process.exit(1);
+  }
+
+  const configPath = await writeApiKey(key);
+  console.log(clr(c.green, ' ✓ Authenticated'));
+  console.log();
+  console.log(clr(c.bold, `  Tier:     `) + tierLabel(info.tier));
+  console.log(clr(c.bold, `  Usage:    `) + `${info.requests_used ?? 0}/${info.requests_limit ?? '?'} requests (${info.period || 'daily'})`);
+  console.log(clr(c.bold, `  Resets:   `) + (info.period_reset_at || '—'));
+  console.log(clr(c.dim, `  Saved to: ${configPath}`));
+  console.log();
+
+  if (info.tier === 'pro' || info.tier === 'enterprise') {
+    console.log(clr(c.cyan, '  Pro features unlocked:'));
+    console.log(clr(c.dim, '    poc watch <package>    Add a package to daily monitoring'));
+    console.log(clr(c.dim, '    poc watchlist          View monitored packages'));
+    console.log(clr(c.dim, '    poc unwatch <package>  Remove from monitoring'));
+  } else {
+    console.log(clr(c.dim, '  Upgrade to Pro for monitoring + alerts: https://getcommit.dev/pricing'));
+  }
+  console.log();
+}
+
+/**
+ * poc status — show current auth + usage
+ */
+async function cmdStatus() {
+  const key = await readApiKey();
+
+  if (!key) {
+    console.log(clr(c.dim, '\n  Not logged in.'));
+    console.log(clr(c.dim, '  Run ') + clr(c.cyan, 'poc login') + clr(c.dim, ' to authenticate.'));
+    console.log(clr(c.dim, '  Get a free key at https://getcommit.dev/get-started\n'));
+    return;
+  }
+
+  process.stdout.write(clr(c.dim, '  Checking...'));
+  const info = await validateApiKey(key);
+
+  if (!info || info.error) {
+    console.error(clr(c.red, ' ✗ Key invalid or expired.'));
+    console.error(clr(c.dim, '  Run ') + clr(c.cyan, 'poc login') + clr(c.dim, ' to re-authenticate.\n'));
+    process.exit(1);
+  }
+
+  console.log(clr(c.green, ' ✓ Connected'));
+  console.log();
+  console.log(clr(c.bold, `  Tier:     `) + tierLabel(info.tier));
+  console.log(clr(c.bold, `  Usage:    `) + `${info.requests_used ?? 0}/${info.requests_limit ?? '?'} requests (${info.period || 'daily'})`);
+  console.log(clr(c.bold, `  Resets:   `) + (info.period_reset_at || '—'));
+  console.log(clr(c.bold, `  Prefix:   `) + (info.key_prefix || key.slice(0, 19) + '...'));
+  console.log();
+
+  if (info.tier === 'free') {
+    const pct = info.requests_limit > 0 ? Math.round((info.requests_used / info.requests_limit) * 100) : 0;
+    if (pct >= 80) {
+      console.log(clr(c.yellow, `  ⚠ ${pct}% of daily limit used. Upgrade for 10K/month: https://getcommit.dev/pricing`));
+    }
+  }
+}
+
+/**
+ * poc logout — remove saved API key
+ */
+async function cmdLogout() {
+  const removed = await removeApiKey();
+  if (removed) {
+    console.log(clr(c.green, '\n  ✓ Logged out. API key removed from ~/.commit/config.'));
+  } else {
+    console.log(clr(c.dim, '\n  No saved API key found.'));
+  }
+  console.log();
+}
+
+function tierLabel(tier) {
+  if (tier === 'pro') return clr(c.cyan + c.bold, 'Pro');
+  if (tier === 'enterprise') return clr(c.magenta + c.bold, 'Enterprise');
+  if (tier === 'developer') return clr(c.green + c.bold, 'Developer');
+  return clr(c.dim, 'Free');
+}
+
+/**
  * Handle 402 upgrade response from watchlist endpoints.
  */
 function printUpgradeRequired() {
@@ -811,8 +1003,24 @@ async function main() {
     process.exit(0);
   }
 
-  // Watchlist subcommands
+  // Subcommands
   const subcmd = args[0];
+
+  if (subcmd === 'login') {
+    const keyArg = args[1] || null;
+    await cmdLogin(keyArg);
+    process.exit(0);
+  }
+
+  if (subcmd === 'status') {
+    await cmdStatus();
+    process.exit(0);
+  }
+
+  if (subcmd === 'logout') {
+    await cmdLogout();
+    process.exit(0);
+  }
 
   if (subcmd === 'watch') {
     const pkg = args[1];
