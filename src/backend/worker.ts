@@ -3583,6 +3583,50 @@ app.get("/api/checkout", async (c) => {
 });
 
 /**
+ * GET /api/checkout/session?session_id=cs_live_...
+ * Retrieves minimal info about a completed checkout session (for the success page).
+ * Returns customer email + tier so the page can say "key sent to <email>".
+ */
+app.get("/api/checkout/session", async (c) => {
+  const stripeKey = c.env.STRIPE_SECRET_KEY;
+  if (!stripeKey) return c.json({ error: "stripe_not_configured" }, 503);
+
+  const sessionId = c.req.query("session_id") ?? "";
+  if (!sessionId || !sessionId.startsWith("cs_")) {
+    return c.json({ error: "invalid_session_id" }, 400);
+  }
+
+  try {
+    const resp = await fetch(`https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}`, {
+      headers: { Authorization: `Bearer ${stripeKey}` },
+    });
+
+    if (!resp.ok) return c.json({ error: "session_not_found" }, 404);
+
+    const session = (await resp.json()) as {
+      customer_details?: { email?: string };
+      customer_email?: string;
+      payment_status?: string;
+      metadata?: { tier?: string };
+    };
+
+    const email = session.customer_details?.email ?? session.customer_email ?? "";
+    const tier = session.metadata?.tier ?? "pro";
+    const paid = session.payment_status === "paid";
+
+    // Mask email for privacy: "h***@example.com"
+    const maskedEmail = email
+      ? email.replace(/^(.)(.*)(@.*)$/, (_m, first, _mid, domain) => `${first}${"*".repeat(Math.min(_mid.length, 6))}${domain}`)
+      : "";
+
+    return c.json({ email: maskedEmail, tier, paid });
+  } catch (err) {
+    console.error("Checkout session lookup error:", err instanceof Error ? err.message : err);
+    return c.json({ error: "lookup_failed" }, 500);
+  }
+});
+
+/**
  * POST /api/stripe/webhook
  * Handles Stripe events. Register this URL in Stripe Dashboard → Webhooks.
  *
