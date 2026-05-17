@@ -51,24 +51,26 @@ npx proof-of-commitment --file go.sum    # full transitive set
 
 **Web demo (no install):** [getcommit.dev/audit](https://getcommit.dev/audit) — paste your packages, see risk scores in seconds.
 
-**Commit Pro — daily monitoring + alerts (v1.9.0):**
+**Account + monitoring (v1.10.0):**
 ```bash
 # Install once, then use the `poc` alias:
 npm install -g proof-of-commitment
 
-# Add packages to daily monitoring (requires Pro API key):
+# Get a free API key at https://getcommit.dev/get-started, then:
+poc login sk_commit_your_key_here
+# ✓ Authenticated — Tier: Free — Usage: 0/200 requests (daily)
+
+poc status                          # check tier + usage anytime
+poc logout                          # remove saved key
+
+# Monitoring (Pro tier — daily scans + alerts):
 poc watch chalk
 poc watch requests --ecosystem pypi
 poc watch serde --ecosystem cargo
-
-# View your watchlist with current scores:
-poc watchlist
-
-# Remove a package:
+poc watchlist                       # view scores + risk levels
 poc unwatch chalk
 
-# API key: set COMMIT_API_KEY env or add api_key=<key> to ~/.commit/config
-# Get a key at https://getcommit.dev/pricing
+# Upgrade to Pro: https://getcommit.dev/pricing
 ```
 
 Alerts fire on: score drop ≥10 points · package crosses CRITICAL threshold · recovery to HEALTHY.
