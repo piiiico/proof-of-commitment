@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.8.0
+ * proof-of-commitment CLI v1.8.1
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -170,12 +170,18 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
   const topPkgs = results.slice(0, 10).map(r => r.name).join(',');
   console.log(clr(c.cyan, `\n  🔗 Full report: ${WEB}?packages=${encodeURIComponent(topPkgs)}`));
   console.log(clr(c.cyan, `  🤖 GitHub Action: github.com/piiiico/commit-action — block CRITICAL packages in CI`));
+
+  // Contextual upsell — show when findings make monitoring relevant
+  if (effectiveCritical > 0) {
+    console.log(clr(c.dim, `\n  📊 Track ${effectiveCritical === 1 ? 'this package' : 'these packages'} daily. Get alerted on score changes.`));
+    console.log(clr(c.dim, `     Commit Pro — batch API, monitoring, alerts → https://getcommit.dev/pricing`));
+  }
   console.log();
 }
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.8.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.8.1 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
