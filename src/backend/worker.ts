@@ -31,6 +31,26 @@ import { buildNpmCommitmentProfile, bulkFetchNpmWeeklyDownloads } from "./npm.ts
 import { buildPyPICommitmentProfile } from "./pypi.ts";
 import { buildCargoCommitmentProfile } from "./cargo.ts";
 import { buildGolangCommitmentProfile } from "./golang.ts";
+import { initWasm, Resvg } from "@resvg/resvg-wasm";
+// @ts-ignore — wrangler handles .wasm imports as pre-compiled WebAssembly.Module at deploy time
+import RESVG_WASM from "@resvg/resvg-wasm/index_bg.wasm";
+
+// Singleton init promise — CF isolate persists across requests, initWasm throws if called twice
+let resvgInitPromise: Promise<void> | null = null;
+function ensureResvgInit(): Promise<void> {
+  if (!resvgInitPromise) {
+    resvgInitPromise = initWasm(RESVG_WASM);
+  }
+  return resvgInitPromise;
+}
+
+/** Render SVG string to PNG bytes using resvg-wasm. */
+async function svgToPng(svg: string): Promise<Uint8Array> {
+  await ensureResvgInit();
+  const renderer = new Resvg(svg, { font: { loadSystemFonts: false } });
+  const rendered = renderer.render();
+  return rendered.asPng();
+}
 
 // ── World ID JWT Verification ────────────────────────────────────────
 
@@ -1404,9 +1424,10 @@ app.get("/og/blog", async (c) => {
   const date = c.req.query("date") ?? "";
 
   const svg = generateBlogOgSvg({ title, date });
-  return new Response(svg, {
+  const png = await svgToPng(svg);
+  return new Response(png, {
     headers: {
-      "Content-Type": "image/svg+xml",
+      "Content-Type": "image/png",
       "Cache-Control": "max-age=86400, s-maxage=86400",
       "X-Powered-By": "getcommit.dev",
     },
@@ -1475,9 +1496,10 @@ app.get("/og/:ecosystem/*", async (c) => {
     maintainerCount,
     weeklyDownloads,
   });
-  return new Response(svg, {
+  const png = await svgToPng(svg);
+  return new Response(png, {
     headers: {
-      "Content-Type": "image/svg+xml",
+      "Content-Type": "image/png",
       "Cache-Control": "max-age=3600, s-maxage=3600",
       "X-Powered-By": "getcommit.dev",
     },
@@ -2405,6 +2427,248 @@ app.get("/api/subscribe/stats", async (c) => {
     total_subscriptions: total?.count ?? 0,
     recent: (recent.results ?? []).map((r) => ({ email: r.email, created_at: r.created_at })),
   });
+});
+
+// ── Commit Pro Watchlist (API key-gated, monitored_packages backed) ──
+//
+// The pricing page promises "monitoring + alerts" for Pro tier. These endpoints
+// let an authenticated Pro user register packages to watch. A daily cron
+// (runProMonitoringScan) re-scores them and emails the key holder on score
+// drops. Schema: monitored_projects → monitored_packages (migration 0005).
+// For MVP we flatten the project model — one default project per API key.
+
+const PACKAGE_LIMITS = {
+  free: 0,           // free tier cannot use monitoring
+  pro: 50,           // 50 monitored packages
+  enterprise: 500,
+} as const;
+
+const ECOSYSTEMS = new Set(["npm", "pypi", "cargo", "golang"]);
+
+/** Random 16-char hex id (same shape used by api_keys). */
+function newId(): string {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Ensure the api_key has a "default" project, return its id. */
+async function getOrCreateDefaultProject(db: D1Database, apiKeyId: string, email: string): Promise<string> {
+  const existing = await db.prepare(
+    `SELECT id FROM monitored_projects WHERE api_key_id = ? AND name = 'default' LIMIT 1`
+  ).bind(apiKeyId).first<{ id: string }>();
+  if (existing) return existing.id;
+
+  const id = newId();
+  await db.prepare(
+    `INSERT INTO monitored_projects (id, api_key_id, name, alert_email, threshold_critical, threshold_warn, created_at)
+     VALUES (?, ?, 'default', ?, 30, 50, datetime('now'))`
+  ).bind(id, apiKeyId, email).run();
+  return id;
+}
+
+/** Require a Pro/Enterprise API key; returns the key context or an error response. */
+function requireProKey(
+  c: { get: (k: string) => ApiKeyContext | null; json: (b: unknown, s?: number) => Response }
+): ApiKeyContext | Response {
+  const key = c.get("apiKey");
+  if (!key) {
+    return c.json({
+      error: "unauthorized",
+      message: "Provide an API key via Authorization: Bearer sk_commit_...",
+    }, 401);
+  }
+  if (key.tier !== "pro" && key.tier !== "enterprise") {
+    return c.json({
+      error: "upgrade_required",
+      message: "Monitoring + alerts are a Pro feature. Upgrade at https://getcommit.dev/pricing",
+      current_tier: key.tier,
+      upgrade: { url: "https://getcommit.dev/pricing", plan: "pro", price: "$29/month" },
+    }, 402);
+  }
+  return key;
+}
+
+/**
+ * POST /api/watchlist
+ * Body: { package: string, ecosystem?: "npm" | "pypi" | "cargo" | "golang" }
+ *    OR { packages: Array<{ name: string, ecosystem?: string }> }
+ * Adds packages to the API key's default monitoring project.
+ */
+app.post("/api/watchlist", async (c) => {
+  const keyOrErr = requireProKey(c);
+  if (keyOrErr instanceof Response) return keyOrErr;
+  const key = keyOrErr;
+
+  const body = await c.req.json().catch(() => ({}));
+
+  // Normalize input to array of { name, ecosystem }
+  type Item = { name: string; ecosystem: string };
+  const items: Item[] = [];
+  const rawItems: Array<{ name?: unknown; ecosystem?: unknown }> = Array.isArray(body?.packages)
+    ? body.packages
+    : (typeof body?.package === "string" ? [{ name: body.package, ecosystem: body.ecosystem }] : []);
+
+  for (const raw of rawItems) {
+    if (typeof raw?.name !== "string") continue;
+    const name = raw.name.trim();
+    if (!name) continue;
+    const eco = (typeof raw?.ecosystem === "string" ? raw.ecosystem : "npm").toLowerCase();
+    if (!ECOSYSTEMS.has(eco)) {
+      return c.json({ error: "invalid_ecosystem", message: `ecosystem must be one of: ${[...ECOSYSTEMS].join(", ")}`, got: eco }, 400);
+    }
+    items.push({ name, ecosystem: eco });
+  }
+
+  if (items.length === 0) {
+    return c.json({
+      error: "missing_packages",
+      message: "Body must contain { package, ecosystem } or { packages: [{ name, ecosystem }] }",
+    }, 400);
+  }
+
+  const projectId = await getOrCreateDefaultProject(c.env.DB, key.id, key.email);
+
+  // Enforce per-tier package cap (count distinct packages already in this project)
+  const cap = PACKAGE_LIMITS[key.tier] ?? 0;
+  const existingCount = (await c.env.DB.prepare(
+    `SELECT COUNT(*) as n FROM monitored_packages WHERE project_id = ?`
+  ).bind(projectId).first<{ n: number }>())?.n ?? 0;
+
+  if (existingCount + items.length > cap) {
+    return c.json({
+      error: "package_limit_exceeded",
+      message: `Your ${key.tier} tier allows ${cap} monitored packages. Currently watching ${existingCount}.`,
+      current: existingCount,
+      limit: cap,
+      upgrade: key.tier === "pro" ? { url: "https://getcommit.dev/pricing", plan: "enterprise" } : undefined,
+    }, 422);
+  }
+
+  // Insert with INSERT OR IGNORE so re-adding the same package is a no-op
+  const added: Array<{ id: string; name: string; ecosystem: string; new: boolean }> = [];
+  for (const item of items) {
+    const id = newId();
+    const result = await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO monitored_packages (id, project_id, package_name, ecosystem)
+       VALUES (?, ?, ?, ?)`
+    ).bind(id, projectId, item.name, item.ecosystem).run();
+    const wasNew = (result.meta?.changes ?? 0) > 0;
+    if (wasNew) {
+      added.push({ id, name: item.name, ecosystem: item.ecosystem, new: true });
+    } else {
+      // Look up existing id
+      const existing = await c.env.DB.prepare(
+        `SELECT id FROM monitored_packages WHERE project_id = ? AND package_name = ? AND ecosystem = ?`
+      ).bind(projectId, item.name, item.ecosystem).first<{ id: string }>();
+      added.push({ id: existing?.id ?? "", name: item.name, ecosystem: item.ecosystem, new: false });
+    }
+  }
+
+  return c.json({
+    ok: true,
+    project_id: projectId,
+    added: added.length,
+    new_packages: added.filter((a) => a.new).length,
+    already_watching: added.filter((a) => !a.new).length,
+    packages: added,
+  }, 201);
+});
+
+/**
+ * GET /api/watchlist
+ * Returns the API key's monitored packages with current scores + last_scanned_at.
+ */
+app.get("/api/watchlist", async (c) => {
+  const keyOrErr = requireProKey(c);
+  if (keyOrErr instanceof Response) return keyOrErr;
+  const key = keyOrErr;
+
+  const project = await c.env.DB.prepare(
+    `SELECT id, threshold_critical, threshold_warn, paused_at FROM monitored_projects
+     WHERE api_key_id = ? AND name = 'default' LIMIT 1`
+  ).bind(key.id).first<{ id: string; threshold_critical: number; threshold_warn: number; paused_at: string | null }>();
+
+  if (!project) {
+    return c.json({
+      project_id: null,
+      paused: false,
+      thresholds: { critical: 30, warn: 50 },
+      count: 0,
+      packages: [],
+      message: "No packages monitored yet. POST /api/watchlist with { package, ecosystem }.",
+    });
+  }
+
+  const rows = await c.env.DB.prepare(
+    `SELECT id, package_name as name, ecosystem, current_score, previous_score, risk_level, last_scanned_at
+     FROM monitored_packages WHERE project_id = ? ORDER BY package_name`
+  ).bind(project.id).all<{
+    id: string;
+    name: string;
+    ecosystem: string;
+    current_score: number | null;
+    previous_score: number | null;
+    risk_level: string | null;
+    last_scanned_at: string | null;
+  }>();
+
+  return c.json({
+    project_id: project.id,
+    paused: project.paused_at !== null,
+    thresholds: { critical: project.threshold_critical, warn: project.threshold_warn },
+    tier: key.tier,
+    limit: PACKAGE_LIMITS[key.tier] ?? 0,
+    count: rows.results?.length ?? 0,
+    packages: rows.results ?? [],
+  });
+});
+
+/**
+ * DELETE /api/watchlist
+ * Body: { package: string, ecosystem?: string } — removes a single package.
+ * Body: { all: true } — removes all packages (keeps the project row).
+ */
+app.delete("/api/watchlist", async (c) => {
+  const keyOrErr = requireProKey(c);
+  if (keyOrErr instanceof Response) return keyOrErr;
+  const key = keyOrErr;
+
+  const body = await c.req.json().catch(() => ({}));
+  const project = await c.env.DB.prepare(
+    `SELECT id FROM monitored_projects WHERE api_key_id = ? AND name = 'default' LIMIT 1`
+  ).bind(key.id).first<{ id: string }>();
+  if (!project) return c.json({ ok: true, removed: 0, message: "Nothing to remove" });
+
+  if (body?.all === true) {
+    const result = await c.env.DB.prepare(
+      `DELETE FROM monitored_packages WHERE project_id = ?`
+    ).bind(project.id).run();
+    return c.json({ ok: true, removed: result.meta?.changes ?? 0, mode: "all" });
+  }
+
+  const name = typeof body?.package === "string" ? body.package.trim() : "";
+  const eco = typeof body?.ecosystem === "string" ? body.ecosystem.toLowerCase() : "npm";
+  if (!name) return c.json({ error: "missing_package", message: "Provide { package, ecosystem } or { all: true }" }, 400);
+
+  const result = await c.env.DB.prepare(
+    `DELETE FROM monitored_packages WHERE project_id = ? AND package_name = ? AND ecosystem = ?`
+  ).bind(project.id, name, eco).run();
+  return c.json({ ok: true, removed: result.meta?.changes ?? 0, package: name, ecosystem: eco });
+});
+
+/**
+ * POST /api/admin/trigger-pro-scan
+ * Manually trigger the daily Pro monitoring scan (for testing).
+ * Requires X-Admin-Secret header matching ADMIN_SECRET.
+ */
+app.post("/api/admin/trigger-pro-scan", async (c) => {
+  const adminSecret = (c.env as unknown as Record<string, string>).ADMIN_SECRET;
+  if (!adminSecret || c.req.header("X-Admin-Secret") !== adminSecret) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const result = await runProMonitoringScan(c.env);
+  return c.json({ ok: true, ...result });
 });
 
 // ── Remote MCP Server ────────────────────────────────────────────────
@@ -3792,6 +4056,298 @@ Unsubscribe: ${unsubLink}`;
   return { sent, skipped };
 }
 
+// ── Commit Pro daily monitoring scan ─────────────────────────────────
+//
+// Cron: daily at 06:00 UTC ("0 6 * * *")
+// For each Pro/Enterprise api_key with a non-paused default project:
+//   1. Score every package in monitored_packages
+//   2. Update current_score / previous_score / risk_level / last_scanned_at
+//   3. Append to score_history
+//   4. Detect alerts (score_drop ≥10, critical_threshold crossed, recovery)
+//   5. Send one email per project to the project's alert_email (falls back to api_keys.email)
+//   6. Log every alert into alert_log (sent/failed/suppressed)
+
+interface ProScanResult {
+  scanned_packages: number;
+  scored_packages: number;
+  alerts_generated: number;
+  emails_sent: number;
+  emails_failed: number;
+  projects_processed: number;
+}
+
+function riskLevelFromScore(score: number | null, thresholdCritical: number, thresholdWarn: number): "HEALTHY" | "MODERATE" | "CRITICAL" | "UNKNOWN" {
+  if (score === null) return "UNKNOWN";
+  if (score < thresholdCritical) return "CRITICAL";
+  if (score < thresholdWarn) return "MODERATE";
+  return "HEALTHY";
+}
+
+async function scorePackageForMonitoring(name: string, ecosystem: string): Promise<{ score: number | null; weekly_dl: number | null; maintainers: number | null }> {
+  try {
+    if (ecosystem === "pypi") {
+      const profile = await buildPyPICommitmentProfile(name);
+      if (!profile) return { score: null, weekly_dl: null, maintainers: null };
+      return { score: profile.commitmentScore, weekly_dl: profile.recentDailyDownloads * 7, maintainers: profile.maintainerCount };
+    } else if (ecosystem === "cargo") {
+      const profile = await buildCargoCommitmentProfile(name);
+      if (!profile) return { score: null, weekly_dl: null, maintainers: null };
+      return { score: profile.commitmentScore, weekly_dl: profile.estimatedWeeklyDownloads, maintainers: profile.ownerCount };
+    } else if (ecosystem === "golang") {
+      const profile = await buildGolangCommitmentProfile(name);
+      if (!profile) return { score: null, weekly_dl: null, maintainers: null };
+      return { score: profile.commitmentScore, weekly_dl: null, maintainers: profile.contributorCount };
+    } else {
+      const profile = await buildNpmCommitmentProfile(name);
+      if (!profile) return { score: null, weekly_dl: null, maintainers: null };
+      return { score: profile.commitmentScore, weekly_dl: profile.recentWeeklyDownloads, maintainers: profile.maintainerCount };
+    }
+  } catch {
+    return { score: null, weekly_dl: null, maintainers: null };
+  }
+}
+
+async function runProMonitoringScan(env: Bindings): Promise<ProScanResult> {
+  const result: ProScanResult = {
+    scanned_packages: 0,
+    scored_packages: 0,
+    alerts_generated: 0,
+    emails_sent: 0,
+    emails_failed: 0,
+    projects_processed: 0,
+  };
+
+  // Fetch all active Pro/Enterprise projects with their api_key email
+  const projects = await env.DB.prepare(
+    `SELECT
+       mp.id AS project_id,
+       mp.api_key_id,
+       mp.name AS project_name,
+       mp.alert_email,
+       mp.threshold_critical,
+       mp.threshold_warn,
+       ak.email AS owner_email,
+       ak.tier
+     FROM monitored_projects mp
+     JOIN api_keys ak ON ak.id = mp.api_key_id
+     WHERE mp.paused_at IS NULL
+       AND ak.revoked_at IS NULL
+       AND ak.tier IN ('pro', 'enterprise')`
+  ).all<{
+    project_id: string;
+    api_key_id: string;
+    project_name: string;
+    alert_email: string | null;
+    threshold_critical: number;
+    threshold_warn: number;
+    owner_email: string;
+    tier: string;
+  }>();
+
+  const projectRows = projects.results ?? [];
+  if (projectRows.length === 0) return result;
+
+  // Process each project sequentially (per-project email batching makes this natural)
+  for (const project of projectRows) {
+    result.projects_processed++;
+
+    const packages = await env.DB.prepare(
+      `SELECT id, package_name AS name, ecosystem, current_score, previous_score, risk_level
+       FROM monitored_packages WHERE project_id = ?`
+    ).bind(project.project_id).all<{
+      id: string;
+      name: string;
+      ecosystem: string;
+      current_score: number | null;
+      previous_score: number | null;
+      risk_level: string | null;
+    }>();
+
+    const pkgRows = packages.results ?? [];
+    if (pkgRows.length === 0) continue;
+
+    type ScannedPkg = {
+      id: string;
+      name: string;
+      ecosystem: string;
+      old_score: number | null;
+      new_score: number | null;
+      old_level: string | null;
+      new_level: string;
+      weekly_dl: number | null;
+      maintainers: number | null;
+      alert: { type: "score_drop" | "critical_threshold" | "recovery"; delta: number } | null;
+    };
+
+    // Score in batches of 5 (matches weekly digest pattern, safe for upstream APIs)
+    const MAX_CONCURRENT = 5;
+    const scanned: ScannedPkg[] = [];
+
+    for (let i = 0; i < pkgRows.length; i += MAX_CONCURRENT) {
+      const batch = pkgRows.slice(i, i + MAX_CONCURRENT);
+      const batchResults = await Promise.all(batch.map(async (pkg: typeof pkgRows[number]): Promise<ScannedPkg> => {
+        const scored = await scorePackageForMonitoring(pkg.name, pkg.ecosystem);
+        const newLevel = riskLevelFromScore(scored.score, project.threshold_critical, project.threshold_warn);
+
+        let alert: ScannedPkg["alert"] = null;
+        if (scored.score !== null) {
+          const oldScore = pkg.current_score; // what was current is now "previous" for this scan
+          const drop = oldScore !== null ? oldScore - scored.score : 0;
+          const wasCritical = pkg.risk_level === "CRITICAL";
+          const isCritical = newLevel === "CRITICAL";
+          const wasUnhealthy = pkg.risk_level === "CRITICAL" || pkg.risk_level === "MODERATE";
+          const isHealthy = newLevel === "HEALTHY";
+
+          if (!wasCritical && isCritical) {
+            alert = { type: "critical_threshold", delta: -drop };
+          } else if (drop >= 10) {
+            alert = { type: "score_drop", delta: -drop };
+          } else if (wasUnhealthy && isHealthy) {
+            alert = { type: "recovery", delta: -drop };
+          }
+        }
+
+        return {
+          id: pkg.id,
+          name: pkg.name,
+          ecosystem: pkg.ecosystem,
+          old_score: pkg.current_score,
+          new_score: scored.score,
+          old_level: pkg.risk_level,
+          new_level: newLevel,
+          weekly_dl: scored.weekly_dl,
+          maintainers: scored.maintainers,
+          alert,
+        };
+      }));
+      scanned.push(...batchResults);
+    }
+
+    // Persist: update monitored_packages + insert score_history
+    for (const s of scanned) {
+      result.scanned_packages++;
+      if (s.new_score === null) continue;
+      result.scored_packages++;
+
+      await env.DB.prepare(
+        `UPDATE monitored_packages
+         SET previous_score = current_score,
+             current_score = ?,
+             risk_level = ?,
+             last_scanned_at = datetime('now')
+         WHERE id = ?`
+      ).bind(s.new_score, s.new_level, s.id).run();
+
+      await env.DB.prepare(
+        `INSERT INTO score_history (package_id, score, risk_level, scanned_at)
+         VALUES (?, ?, ?, datetime('now'))`
+      ).bind(s.id, s.new_score, s.new_level).run();
+    }
+
+    // Build alert digest for this project
+    const alertable = scanned.filter((s) => s.alert !== null);
+    result.alerts_generated += alertable.length;
+
+    if (alertable.length === 0) continue;
+
+    const recipient = project.alert_email ?? project.owner_email;
+    if (!recipient || !env.RESEND_API_KEY) {
+      // Log as suppressed
+      for (const s of alertable) {
+        if (!s.alert) continue;
+        await env.DB.prepare(
+          `INSERT INTO alert_log (project_id, package_name, ecosystem, alert_type, old_score, new_score, delivered_at, delivery_status)
+           VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'suppressed')`
+        ).bind(project.project_id, s.name, s.ecosystem, s.alert.type, s.old_score, s.new_score).run();
+      }
+      continue;
+    }
+
+    // Format email body
+    const critical = alertable.filter((s) => s.alert?.type === "critical_threshold");
+    const drops = alertable.filter((s) => s.alert?.type === "score_drop");
+    const recoveries = alertable.filter((s) => s.alert?.type === "recovery");
+    const dateStr = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
+    const lines: string[] = [];
+    lines.push(`Commit Pro Monitoring — ${dateStr}`);
+    lines.push("");
+    if (critical.length > 0) {
+      lines.push(`⚑ ${critical.length} package${critical.length === 1 ? "" : "s"} crossed into CRITICAL:`);
+      for (const s of critical) {
+        lines.push(`  ${s.name} (${s.ecosystem}): ${s.old_score ?? "?"} → ${s.new_score}/100`);
+      }
+      lines.push("");
+    }
+    if (drops.length > 0) {
+      lines.push(`↓ ${drops.length} significant score drop${drops.length === 1 ? "" : "s"} (≥10 pts):`);
+      for (const s of drops) {
+        lines.push(`  ${s.name} (${s.ecosystem}): ${s.old_score ?? "?"} → ${s.new_score}/100`);
+      }
+      lines.push("");
+    }
+    if (recoveries.length > 0) {
+      lines.push(`✓ ${recoveries.length} package${recoveries.length === 1 ? "" : "s"} recovered to HEALTHY:`);
+      for (const s of recoveries) {
+        lines.push(`  ${s.name} (${s.ecosystem}): ${s.old_score ?? "?"} → ${s.new_score}/100`);
+      }
+      lines.push("");
+    }
+    lines.push("View all watched packages:");
+    lines.push("  curl -H 'Authorization: Bearer <YOUR_KEY>' https://poc-backend.amdal-dev.workers.dev/api/watchlist");
+    lines.push("");
+    lines.push("Scoring methodology: https://getcommit.dev/scoring");
+    lines.push("Manage subscription: https://getcommit.dev/pricing");
+    lines.push("");
+    lines.push("—");
+    lines.push("Commit Pro · getcommit.dev");
+
+    const subject = critical.length > 0
+      ? `⚑ Commit Pro: ${critical.length} package${critical.length === 1 ? "" : "s"} now CRITICAL`
+      : drops.length > 0
+      ? `↓ Commit Pro: ${drops.length} package score drop${drops.length === 1 ? "" : "s"} detected`
+      : `Commit Pro: ${recoveries.length} package recover${recoveries.length === 1 ? "y" : "ies"}`;
+
+    let delivered = false;
+    try {
+      const emailResp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: "Commit <noreply@getcommit.dev>",
+          to: [recipient],
+          subject,
+          text: lines.join("\n"),
+        }),
+      });
+      delivered = emailResp.ok;
+      if (delivered) result.emails_sent++;
+      else result.emails_failed++;
+    } catch {
+      result.emails_failed++;
+    }
+
+    // Log each alert
+    for (const s of alertable) {
+      if (!s.alert) continue;
+      await env.DB.prepare(
+        `INSERT INTO alert_log (project_id, package_name, ecosystem, alert_type, old_score, new_score, delivered_at, delivery_status)
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?)`
+      ).bind(
+        project.project_id,
+        s.name,
+        s.ecosystem,
+        s.alert.type,
+        s.old_score,
+        s.new_score,
+        delivered ? "sent" : "failed",
+      ).run();
+    }
+  }
+
+  return result;
+}
+
 // ── Stripe Checkout ──────────────────────────────────────────────────
 
 /**
@@ -4089,7 +4645,24 @@ Commit · getcommit.dev`;
 // Export with scheduled handler support
 export default {
   fetch: app.fetch.bind(app),
-  async scheduled(_event: unknown, env: Bindings, _ctx: unknown): Promise<void> {
+  async scheduled(event: { cron?: string } | unknown, env: Bindings, _ctx: unknown): Promise<void> {
+    // Cloudflare passes { cron, scheduledTime } in the event for scheduled handlers.
+    const cron = (event as { cron?: string })?.cron ?? "";
+    // Daily Pro monitoring scan at 06:00 UTC
+    if (cron === "0 6 * * *") {
+      const result = await runProMonitoringScan(env);
+      console.log(`[cron 0 6 * * *] pro-scan: scanned=${result.scanned_packages} scored=${result.scored_packages} alerts=${result.alerts_generated} sent=${result.emails_sent} failed=${result.emails_failed} projects=${result.projects_processed}`);
+      return;
+    }
+    // Weekly free-tier digest at Monday 09:00 UTC (existing behaviour)
+    if (cron === "0 9 * * 1") {
+      const result = await runWeeklyDigest(env);
+      console.log(`[cron 0 9 * * 1] weekly-digest: sent=${result.sent} skipped=${result.skipped}`);
+      return;
+    }
+    // Unknown cron — run both to be safe (defensive default)
+    console.log(`[cron unknown=${cron}] running both daily scan + weekly digest defensively`);
+    await runProMonitoringScan(env);
     await runWeeklyDigest(env);
   },
 };

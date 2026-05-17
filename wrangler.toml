@@ -10,5 +10,9 @@ binding = "DB"
 database_name = "poc-commits"
 database_id = "6ef7b6a9-1d09-4a0f-9ddd-c869a0582460"
 
+
 [triggers]
-crons = ["0 9 * * 1"]  # Every Monday at 09:00 UTC
+crons = [
+  "0 9 * * 1",  # Monday 09:00 UTC — free-tier watchlist weekly digest (runWeeklyDigest)
+  "0 6 * * *",  # Daily 06:00 UTC — Commit Pro monitoring scan (runProMonitoringScan)
+]
