@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.10.0
+ * proof-of-commitment CLI v1.11.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -201,7 +201,7 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.10.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.11.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -217,6 +217,11 @@ ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment --file Cargo.toml          Audit Rust direct dependencies
   npx proof-of-commitment --file go.mod              Audit Go direct + indirect deps
   npx proof-of-commitment --file go.sum              Audit Go full transitive set
+
+${clr(c.bold, 'Reports:')}
+  poc report          Scan and generate a shareable HTML report + Markdown snippet
+  poc report [pkgs]   Same flags as scan — packages, --pypi, --cargo, --file, etc.
+                      Saves audit-report.html to cwd + prints Markdown for GitHub issues
 
 ${clr(c.bold, 'Account:')}
   poc login [key]     Save and validate your API key (interactive or direct)
@@ -995,6 +1000,257 @@ async function cmdUnwatch(pkg, ecosystem) {
   }
 }
 
+/**
+ * Generate a self-contained HTML report from audit results.
+ * Returns the full HTML string.
+ */
+function buildHtmlReport(results, { ecosystem, scannedFrom, totalScanned } = {}) {
+  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+  const topPkgs = results.slice(0, 20).map(r => r.name).join(',');
+  const webUrl = `${WEB}?packages=${encodeURIComponent(topPkgs)}`;
+
+  const criticalCount = results.filter(r => hasCritical(r.riskFlags)).length;
+  const healthyCount = results.filter(r => !hasCritical(r.riskFlags) && (r.score || 0) >= 75).length;
+
+  function riskBadge(pkg) {
+    if (hasCritical(pkg.riskFlags)) return '<span class="badge critical">CRITICAL</span>';
+    if ((pkg.score || 100) < 40) return '<span class="badge high">HIGH</span>';
+    if ((pkg.score || 100) < 60) return '<span class="badge moderate">MODERATE</span>';
+    if ((pkg.score || 100) < 75) return '<span class="badge good">GOOD</span>';
+    return '<span class="badge healthy">HEALTHY</span>';
+  }
+
+  function provBadge(pkg) {
+    if (pkg.ecosystem === 'golang') return '';
+    return pkg.hasProvenance ? '<span class="prov">🔐</span>' : '';
+  }
+
+  function fmtDl(n) {
+    if (!n) return '—';
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B/wk';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M/wk';
+    if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K/wk';
+    return n + '/wk';
+  }
+
+  const rows = results.map(pkg => {
+    const isGo = pkg.ecosystem === 'golang';
+    return `<tr class="${hasCritical(pkg.riskFlags) ? 'row-critical' : ''}">
+      <td class="pkg-name">${escHtml(pkg.name)}${provBadge(pkg)}</td>
+      <td>${riskBadge(pkg)}</td>
+      <td class="score">${pkg.score ?? '?'}</td>
+      <td>${pkg.maintainers === 35 ? '30+' : (pkg.maintainers ?? '?')}</td>
+      <td>${isGo ? '—' : fmtDl(pkg.weeklyDownloads)}</td>
+      <td>${pkg.ageYears ? pkg.ageYears.toString().replace(/(\.\d).*/, '$1') + 'y' : '?'}</td>
+    </tr>`;
+  }).join('\n');
+
+  const summaryLabel = criticalCount > 0
+    ? `⚠ ${criticalCount} CRITICAL package${criticalCount > 1 ? 's' : ''} found`
+    : `✓ No CRITICAL packages`;
+
+  const summaryClass = criticalCount > 0 ? 'summary-critical' : 'summary-ok';
+
+  const scannedLine = scannedFrom
+    ? `<span>Scanned from <code>${escHtml(scannedFrom)}</code></span> · `
+    : '';
+  const totalLine = totalScanned && totalScanned > results.length
+    ? `showing top ${results.length} of ${totalScanned} packages · `
+    : `${results.length} package${results.length !== 1 ? 's' : ''} · `;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Supply chain audit — proof-of-commitment</title>
+<style>
+  :root { --red:#ef4444;--orange:#f97316;--yellow:#eab308;--green:#22c55e;--cyan:#06b6d4;--bg:#0f172a;--surface:#1e293b;--border:#334155;--text:#f1f5f9;--muted:#94a3b8; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; background: var(--bg); color: var(--text); padding: 2rem; line-height: 1.5; font-size: 14px; }
+  .header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
+  .logo { font-size: 1.1rem; font-weight: bold; color: var(--cyan); }
+  .logo a { color: inherit; text-decoration: none; }
+  .web-link { margin-left: auto; }
+  .web-link a { color: var(--cyan); text-decoration: none; font-size: 0.85rem; border: 1px solid var(--border); padding: 0.3rem 0.75rem; border-radius: 4px; }
+  .web-link a:hover { background: var(--surface); }
+  .summary { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1.5rem; font-weight: bold; }
+  .summary-critical { background: rgba(239,68,68,0.15); border: 1px solid var(--red); color: var(--red); }
+  .summary-ok { background: rgba(34,197,94,0.1); border: 1px solid var(--green); color: var(--green); }
+  .meta { color: var(--muted); font-size: 0.8rem; margin-bottom: 1.5rem; }
+  .meta code { background: var(--surface); padding: 0.1rem 0.3rem; border-radius: 3px; }
+  table { width: 100%; border-collapse: collapse; }
+  thead { border-bottom: 1px solid var(--border); }
+  th { text-align: left; padding: 0.5rem 0.75rem; color: var(--muted); font-weight: normal; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  td { padding: 0.5rem 0.75rem; border-bottom: 1px solid rgba(51,65,85,0.5); }
+  tr.row-critical { background: rgba(239,68,68,0.07); }
+  .pkg-name { font-weight: bold; }
+  .prov { margin-left: 0.4rem; font-size: 0.9em; }
+  .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 3px; font-size: 0.75rem; font-weight: bold; }
+  .badge.critical { background: rgba(239,68,68,0.2); color: var(--red); border: 1px solid var(--red); }
+  .badge.high { background: rgba(249,115,22,0.15); color: var(--orange); border: 1px solid var(--orange); }
+  .badge.moderate { background: rgba(234,179,8,0.15); color: var(--yellow); border: 1px solid var(--yellow); }
+  .badge.good { background: rgba(234,179,8,0.1); color: var(--yellow); border: 1px solid rgba(234,179,8,0.5); }
+  .badge.healthy { background: rgba(34,197,94,0.1); color: var(--green); border: 1px solid var(--green); }
+  .score { color: var(--muted); }
+  .footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.8rem; display: flex; gap: 1.5rem; flex-wrap: wrap; }
+  .footer a { color: var(--cyan); text-decoration: none; }
+  .md-section { margin-top: 2rem; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; }
+  .md-label { color: var(--muted); font-size: 0.75rem; margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .md-copy { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.75rem; font-size: 0.8rem; white-space: pre; overflow-x: auto; color: var(--text); }
+  .copy-btn { float: right; cursor: pointer; background: var(--border); border: none; color: var(--text); padding: 0.2rem 0.6rem; border-radius: 3px; font-size: 0.75rem; font-family: inherit; }
+  .copy-btn:hover { background: var(--cyan); color: var(--bg); }
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="logo"><a href="${WEB}" target="_blank">proof-of-commitment</a></div>
+  <div class="web-link"><a href="${webUrl}" target="_blank">🔗 Open in browser →</a></div>
+</div>
+<div class="summary ${summaryClass}">${summaryLabel}</div>
+<div class="meta">${scannedLine}${totalLine}${ecosystem || 'npm'} · generated ${ts}</div>
+<table>
+  <thead><tr>
+    <th>Package</th><th>Risk</th><th>Score</th><th>Publishers</th><th>Downloads</th><th>Age</th>
+  </tr></thead>
+  <tbody>
+${rows}
+  </tbody>
+</table>
+<div class="md-section">
+  <div class="md-label">Copy for GitHub issues / Slack <button class="copy-btn" onclick="copyMd()">Copy</button></div>
+  <div class="md-copy" id="md-content">${escHtml(buildMarkdown(results, { ecosystem, scannedFrom, totalScanned, webUrl }))}</div>
+</div>
+<div class="footer">
+  <span>Generated by <a href="${WEB}" target="_blank">proof-of-commitment</a></span>
+  <span><a href="https://github.com/piiiico/commit-action" target="_blank">GitHub Action</a></span>
+  <span><a href="https://getcommit.dev/pricing" target="_blank">Commit Pro</a></span>
+</div>
+<script>
+function copyMd() {
+  const text = document.getElementById('md-content').textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.querySelector('.copy-btn');
+    btn.textContent = '✓ Copied';
+    setTimeout(() => btn.textContent = 'Copy', 2000);
+  });
+}
+</script>
+</body>
+</html>`;
+}
+
+function escHtml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function buildMarkdown(results, { ecosystem, scannedFrom, totalScanned, webUrl } = {}) {
+  const criticalCount = results.filter(r => hasCritical(r.riskFlags)).length;
+  const summaryLine = criticalCount > 0
+    ? `⚠ **${criticalCount} CRITICAL package${criticalCount > 1 ? 's' : ''} found**`
+    : `✅ No CRITICAL packages`;
+
+  function riskEmoji(pkg) {
+    if (hasCritical(pkg.riskFlags)) return '🔴 CRITICAL';
+    if ((pkg.score || 100) < 40) return '🟠 HIGH';
+    if ((pkg.score || 100) < 60) return '🟡 MODERATE';
+    if ((pkg.score || 100) < 75) return '🟡 GOOD';
+    return '🟢 HEALTHY';
+  }
+
+  const header = `| Package | Risk | Score | Publishers | Downloads |
+|---------|------|-------|------------|-----------|`;
+
+  function fmtDl(n) {
+    if (!n) return '—';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M/wk';
+    if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K/wk';
+    return n + '/wk';
+  }
+
+  const rows = results.map(pkg => {
+    const maintDisplay = pkg.maintainers === 35 ? '30+' : (pkg.maintainers ?? '?');
+    const dlDisplay = pkg.ecosystem === 'golang' ? '—' : fmtDl(pkg.weeklyDownloads);
+    return `| ${pkg.name}${pkg.hasProvenance ? ' 🔐' : ''} | ${riskEmoji(pkg)} | ${pkg.score ?? '?'} | ${maintDisplay} | ${dlDisplay} |`;
+  }).join('\n');
+
+  const scannedNote = scannedFrom ? ` (from \`${scannedFrom}\`)` : '';
+  const totalNote = totalScanned && totalScanned > results.length ? `, top ${results.length} of ${totalScanned}` : '';
+  const footer = `\n*Scanned ${results.length} ${ecosystem || 'npm'} package${results.length !== 1 ? 's' : ''}${scannedNote}${totalNote} with [proof-of-commitment](https://getcommit.dev) · [Full report](${webUrl || WEB})*`;
+
+  return `## Supply chain audit\n\n${summaryLine}\n\n${header}\n${rows}${footer}`;
+}
+
+/**
+ * poc report — generate shareable HTML report + Markdown snippet
+ */
+async function cmdReport(packages, ecosystem, { filePath, isLockfile, totalScanned } = {}) {
+  const fs = await import('fs');
+
+  process.stdout.write(clr(c.dim, `Scoring ${packages.length} ${ecosystem} package${packages.length > 1 ? 's' : ''}...`));
+  const t0 = Date.now();
+
+  let allResults;
+  try {
+    if (packages.length <= 20) {
+      const res = await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ packages, ecosystem }),
+      });
+      if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+      const data = await res.json();
+      allResults = data.results || [];
+    } else {
+      allResults = await auditBatched(packages, ecosystem);
+    }
+  } catch (err) {
+    console.error(`\nError: ${err.message}`);
+    process.exit(1);
+  }
+
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+  process.stdout.write(clr(c.dim, ` done in ${elapsed}s\n\n`));
+
+  // Sort: CRITICAL first, then by score ascending
+  allResults.sort((a, b) => {
+    const aCrit = hasCritical(a.riskFlags) ? 1 : 0;
+    const bCrit = hasCritical(b.riskFlags) ? 1 : 0;
+    if (aCrit !== bCrit) return bCrit - aCrit;
+    return (a.score || 100) - (b.score || 100);
+  });
+
+  const displayResults = allResults.slice(0, 50);
+  const topPkgs = displayResults.slice(0, 20).map(r => r.name).join(',');
+  const webUrl = `${WEB}?packages=${encodeURIComponent(topPkgs)}`;
+
+  // Save HTML report
+  const outFile = 'audit-report.html';
+  const html = buildHtmlReport(displayResults, {
+    ecosystem,
+    scannedFrom: filePath ? filePath.split('/').pop() : null,
+    totalScanned: totalScanned || allResults.length,
+  });
+  fs.writeFileSync(outFile, html);
+
+  // Print Markdown snippet
+  const md = buildMarkdown(displayResults, {
+    ecosystem,
+    scannedFrom: filePath ? filePath.split('/').pop() : null,
+    totalScanned: totalScanned || allResults.length,
+    webUrl,
+  });
+
+  console.log(clr(c.bold, 'Markdown snippet') + clr(c.dim, ' (paste into GitHub issues, PRs, Slack):'));
+  console.log(clr(c.dim, '─'.repeat(60)));
+  console.log(md);
+  console.log(clr(c.dim, '─'.repeat(60)));
+  console.log();
+  console.log(clr(c.green, `  ✓ HTML report saved → ${outFile}`));
+  console.log(clr(c.cyan, `  🔗 Web report: ${webUrl}`));
+  console.log();
+}
+
 async function main() {
   const args = process.argv.slice(2);
 
@@ -1019,6 +1275,55 @@ async function main() {
 
   if (subcmd === 'logout') {
     await cmdLogout();
+    process.exit(0);
+  }
+
+  if (subcmd === 'report') {
+    // Parse report args (same flags as main scan)
+    const reportArgs = args.slice(1);
+    let ecosystem = 'npm';
+    let packages = [];
+    let filePath = null;
+    let totalInFile = 0;
+
+    let ri = 0;
+    while (ri < reportArgs.length) {
+      const a = reportArgs[ri];
+      if (a === '--pypi') { ecosystem = 'pypi'; ri++; }
+      else if (a === '--npm') { ecosystem = 'npm'; ri++; }
+      else if (a === '--cargo') { ecosystem = 'cargo'; ri++; }
+      else if (a === '--golang' || a === '--go') { ecosystem = 'golang'; ri++; }
+      else if (a === '--file' || a === '-f') { filePath = reportArgs[++ri]; ri++; }
+      else if (a.startsWith('--')) { console.error(`Unknown flag: ${a}`); process.exit(1); }
+      else { packages.push(a); ri++; }
+    }
+
+    if (!filePath && packages.length === 0) {
+      const detected = await autodetectManifest(process.cwd());
+      if (detected) {
+        filePath = detected;
+        console.log(clr(c.dim, `Auto-detected manifest: ${detected}`));
+      } else {
+        console.error('No packages specified and no manifest found. Run: poc report [packages...] or --file <manifest>');
+        process.exit(1);
+      }
+    }
+
+    if (filePath) {
+      try {
+        const result = await readPackagesFromFile(filePath);
+        packages = result.packages;
+        ecosystem = result.ecosystem;
+        totalInFile = result.totalInFile || packages.length;
+        console.log(clr(c.dim, `Detected ${totalInFile} packages from ${filePath} (${ecosystem})`));
+      } catch (err) {
+        console.error(`Error reading ${filePath}: ${err.message}`);
+        process.exit(1);
+      }
+    }
+
+    if (packages.length === 0) { console.error('No packages found.'); process.exit(1); }
+    await cmdReport(packages, ecosystem, { filePath, totalScanned: totalInFile || packages.length });
     process.exit(0);
   }
 
