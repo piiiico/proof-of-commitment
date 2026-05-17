@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.8.1
+ * proof-of-commitment CLI v1.9.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
 
 const API = 'https://poc-backend.amdal-dev.workers.dev/api/audit';
+const WATCHLIST_API = 'https://poc-backend.amdal-dev.workers.dev/api/watchlist';
 const WEB = 'https://getcommit.dev/audit';
 
 // ANSI color helpers
@@ -181,7 +182,7 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.8.1 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.9.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -197,6 +198,15 @@ ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment --file Cargo.toml          Audit Rust direct dependencies
   npx proof-of-commitment --file go.mod              Audit Go direct + indirect deps
   npx proof-of-commitment --file go.sum              Audit Go full transitive set
+
+${clr(c.bold, 'Commit Pro monitoring (poc watch):')}
+  poc watch <package> [--ecosystem npm|pypi|cargo|golang]
+                      Add a package to daily monitoring (Pro tier)
+  poc watchlist       List monitored packages with current scores + risk
+  poc unwatch <pkg>   Remove a package from monitoring
+
+  API key: set COMMIT_API_KEY env or add api_key=<key> to ~/.commit/config
+  Get a key: https://getcommit.dev/pricing
 
 ${clr(c.bold, 'Options:')}
   --json              Output results as JSON
@@ -616,11 +626,224 @@ function shouldFail(results, failOn) {
   return false;
 }
 
+/**
+ * Read API key from env or ~/.commit/config file.
+ * Returns the key string, or null if not found.
+ */
+async function readApiKey() {
+  if (process.env.COMMIT_API_KEY) return process.env.COMMIT_API_KEY.trim();
+  try {
+    const os = await import('os');
+    const fs = await import('fs');
+    const path = await import('path');
+    const configPath = path.join(os.homedir(), '.commit', 'config');
+    const content = fs.readFileSync(configPath, 'utf-8');
+    for (const line of content.split('\n')) {
+      const m = line.match(/^api_key\s*=\s*(.+)$/);
+      if (m) return m[1].trim();
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Handle 402 upgrade response from watchlist endpoints.
+ */
+function printUpgradeRequired() {
+  console.error(clr(c.yellow + c.bold, '\n  ✦ Commit Pro required'));
+  console.error(clr(c.dim, '    Monitoring, daily scans, and alerts are Pro features.'));
+  console.error(clr(c.cyan, '    Upgrade at https://getcommit.dev/pricing\n'));
+}
+
+/**
+ * poc watch <package> [--ecosystem npm|pypi|cargo|golang]
+ */
+async function cmdWatch(pkg, ecosystem) {
+  const key = await readApiKey();
+  if (!key) {
+    console.error(clr(c.red, 'No API key found. Set COMMIT_API_KEY or add api_key=<key> to ~/.commit/config'));
+    console.error(clr(c.dim, 'Get a key at https://getcommit.dev/pricing'));
+    process.exit(1);
+  }
+
+  process.stdout.write(clr(c.dim, `Adding ${pkg} (${ecosystem}) to watchlist...`));
+  const res = await fetch(WATCHLIST_API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+    body: JSON.stringify({ package: pkg, ecosystem }),
+  });
+
+  if (res.status === 402) { printUpgradeRequired(); process.exit(1); }
+
+  const data = await res.json();
+  if (!res.ok) {
+    console.error(`\n${clr(c.red, 'Error:')} ${data.message || JSON.stringify(data)}`);
+    process.exit(1);
+  }
+
+  const isNew = data.new_packages > 0;
+  process.stdout.write('\n');
+  if (isNew) {
+    console.log(clr(c.green, `  ✓ Now watching ${pkg}`));
+    console.log(clr(c.dim, '    Daily scan runs at 06:00 UTC. Alerts on score drop ≥10 or CRITICAL threshold.'));
+  } else {
+    console.log(clr(c.dim, `  ↩ ${pkg} is already in your watchlist`));
+  }
+}
+
+/**
+ * poc watchlist — show monitored packages table
+ */
+async function cmdWatchlist() {
+  const key = await readApiKey();
+  if (!key) {
+    console.error(clr(c.red, 'No API key found. Set COMMIT_API_KEY or add api_key=<key> to ~/.commit/config'));
+    process.exit(1);
+  }
+
+  const res = await fetch(WATCHLIST_API, {
+    headers: { 'Authorization': `Bearer ${key}` },
+  });
+
+  if (res.status === 402) { printUpgradeRequired(); process.exit(1); }
+
+  const data = await res.json();
+  if (!res.ok) {
+    console.error(clr(c.red, `Error: ${data.message || JSON.stringify(data)}`));
+    process.exit(1);
+  }
+
+  const pkgs = data.packages || [];
+  if (pkgs.length === 0) {
+    console.log(clr(c.dim, '\n  No packages monitored yet.'));
+    console.log(clr(c.dim, '  Add one: poc watch <package>\n'));
+    return;
+  }
+
+  const COL = { name: 24, eco: 8, score: 7, prev: 7, risk: 14, scanned: 22 };
+
+  function riskLabelFromLevel(level) {
+    if (!level) return clr(c.dim, '—');
+    if (level === 'CRITICAL') return clr(c.red + c.bold, '🔴 CRITICAL');
+    if (level === 'HIGH') return clr(c.yellow + c.bold, '🟠 HIGH');
+    if (level === 'MODERATE') return clr(c.yellow, '🟡 MODERATE');
+    if (level === 'GOOD') return clr(c.yellow, '🟡 GOOD');
+    return clr(c.green, '🟢 HEALTHY');
+  }
+
+  const header = [
+    padEnd(clr(c.bold, 'Package'), COL.name),
+    padEnd(clr(c.bold, 'Eco'), COL.eco),
+    padEnd(clr(c.bold, 'Score'), COL.score),
+    padEnd(clr(c.bold, 'Prev'), COL.prev),
+    padEnd(clr(c.bold, 'Risk'), COL.risk),
+    padEnd(clr(c.bold, 'Last scanned'), COL.scanned),
+  ].join('  ');
+
+  const divWidth = COL.name + COL.eco + COL.score + COL.prev + COL.risk + COL.scanned + 10;
+  const divider = '─'.repeat(divWidth);
+
+  console.log('\n' + divider);
+  console.log(clr(c.dim, `  Commit Pro watchlist · ${pkgs.length}/${data.limit} packages · tier: ${data.tier}`));
+  console.log(divider);
+  console.log(header);
+  console.log(divider);
+
+  for (const pkg of pkgs) {
+    const scoreStr = pkg.current_score !== null ? String(pkg.current_score) : clr(c.dim, '—');
+    const prevStr = pkg.previous_score !== null ? String(pkg.previous_score) : clr(c.dim, '—');
+    const scanned = pkg.last_scanned_at ? pkg.last_scanned_at.replace('T', ' ').slice(0, 19) + ' UTC' : clr(c.dim, 'not yet');
+
+    const row = [
+      padEnd(pkg.name, COL.name),
+      padEnd(pkg.ecosystem, COL.eco),
+      padEnd(scoreStr, COL.score),
+      padEnd(prevStr, COL.prev),
+      padEnd(riskLabelFromLevel(pkg.risk_level), COL.risk),
+      padEnd(scanned, COL.scanned),
+    ].join('  ');
+    console.log(row);
+  }
+
+  console.log(divider);
+  console.log(clr(c.dim, '\n  Alerts sent on: score drop ≥10 · CRITICAL threshold · recovery to HEALTHY'));
+  console.log(clr(c.cyan, '  Remove a package: poc unwatch <package>\n'));
+}
+
+/**
+ * poc unwatch <package> [--ecosystem npm|pypi|cargo|golang]
+ */
+async function cmdUnwatch(pkg, ecosystem) {
+  const key = await readApiKey();
+  if (!key) {
+    console.error(clr(c.red, 'No API key found. Set COMMIT_API_KEY or add api_key=<key> to ~/.commit/config'));
+    process.exit(1);
+  }
+
+  process.stdout.write(clr(c.dim, `Removing ${pkg} (${ecosystem}) from watchlist...`));
+  const res = await fetch(WATCHLIST_API, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+    body: JSON.stringify({ package: pkg, ecosystem }),
+  });
+
+  if (res.status === 402) { printUpgradeRequired(); process.exit(1); }
+
+  const data = await res.json();
+  if (!res.ok) {
+    console.error(`\n${clr(c.red, 'Error:')} ${data.message || JSON.stringify(data)}`);
+    process.exit(1);
+  }
+
+  process.stdout.write('\n');
+  if ((data.removed ?? 0) > 0) {
+    console.log(clr(c.green, `  ✓ Removed ${pkg} from watchlist`));
+  } else {
+    console.log(clr(c.dim, `  ${pkg} was not in your watchlist`));
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
 
   if (args.includes('--help') || args.includes('-h')) {
     printHelp();
+    process.exit(0);
+  }
+
+  // Watchlist subcommands
+  const subcmd = args[0];
+
+  if (subcmd === 'watch') {
+    const pkg = args[1];
+    if (!pkg) { console.error('Usage: poc watch <package> [--ecosystem npm|pypi|cargo|golang]'); process.exit(1); }
+    let ecosystem = 'npm';
+    for (let i = 2; i < args.length; i++) {
+      if (args[i] === '--ecosystem' || args[i] === '-e') ecosystem = args[++i] || 'npm';
+      else if (args[i] === '--pypi') ecosystem = 'pypi';
+      else if (args[i] === '--cargo') ecosystem = 'cargo';
+      else if (args[i] === '--golang' || args[i] === '--go') ecosystem = 'golang';
+    }
+    await cmdWatch(pkg, ecosystem);
+    process.exit(0);
+  }
+
+  if (subcmd === 'watchlist') {
+    await cmdWatchlist();
+    process.exit(0);
+  }
+
+  if (subcmd === 'unwatch') {
+    const pkg = args[1];
+    if (!pkg) { console.error('Usage: poc unwatch <package> [--ecosystem npm|pypi|cargo|golang]'); process.exit(1); }
+    let ecosystem = 'npm';
+    for (let i = 2; i < args.length; i++) {
+      if (args[i] === '--ecosystem' || args[i] === '-e') ecosystem = args[++i] || 'npm';
+      else if (args[i] === '--pypi') ecosystem = 'pypi';
+      else if (args[i] === '--cargo') ecosystem = 'cargo';
+      else if (args[i] === '--golang' || args[i] === '--go') ecosystem = 'golang';
+    }
+    await cmdUnwatch(pkg, ecosystem);
     process.exit(0);
   }
 
