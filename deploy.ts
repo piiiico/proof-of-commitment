@@ -132,15 +132,17 @@ function extractMeaningfulTokens(source: string): Set<string> {
   return tokens;
 }
 
-// Read the built worker
-const workerJs = await Bun.file("dist/worker.js").text();
+// Read the source worker (TS — used for pre-deploy guard divergence detection).
+// Note: wrangler builds from source, so we compare source tokens vs deployed tokens.
+// This catches string literals and identifier additions/removals in the source.
+const workerTs = await Bun.file("src/backend/worker.ts").text();
 
 // Run pre-deploy divergence check
-console.log("🔍 Pre-deploy guard: comparing local build vs deployed worker...");
+console.log("🔍 Pre-deploy guard: comparing source vs deployed worker...");
 const deployedWorkerJs = await fetchDeployedWorker();
 
 if (deployedWorkerJs !== null) {
-  const localTokens = extractMeaningfulTokens(workerJs);
+  const localTokens = extractMeaningfulTokens(workerTs);
   const deployedTokens = extractMeaningfulTokens(deployedWorkerJs);
 
   // Find tokens present in production but absent from local build
@@ -209,112 +211,25 @@ if (deployedWorkerJs !== null) {
   console.log("   (skipped — no existing deployment to compare)\n");
 }
 
-// Metadata for the worker upload
-const metadata = {
-  main_module: "worker.js",
-  compatibility_date: "2024-12-01",
-  bindings: [
-    {
-      type: "d1",
-      name: "DB",
-      id: D1_DATABASE_ID,
-    },
-    {
-      type: "plain_text",
-      name: "ENVIRONMENT",
-      text: "production",
-    },
-  ],
-};
+// ── Deploy via wrangler ──────────────────────────────────────────────────────
+// wrangler handles WASM module bindings (declared in wrangler.toml) natively.
+// The REST API approach (wasm_module binding) is not supported for ES module workers.
+console.log(`Deploying ${WORKER_NAME} via wrangler...`);
 
-// Build multipart form data
-const formData = new FormData();
-formData.append(
-  "metadata",
-  new Blob([JSON.stringify(metadata)], { type: "application/json" })
-);
-formData.append(
-  "worker.js",
-  new Blob([workerJs], { type: "application/javascript+module" }),
-  "worker.js"
-);
+const { $ } = await import("bun");
 
-console.log(`Deploying ${WORKER_NAME} to Cloudflare Workers...`);
+const deployResult = await $`bunx wrangler deploy`
+  .env({
+    ...process.env,
+    CLOUDFLARE_ACCOUNT_ID: ACCOUNT_ID,
+    CLOUDFLARE_API_KEY: API_KEY,
+    CLOUDFLARE_EMAIL: EMAIL,
+  })
+  .nothrow();
 
-const res = await fetch(
-  `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER_NAME}`,
-  {
-    method: "PUT",
-    headers: {
-      "X-Auth-Email": EMAIL,
-      "X-Auth-Key": API_KEY,
-    },
-    body: formData,
-  }
-);
-
-const result = await res.json() as any;
-
-if (result.success) {
-  console.log(`✅ Worker deployed successfully!`);
-  console.log(`   URL: https://${WORKER_NAME}.amdal-dev.workers.dev`);
-
-  // Enable the workers.dev subdomain route
-  const subdomainRes = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER_NAME}/subdomain`,
-    {
-      method: "POST",
-      headers: {
-        "X-Auth-Email": EMAIL,
-        "X-Auth-Key": API_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ enabled: true }),
-    }
-  );
-  const subdomainResult = await subdomainRes.json() as any;
-  if (subdomainResult.success) {
-    console.log(`   Subdomain enabled.`);
-  } else {
-    console.warn("   Subdomain enable warning:", subdomainResult.errors);
-  }
-  // Register cron schedules (PUT /schedules replaces all existing schedules)
-  const cronRes = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER_NAME}/schedules`,
-    {
-      method: "PUT",
-      headers: {
-        "X-Auth-Email": EMAIL,
-        "X-Auth-Key": API_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify([{ cron: "0 9 * * 1" }]),
-    }
-  );
-  const cronResult = await cronRes.json() as any;
-  if (cronResult.success) {
-    console.log(`   Cron schedule registered: 0 9 * * 1 (Monday 09:00 UTC)`);
-  } else {
-    console.warn("   Cron schedule warning:", cronResult.errors);
-  }
-
-  // Verify cron registration
-  const verifyCronRes = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER_NAME}/schedules`,
-    {
-      headers: {
-        "X-Auth-Email": EMAIL,
-        "X-Auth-Key": API_KEY,
-      },
-    }
-  );
-  const verifyCronResult = await verifyCronRes.json() as any;
-  if (verifyCronResult.success && verifyCronResult.result?.schedules?.length > 0) {
-    console.log(`   Verified schedules: ${verifyCronResult.result.schedules.map((s: any) => s.cron).join(", ")}`);
-  } else {
-    console.warn("   Could not verify cron schedules:", verifyCronResult);
-  }
-} else {
-  console.error("❌ Deploy failed:", JSON.stringify(result.errors, null, 2));
-  process.exit(1);
+if (deployResult.exitCode !== 0) {
+  console.error("❌ Deploy failed with exit code", deployResult.exitCode);
+  process.exit(deployResult.exitCode);
 }
+
+console.log(`\n✅ Deployed! URL: https://${WORKER_NAME}.amdal-dev.workers.dev`);

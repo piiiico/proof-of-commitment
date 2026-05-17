@@ -12,7 +12,7 @@
     "start:backend": "bun run src/backend/server.ts",
     "start:mcp": "bun run src/mcp/server.ts",
     "build:worker": "bun build src/backend/worker.ts --target=browser --format=esm --minify --outfile=dist/worker.js",
-    "deploy": "bun run build:worker && bun deploy.ts",
+    "deploy": "bun deploy.ts",
     "build:all": "bun run build:ext && bun run build:worker",
     "test:e2e": "bun run src/test/e2e.ts"
   },
@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@resvg/resvg-wasm": "^2.6.2",
     "hono": "^4.12.8",
     "zod": "^4.3.6"
   }
