@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.11.0
+ * proof-of-commitment CLI v1.12.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -182,6 +182,7 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
   const topPkgs = results.slice(0, 10).map(r => r.name).join(',');
   console.log(clr(c.cyan, `\n  🔗 Full report: ${WEB}?packages=${encodeURIComponent(topPkgs)}`));
   console.log(clr(c.cyan, `  🤖 GitHub Action: github.com/piiiico/commit-action — block CRITICAL packages in CI`));
+  console.log(clr(c.dim, `  📋 Add to this project: `) + clr(c.cyan, `poc init`) + clr(c.dim, ` — creates workflow + README badge`));
 
   // Contextual upsell — show when findings make monitoring relevant
   if (effectiveCritical > 0) {
@@ -201,7 +202,7 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.11.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.12.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -217,6 +218,10 @@ ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment --file Cargo.toml          Audit Rust direct dependencies
   npx proof-of-commitment --file go.mod              Audit Go direct + indirect deps
   npx proof-of-commitment --file go.sum              Audit Go full transitive set
+
+${clr(c.bold, 'Setup:')}
+  poc init            Add a GitHub Action + README badge to the current project
+                      Auto-detects ecosystem. Blocks CRITICAL packages on every PR.
 
 ${clr(c.bold, 'Reports:')}
   poc report          Scan and generate a shareable HTML report + Markdown snippet
@@ -1251,6 +1256,139 @@ async function cmdReport(packages, ecosystem, { filePath, isLockfile, totalScann
   console.log();
 }
 
+/**
+ * poc init — scaffold a GitHub Action workflow + README badge for the current project.
+ * Turns every CLI user into a permanent distribution node.
+ */
+async function cmdInit() {
+  const fs = await import('fs');
+  const path = await import('path');
+  const cwd = process.cwd();
+
+  // Detect ecosystem from project files
+  let ecosystem = 'npm';
+  let manifestName = 'package.json';
+  const checks = [
+    ['package.json', 'npm'],
+    ['package-lock.json', 'npm'],
+    ['yarn.lock', 'npm'],
+    ['pnpm-lock.yaml', 'npm'],
+    ['requirements.txt', 'pypi'],
+    ['Cargo.toml', 'cargo'],
+    ['go.mod', 'golang'],
+  ];
+  for (const [file, eco] of checks) {
+    if (fs.existsSync(path.join(cwd, file))) {
+      ecosystem = eco;
+      manifestName = file;
+      break;
+    }
+  }
+
+  console.log(clr(c.bold, '\n  Commit — supply chain audit for CI\n'));
+  console.log(clr(c.dim, `  Detected: ${manifestName} (${ecosystem})`));
+
+  // ── 1. GitHub Action workflow ──
+  const workflowDir = path.join(cwd, '.github', 'workflows');
+  const workflowPath = path.join(workflowDir, 'commit-audit.yml');
+
+  const ecoFlag = ecosystem === 'npm' ? '' : ` --${ecosystem === 'golang' ? 'go' : ecosystem}`;
+  const workflowContent = `# Supply chain audit — powered by Commit (getcommit.dev)
+# Scores dependencies on behavioral signals: publisher concentration,
+# download anomalies, release patterns, trusted publishing adoption.
+# Blocks PRs when CRITICAL packages are found (configurable).
+
+name: Supply Chain Audit
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: '0 9 * * 1'  # Weekly Monday 09:00 UTC
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npx -y proof-of-commitment${ecoFlag} --fail-on=critical
+`;
+
+  let workflowCreated = false;
+  if (fs.existsSync(workflowPath)) {
+    console.log(clr(c.yellow, `  ⚠ .github/workflows/commit-audit.yml already exists — skipped`));
+  } else {
+    fs.mkdirSync(workflowDir, { recursive: true });
+    fs.writeFileSync(workflowPath, workflowContent);
+    workflowCreated = true;
+    console.log(clr(c.green, `  ✓ Created .github/workflows/commit-audit.yml`));
+  }
+
+  // ── 2. README badge ──
+  // Try to read project name from package.json or directory name
+  let projectName = path.basename(cwd);
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf-8'));
+    if (pkg.name) projectName = pkg.name;
+  } catch {}
+
+  const badgeUrl = `https://poc-backend.amdal-dev.workers.dev/badge/npm/${encodeURIComponent(projectName)}`;
+  const auditUrl = `https://getcommit.dev/audit?packages=${encodeURIComponent(projectName)}`;
+  const badgeMd = `[![Commit Score](${badgeUrl})](${auditUrl})`;
+
+  console.log(clr(c.green, `  ✓ README badge (paste into your README.md):\n`));
+  console.log(`    ${badgeMd}\n`);
+
+  // ── 3. Try to auto-insert badge into README ──
+  let badgeInserted = false;
+  const readmeCandidates = ['README.md', 'readme.md', 'Readme.md'];
+  for (const name of readmeCandidates) {
+    const readmePath = path.join(cwd, name);
+    if (fs.existsSync(readmePath)) {
+      const content = fs.readFileSync(readmePath, 'utf-8');
+      if (content.includes('Commit Score') || content.includes('poc-backend.amdal-dev.workers.dev/badge')) {
+        console.log(clr(c.dim, `  Badge already in ${name} — skipped`));
+        badgeInserted = true;
+        break;
+      }
+      // Insert after the first H1 heading, or at the top
+      const h1Match = content.match(/^#\s+.+$/m);
+      let newContent;
+      if (h1Match) {
+        const insertPos = h1Match.index + h1Match[0].length;
+        newContent = content.slice(0, insertPos) + '\n\n' + badgeMd + content.slice(insertPos);
+      } else {
+        newContent = badgeMd + '\n\n' + content;
+      }
+      fs.writeFileSync(readmePath, newContent);
+      badgeInserted = true;
+      console.log(clr(c.green, `  ✓ Badge added to ${name}`));
+      break;
+    }
+  }
+  if (!badgeInserted) {
+    console.log(clr(c.dim, `  No README found — paste the badge manually`));
+  }
+
+  // ── 4. Next steps ──
+  console.log(clr(c.bold, '\n  What happens next:\n'));
+  if (workflowCreated) {
+    console.log(clr(c.white, '  1. Commit and push — the Action runs on your next PR'));
+    console.log(clr(c.white, '  2. PRs with CRITICAL dependencies are blocked automatically'));
+    console.log(clr(c.white, '  3. The badge updates daily with your project\'s score'));
+  } else {
+    console.log(clr(c.white, '  1. The badge updates daily with your project\'s score'));
+    console.log(clr(c.white, '  2. Push to trigger the existing workflow'));
+  }
+  console.log(clr(c.dim, `\n  Want daily monitoring + alerts? Get a free key:`));
+  console.log(clr(c.cyan, '  https://getcommit.dev/get-started'));
+  console.log(clr(c.dim, '  Then run: ') + clr(c.cyan, 'poc login') + clr(c.dim, ' + ') + clr(c.cyan, 'poc watch <package>\n'));
+}
+
 async function main() {
   const args = process.argv.slice(2);
 
@@ -1261,6 +1399,11 @@ async function main() {
 
   // Subcommands
   const subcmd = args[0];
+
+  if (subcmd === 'init') {
+    await cmdInit();
+    process.exit(0);
+  }
 
   if (subcmd === 'login') {
     const keyArg = args[1] || null;
