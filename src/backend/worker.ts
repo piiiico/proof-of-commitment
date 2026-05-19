@@ -1951,6 +1951,7 @@ app.get("/badge/*", async (c) => {
 app.post("/api/keys/create", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+  const source: string = typeof body?.source === "string" ? body.source : "";
 
   // Validate email
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -2064,6 +2065,15 @@ Commit by getcommit.dev`;
   }
 
   if (emailSent) {
+    // CLI callers need the key directly (inline signup — no email round-trip)
+    if (source === "cli") {
+      return c.json({
+        ok: true,
+        message: `API key saved. Backup sent to ${email}.`,
+        key: apiKey,
+        key_prefix: keyPrefix,
+      });
+    }
     return c.json({
       ok: true,
       message: `API key sent to ${email}. Check your inbox.`,

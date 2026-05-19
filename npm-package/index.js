@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.12.1
+ * proof-of-commitment CLI v1.13.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -213,9 +213,78 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
   console.log();
 }
 
+/**
+ * Inline signup: after CRITICAL findings, offer one-step email→key flow.
+ * Collapses 6-step funnel (visit site → email → check inbox → copy key → login → watch)
+ * into a single CLI prompt.
+ */
+async function inlineSignup(results) {
+  // Only prompt in interactive TTY when CRITICAL packages found and no key saved
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return;
+  const hasKey = !!process.env.COMMIT_API_KEY || _cachedHasKey;
+  if (hasKey) return;
+  const critPkgs = results.filter(r => hasCritical(r.riskFlags));
+  if (critPkgs.length === 0) return;
+
+  console.log(clr(c.dim, '  ─────────────────────────────────────────────'));
+  console.log(clr(c.bold, '  🔔 Get alerts when these scores change?'));
+  console.log(clr(c.dim, '     Free API key — no credit card, 10 seconds.\n'));
+
+  const { createInterface } = await import('readline');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+
+  const email = await new Promise(resolve => {
+    rl.question(clr(c.dim, '  Your email (Enter to skip): '), answer => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+
+  if (!email) return;
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    console.log(clr(c.red, '  Invalid email. Skipped.'));
+    return;
+  }
+
+  process.stdout.write(clr(c.dim, '  Creating key...'));
+
+  try {
+    const res = await fetch('https://poc-backend.amdal-dev.workers.dev/api/keys/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, source: 'cli' }),
+    });
+
+    const data = await res.json();
+
+    if (data.key) {
+      await writeApiKey(data.key);
+      _cachedHasKey = true;
+      console.log(clr(c.green, ' ✓ Saved to ~/.commit/config'));
+      console.log(clr(c.dim, `     Backup sent to ${email}`));
+      console.log();
+      console.log(clr(c.bold, '  Next steps:'));
+      console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc status') + clr(c.dim, '       — check your account'));
+      if (critPkgs.length > 0) {
+        console.log(clr(c.dim, '    • ') + clr(c.cyan, `poc watch ${critPkgs[0].name}`) + clr(c.dim, '  — start monitoring (Pro)'));
+      }
+      console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc init') + clr(c.dim, '          — add CI gate to this project'));
+    } else if (data.message) {
+      console.log(clr(c.green, ` ✓ ${data.message}`));
+    } else {
+      console.log(clr(c.red, ` Failed: ${JSON.stringify(data)}`));
+    }
+  } catch (err) {
+    console.log(clr(c.red, ` Error: ${err.message}`));
+  }
+
+  console.log();
+}
+
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.12.1 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.13.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -1667,6 +1736,7 @@ async function main() {
     const displayed = allResults.slice(0, MAX_DISPLAY);
     const criticalTotal = allResults.filter(r => hasCritical(r.riskFlags)).length;
     printTable(displayed, { totalScanned: allResults.length, totalCritical: criticalTotal, lockfile: true });
+    await inlineSignup(displayed);
     if (shouldFail(allResults, failOn)) {
       console.error(clr(c.red + c.bold, `\n✗ --fail-on=${failOn} threshold met. Exit 1.`));
       process.exit(1);
@@ -1697,6 +1767,7 @@ async function main() {
   }
 
   printTable(allResults);
+  await inlineSignup(allResults);
   if (shouldFail(allResults, failOn)) {
     console.error(clr(c.red + c.bold, `✗ --fail-on=${failOn} threshold met. Exit 1.`));
     process.exit(1);
