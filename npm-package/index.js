@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.13.0
+ * proof-of-commitment CLI v1.13.1
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -198,17 +198,19 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
   }
 
   // Contextual upsell — show when findings make monitoring relevant
+  // In TTY mode, inlineSignup() handles the upsell interactively — skip static text
   if (effectiveCritical > 0) {
-    // Check for API key synchronously via env (fast path)
     const hasKey = !!process.env.COMMIT_API_KEY || _cachedHasKey;
     if (hasKey) {
       console.log(clr(c.dim, `\n  📊 Monitor ${effectiveCritical === 1 ? 'this package' : 'these packages'}: `) +
         clr(c.cyan, `poc watch ${results.find(r => hasCritical(r.riskFlags))?.name || results[0]?.name}`));
-    } else {
+    } else if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      // Non-TTY (CI, piped): show static URL since interactive prompt won't work
       console.log(clr(c.dim, `\n  📊 Monitor ${effectiveCritical === 1 ? 'this' : 'these ' + effectiveCritical} CRITICAL ${effectiveCritical === 1 ? 'package' : 'packages'} — get alerted when scores change.`));
       console.log(clr(c.dim, '     Get a free API key: ') + clr(c.cyan, 'https://getcommit.dev/get-started?utm_source=cli'));
       console.log(clr(c.dim, '     Then run: ') + clr(c.cyan, 'poc login'));
     }
+    // else: TTY mode — inlineSignup() will prompt interactively after printTable
   }
   console.log();
 }
@@ -284,7 +286,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.13.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.13.1 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
