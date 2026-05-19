@@ -1945,13 +1945,18 @@ app.get("/badge/*", async (c) => {
 
 /**
  * POST /api/keys/create
- * Accept { email } → generate free-tier API key → email it → return { ok, message }
+ * Accept { email, source? } → generate free-tier API key → email it → return { ok, message }
  * Rate limit: 3 requests per IP per day
+ *
+ * source — funnel attribution (persisted to api_keys.source). Valid values:
+ *   'web' (default), 'cli', 'api', 'mcp-soft-cta'
  */
 app.post("/api/keys/create", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-  const source: string = typeof body?.source === "string" ? body.source : "";
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta"];
+  const rawSource = typeof body?.source === "string" ? body.source : "";
+  const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
   // Validate email
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -2008,9 +2013,9 @@ app.post("/api/keys/create", async (c) => {
 
   // Insert into D1
   await c.env.DB.prepare(
-    `INSERT INTO api_keys (id, key_hash, key_prefix, email, tier, requests_this_period, period_reset_at, created_at)
-     VALUES (?, ?, ?, ?, 'free', 0, ?, datetime('now'))`
-  ).bind(id, keyHash, keyPrefix, email, periodResetAt).run();
+    `INSERT INTO api_keys (id, key_hash, key_prefix, email, tier, requests_this_period, period_reset_at, source, created_at)
+     VALUES (?, ?, ?, ?, 'free', 0, ?, ?, datetime('now'))`
+  ).bind(id, keyHash, keyPrefix, email, periodResetAt, source).run();
 
   // Send via Resend email API (RESEND_API_KEY is a worker secret)
   let emailSent = false;
@@ -2178,19 +2183,31 @@ app.get("/api/keys/stats", async (c) => {
     c.env.DB.prepare(`SELECT COUNT(*) as count FROM api_keys WHERE revoked_at IS NULL AND created_at >= datetime('now', '-7 days')`).first<{ count: number }>(),
   ]);
 
+  // Source attribution: how many keys per signup channel?
+  const sourceRows = await c.env.DB.prepare(
+    `SELECT COALESCE(source, 'web') as source, COUNT(*) as count FROM api_keys WHERE revoked_at IS NULL GROUP BY COALESCE(source, 'web')`
+  ).all<{ source: string; count: number }>();
+
   const recentRows = await c.env.DB.prepare(
-    `SELECT key_prefix, email, tier, created_at FROM api_keys WHERE revoked_at IS NULL ORDER BY created_at DESC LIMIT 20`
-  ).all<{ key_prefix: string; email: string; tier: string; created_at: string }>();
+    `SELECT key_prefix, email, tier, COALESCE(source, 'web') as source, created_at FROM api_keys WHERE revoked_at IS NULL ORDER BY created_at DESC LIMIT 20`
+  ).all<{ key_prefix: string; email: string; tier: string; source: string; created_at: string }>();
+
+  const sourceBreakdown: Record<string, number> = {};
+  for (const row of sourceRows.results ?? []) {
+    sourceBreakdown[row.source] = row.count;
+  }
 
   return c.json({
     total_keys: totalRow?.count ?? 0,
     keys_today: todayRow?.count ?? 0,
     keys_last_24h: last24hRow?.count ?? 0,
     keys_last_7d: last7dRow?.count ?? 0,
+    source_breakdown: sourceBreakdown,
     recent: (recentRows.results ?? []).map((r) => ({
       key_prefix: r.key_prefix,
       email: r.email,
       tier: r.tier,
+      source: r.source,
       created_at: r.created_at,
     })),
   });
@@ -2688,11 +2705,132 @@ app.post("/api/admin/trigger-pro-scan", async (c) => {
 // commitment data without running anything locally.
 //
 // Connect: https://poc-backend.amdal-dev.workers.dev/mcp
+//
+// Anonymous IP is rate-limited per UTC day:
+//   1–40    no CTA
+//   41–80   response + soft CTA appended
+//   81–100  response + stronger CTA
+//   101+    hard block
+// API key holders bypass.
 
-function createMcpServer(): McpServer {
+const MCP_SOFT_CTA_AT = 41;     // first call to include CTA
+const MCP_STRONG_CTA_AT = 81;   // upgrade message tone
+const MCP_HARD_LIMIT = 100;     // beyond → 429-style block
+const MCP_SIGNUP_URL =
+  "https://getcommit.dev/signup?ref=mcp-cli";
+
+type McpToolResult = {
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+};
+
+interface McpCtx {
+  env: Bindings;
+  ip: string;
+  hasApiKey: boolean;
+}
+
+function todayUtcDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function mcpCtaText(count: number): string {
+  const remaining = Math.max(0, MCP_HARD_LIMIT - count);
+  if (count >= MCP_STRONG_CTA_AT) {
+    return [
+      "",
+      "─────────────────────────────────────────────────",
+      `⚠ Commit MCP — ${count}/${MCP_HARD_LIMIT} free queries today (${remaining} left).`,
+      `   Get a free API key for higher limits + no daily wall:`,
+      `   → ${MCP_SIGNUP_URL}`,
+      "─────────────────────────────────────────────────",
+    ].join("\n");
+  }
+  return [
+    "",
+    "─────────────────────────────────────────────────",
+    `Commit MCP — ${count}/${MCP_HARD_LIMIT} free queries used today.`,
+    `Heavy user? Free API key (200/day): ${MCP_SIGNUP_URL}`,
+    "─────────────────────────────────────────────────",
+  ].join("\n");
+}
+
+function mcpHardBlockText(count: number): string {
+  return [
+    `Daily free MCP limit reached (${count}/${MCP_HARD_LIMIT}). Limit resets at 00:00 UTC.`,
+    "",
+    `Get a free API key to lift this limit (200 queries/day free tier):`,
+    `→ ${MCP_SIGNUP_URL}`,
+    "",
+    `Once you have a key, pass it as Authorization: Bearer sk_commit_…`,
+    `(MCP clients: configure as a custom header on this server.)`,
+  ].join("\n");
+}
+
+/**
+ * Increment today's MCP counter for this IP. Returns the post-increment
+ * count. Atomically performed in D1 via ON CONFLICT … RETURNING count.
+ */
+async function bumpMcpCount(env: Bindings, ip: string): Promise<number> {
+  const date = todayUtcDate();
+  try {
+    const row = await env.DB.prepare(
+      `INSERT INTO mcp_rate_limits (ip, date, count) VALUES (?, ?, 1)
+       ON CONFLICT(ip, date) DO UPDATE SET count = count + 1
+       RETURNING count`
+    ).bind(ip, date).first<{ count: number }>();
+    return row?.count ?? 1;
+  } catch {
+    // Defensive: if the table is missing or D1 hiccups, never break the MCP
+    // response — fail open with count=1 so the soft-CTA layer is the
+    // user's worst-case experience.
+    return 1;
+  }
+}
+
+/**
+ * Wrap an MCP tool handler with rate-limit + soft-CTA logic.
+ * API-key holders pass through untouched. Anonymous IPs:
+ *   - count incremented before handler runs
+ *   - >MCP_HARD_LIMIT → return hard-block message (isError)
+ *   - ≥MCP_SOFT_CTA_AT → append CTA to result content
+ */
+function withMcpRateLimit<A>(
+  ctx: McpCtx,
+  handler: (args: A) => Promise<McpToolResult>,
+): (args: A) => Promise<McpToolResult> {
+  return async (args: A) => {
+    if (ctx.hasApiKey) return handler(args);
+
+    const count = await bumpMcpCount(ctx.env, ctx.ip);
+
+    if (count > MCP_HARD_LIMIT) {
+      return {
+        content: [{ type: "text" as const, text: mcpHardBlockText(count) }],
+        isError: true,
+      };
+    }
+
+    const result = await handler(args);
+
+    if (count >= MCP_SOFT_CTA_AT) {
+      return {
+        ...result,
+        content: [
+          ...result.content,
+          { type: "text" as const, text: mcpCtaText(count) },
+        ],
+      };
+    }
+
+    return result;
+  };
+}
+
+function createMcpServer(ctx: McpCtx): McpServer {
   const mcp = new McpServer({
     name: "proof-of-commitment",
-    version: "1.6.0",
+    version: "1.14.0",
   });
 
   // Tool: query_commitment
@@ -2706,7 +2844,7 @@ function createMcpServer(): McpServer {
           "The domain to query (e.g. 'example.com'). Will be normalized to lowercase without protocol or path."
         ),
     },
-    async ({ domain }) => {
+    withMcpRateLimit(ctx, async ({ domain }) => {
       const normalized = domain
         .trim()
         .toLowerCase()
@@ -2764,7 +2902,7 @@ function createMcpServer(): McpServer {
         };
       }
     }
-  );
+  ));
 
   // Tool: lookup_business
   mcp.tool(
@@ -2777,7 +2915,7 @@ function createMcpServer(): McpServer {
           "Business name to search for (e.g. 'Peppes Pizza', 'Equinor')"
         ),
     },
-    async ({ query }) => {
+    withMcpRateLimit(ctx, async ({ query }) => {
       try {
         const profiles = await searchAndProfile(query, 3);
         if (profiles.length === 0) {
@@ -2811,7 +2949,7 @@ function createMcpServer(): McpServer {
         };
       }
     }
-  );
+  ));
 
   // Tool: lookup_business_by_org
   mcp.tool(
@@ -2824,7 +2962,7 @@ function createMcpServer(): McpServer {
           "Norwegian organization number (9 digits, e.g. '984388659')"
         ),
     },
-    async ({ orgNumber }) => {
+    withMcpRateLimit(ctx, async ({ orgNumber }) => {
       try {
         const profile = await buildCommitmentProfile(orgNumber);
         if (!profile) {
@@ -2852,7 +2990,7 @@ function createMcpServer(): McpServer {
         };
       }
     }
-  );
+  ));
 
   // Tool: lookup_github_repo
   mcp.tool(
@@ -2869,7 +3007,7 @@ Examples: "vercel/next.js", "facebook/react", "https://github.com/piiiico/proof-
           'GitHub repository in "owner/repo" format or full URL. Examples: "vercel/next.js", "https://github.com/facebook/react"'
         ),
     },
-    async ({ repo }) => {
+    withMcpRateLimit(ctx, async ({ repo }) => {
       const parsed = parseGitHubInput(repo);
       if (!parsed) {
         return {
@@ -2938,7 +3076,7 @@ Examples: "vercel/next.js", "facebook/react", "https://github.com/piiiico/proof-
         };
       }
     }
-  );
+  ));
 
   // Tool: lookup_npm_package
   mcp.tool(
@@ -2957,7 +3095,7 @@ Examples: "langchain", "@anthropic-ai/sdk", "express", "litellm"`,
           'npm package name. Examples: "langchain", "@anthropic-ai/sdk", "express". Scoped packages need the @ prefix.'
         ),
     },
-    async ({ package: packageName }) => {
+    withMcpRateLimit(ctx, async ({ package: packageName }) => {
       try {
         const profile = await buildNpmCommitmentProfile(packageName);
 
@@ -3010,7 +3148,7 @@ Examples: "langchain", "@anthropic-ai/sdk", "express", "litellm"`,
         };
       }
     }
-  );
+  ));
 
   // Tool: lookup_pypi_package
   mcp.tool(
@@ -3028,7 +3166,7 @@ Examples: "langchain", "litellm", "openai", "anthropic", "requests", "fastapi", 
           'PyPI package name. Examples: "langchain", "openai", "requests", "fastapi". Case-insensitive.'
         ),
     },
-    async ({ package: packageName }) => {
+    withMcpRateLimit(ctx, async ({ package: packageName }) => {
       try {
         const profile = await buildPyPICommitmentProfile(packageName);
 
@@ -3080,7 +3218,7 @@ Examples: "langchain", "litellm", "openai", "anthropic", "requests", "fastapi", 
         };
       }
     }
-  );
+  ));
 
   // Tool: lookup_cargo_crate
   mcp.tool(
@@ -3098,7 +3236,7 @@ Examples: "serde", "tokio", "reqwest", "clap", "rand"`,
           'Crate name on crates.io. Examples: "serde", "tokio", "reqwest", "clap". Case-insensitive.'
         ),
     },
-    async ({ crate: crateName }) => {
+    withMcpRateLimit(ctx, async ({ crate: crateName }) => {
       try {
         const profile = await buildCargoCommitmentProfile(crateName);
 
@@ -3150,7 +3288,7 @@ Examples: "serde", "tokio", "reqwest", "clap", "rand"`,
         };
       }
     }
-  );
+  ));
 
   // Tool: lookup_go_module
   mcp.tool(
@@ -3168,7 +3306,7 @@ Examples: "github.com/gin-gonic/gin", "golang.org/x/crypto", "github.com/spf13/c
           'Full Go module path. Must include the host. Examples: "github.com/gin-gonic/gin", "golang.org/x/net", "k8s.io/client-go", "gopkg.in/yaml.v3". Case-sensitive (preserves capitalization in path).'
         ),
     },
-    async ({ module: modulePath }) => {
+    withMcpRateLimit(ctx, async ({ module: modulePath }) => {
       try {
         const profile = await buildGolangCommitmentProfile(modulePath);
 
@@ -3222,7 +3360,7 @@ Examples: "github.com/gin-gonic/gin", "golang.org/x/crypto", "github.com/spf13/c
         };
       }
     }
-  );
+  ));
 
   // Tool: audit_dependencies
   mcp.tool(
@@ -3254,7 +3392,7 @@ Examples: score all deps in a project, compare two similar packages, identify ab
           'Package ecosystem. "auto" detects by naming convention (Python-style = pypi, otherwise npm). Force "npm", "pypi", "cargo", or "golang" to override. Go modules require full path (host/owner/repo) — use "golang".'
         ),
     },
-    async ({ packages, ecosystem }) => {
+    withMcpRateLimit(ctx, async ({ packages, ecosystem }) => {
       const MAX_CONCURRENT = 5;
       const results: Array<{
         name: string;
@@ -3506,7 +3644,7 @@ Examples: score all deps in a project, compare two similar packages, identify ab
         ],
       };
     }
-  );
+  ));
 
   // Tool: audit_github_repo
   mcp.tool(
@@ -3534,7 +3672,7 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
           'GitHub repository to audit. Accepts: "owner/repo", "https://github.com/owner/repo", or any GitHub URL. Examples: "vercel/next.js", "https://github.com/langchain-ai/langchainjs"'
         ),
     },
-    async ({ repo: repoInput }) => {
+    withMcpRateLimit(ctx, async ({ repo: repoInput }) => {
       const parsed = parseGitHubRepo(repoInput);
       if (!parsed) {
         return {
@@ -3657,7 +3795,7 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
         ],
       };
     }
-  );
+  ));
 
   // Tool: audit_dependency_tree
   mcp.tool(
@@ -3695,7 +3833,7 @@ Use this when someone asks:
         .default(1)
         .describe('How deep to traverse. 1 = direct deps only (fast). 2 = also traverse deps of CRITICAL/HIGH packages (slower, reveals hidden risk). Default: 1'),
     },
-    async ({ package: pkg, depth }) => {
+    withMcpRateLimit(ctx, async ({ package: pkg, depth }) => {
       const safeDepth: 1 | 2 = depth >= 2 ? 2 : 1;
       const { nodes, edges, criticalTransitivePaths } = await buildNpmDepGraph(pkg.trim(), safeDepth);
 
@@ -3779,7 +3917,7 @@ Use this when someone asks:
         ],
       };
     }
-  );
+  ));
 
   return mcp;
 }
@@ -3824,10 +3962,31 @@ app.all("/mcp", async (c) => {
     headers.set("accept", fullAccept);
     targetReq = new Request(req, { headers });
   }
+  // Build the per-request MCP context: IP for rate-limit attribution + whether
+  // the client passed a valid API key (which bypasses the limit).
+  const ip =
+    c.req.header("CF-Connecting-IP") ||
+    c.req.header("X-Forwarded-For")?.split(",")[0]?.trim() ||
+    "unknown";
+
+  let hasApiKey = false;
+  const auth = c.req.header("Authorization");
+  if (auth?.startsWith("Bearer sk_commit_")) {
+    try {
+      const tokenHash = await sha256Hex(auth.slice(7));
+      const row = await c.env.DB.prepare(
+        `SELECT id FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL LIMIT 1`
+      ).bind(tokenHash).first<{ id: string }>();
+      hasApiKey = !!row;
+    } catch {
+      // fail open — anonymous treatment
+    }
+  }
+
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless
   });
-  const mcp = createMcpServer();
+  const mcp = createMcpServer({ env: c.env, ip, hasApiKey });
   await mcp.connect(transport);
   return transport.handleRequest(targetReq);
 });

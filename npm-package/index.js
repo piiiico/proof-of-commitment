@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.13.1
+ * proof-of-commitment CLI v1.14.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -286,7 +286,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.13.1 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.14.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -388,7 +388,8 @@ ${clr(c.bold, 'Provenance (npm):')}
 ${clr(c.bold, 'Score dimensions (npm/PyPI/Cargo):')} longevity · download momentum · release consistency · publisher depth · GitHub backing · provenance
 ${clr(c.bold, 'Score dimensions (Go):')} longevity · release consistency · maintainer depth · GitHub backing · stars
 
-${clr(c.bold, 'MCP:')} Add to Claude Desktop / Cursor for AI-assisted auditing — see homepage.
+${clr(c.bold, 'MCP:')} https://poc-backend.amdal-dev.workers.dev/mcp — connect from Claude Desktop / Cursor / Cline.
+       Free tier: 100 queries/IP/UTC day. Power users: API key for 200/day. ${clr(c.dim, '(Authorization: Bearer sk_commit_…)')}
 
 ${clr(c.bold, 'Web:')}  ${WEB}
   `);
