@@ -1,4 +1,4 @@
-name: Publish to npm
+name: Publish to npm + MCP Registry
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  publish:
+  publish-npm:
     name: Publish npm package with provenance
     runs-on: ubuntu-latest
     permissions:
@@ -41,3 +41,28 @@ jobs:
         # NODE_AUTH_TOKEN not needed — npm Trusted Publishing uses OIDC token directly
         # Configure at: npmjs.com → proof-of-commitment → Settings → Trusted Publishers
         # Repo: github.com/piiiico/proof-of-commitment, workflow: publish.yml
+
+  publish-mcp-registry:
+    name: Publish to MCP Registry
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for GitHub OIDC auth with MCP Registry
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mcp-publisher
+        run: |
+          curl -sL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/
+
+      - name: Authenticate with MCP Registry
+        run: mcp-publisher login github-oidc
+
+      - name: Validate server.json
+        run: mcp-publisher validate
+
+      - name: Publish to MCP Registry
+        run: mcp-publisher publish
