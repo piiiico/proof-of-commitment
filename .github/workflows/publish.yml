@@ -22,7 +22,20 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Check if version already published
+        working-directory: ./npm-package
+        run: |
+          VERSION=$(node -e "console.log(require('./package.json').version)")
+          if npm view "proof-of-commitment@${VERSION}" version 2>/dev/null | grep -q "${VERSION}"; then
+            echo "Version ${VERSION} already published on npm — skipping publish"
+            echo "SKIP_PUBLISH=true" >> $GITHUB_ENV
+          else
+            echo "Version ${VERSION} not yet published — will publish"
+            echo "SKIP_PUBLISH=false" >> $GITHUB_ENV
+          fi
+
       - name: Publish with provenance
+        if: env.SKIP_PUBLISH == 'false'
         working-directory: ./npm-package
         run: npm publish --provenance --access public
         # NODE_AUTH_TOKEN not needed — npm Trusted Publishing uses OIDC token directly
