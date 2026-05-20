@@ -2,12 +2,13 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.piiiico/proof-of-commitment",
   "title": "Commit — Supply Chain Risk Scoring",
-  "description": "Supply chain risk scoring for npm, PyPI, Cargo, and Go. Flags sole-maintainer packages.",
+  "description": "Supply chain risk scoring for npm, PyPI, Cargo, and Go. 9 tools. Behavioral signals.",
   "repository": {
     "url": "https://github.com/piiiico/proof-of-commitment",
     "source": "github"
   },
   "version": "1.14.3",
+  "websiteUrl": "https://getcommit.dev",
   "packages": [
     {
       "registryType": "npm",
