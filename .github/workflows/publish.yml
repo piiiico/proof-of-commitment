@@ -83,10 +83,21 @@ jobs:
           npm owner ls proof-of-commitment 2>&1 || true
           echo "::endgroup::"
 
-      - name: Publish with provenance
+      - name: Copy LICENSE into npm-package
+        if: env.SKIP_PUBLISH == 'false'
+        run: cp LICENSE npm-package/LICENSE
+
+      - name: Publish to npm
         if: env.SKIP_PUBLISH == 'false'
         working-directory: ./npm-package
-        run: npm publish --provenance --access public
+        run: |
+          # --provenance requires OIDC + granular token with provenance scope.
+          # Automation tokens cause E404 when combined with --provenance.
+          # Try with provenance first; fall back to plain publish.
+          npm publish --provenance --access public 2>&1 || {
+            echo "::warning::Provenance publish failed — retrying without --provenance"
+            npm publish --access public
+          }
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
