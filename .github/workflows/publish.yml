@@ -38,9 +38,8 @@ jobs:
         if: env.SKIP_PUBLISH == 'false'
         working-directory: ./npm-package
         run: npm publish --provenance --access public
-        # NODE_AUTH_TOKEN not needed — npm Trusted Publishing uses OIDC token directly
-        # Configure at: npmjs.com → proof-of-commitment → Settings → Trusted Publishers
-        # Repo: github.com/piiiico/proof-of-commitment, workflow: publish.yml
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-mcp-registry:
     name: Publish to MCP Registry
