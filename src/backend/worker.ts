@@ -455,10 +455,13 @@ app.use("/api/*", async (c, next) => {
 
   await next();
 
-  // Add X-RateLimit-* headers to all API responses
+  // Add X-RateLimit-* headers to all API responses.
+  // For anonymous: only set if the route hasn't already set its own
+  // route-specific headers (e.g. /api/audit sets AUDIT_HARD_LIMIT=100, not 200).
   const key = c.get("apiKey");
   const headers = rateLimitHeaders(key);
   for (const [k, v] of Object.entries(headers)) {
+    if (!key && c.res.headers.has(k)) continue; // preserve route-specific anonymous headers
     c.res.headers.set(k, v);
   }
 });
@@ -682,6 +685,42 @@ app.post("/api/audit", async (c) => {
     return c.json({ error: "'packages' array is required (max 20)" }, 400);
   }
 
+  // Per-IP daily rate limit for anonymous traffic. API key holders bypass
+  // (the /api/* middleware already attached them via c.get("apiKey")).
+  // Mirrors the MCP pattern shipped in v1.14.0 / commit 5751ea0 — same
+  // table shape, same threshold semantics, separate budget per channel.
+  // Computed AFTER body parsing so malformed requests don't burn a slot
+  // (matches MCP behavior).
+  const apiKeyCtx = c.get("apiKey");
+  let auditCount = 0;
+  let auditCta: string | null = null;
+  if (!apiKeyCtx) {
+    const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
+    auditCount = await bumpAuditCount(c.env, ip);
+
+    if (auditCount > AUDIT_HARD_LIMIT) {
+      return c.json(
+        {
+          error: "rate_limit_exceeded",
+          message: `Daily free audit limit reached (${auditCount}/${AUDIT_HARD_LIMIT}). Resets at 00:00 UTC. Get a free API key for higher limits (200/day): ${AUDIT_SIGNUP_URL}`,
+          upgrade_url: AUDIT_SIGNUP_URL,
+          limit: AUDIT_HARD_LIMIT,
+          count: auditCount,
+        },
+        429,
+        {
+          "X-RateLimit-Limit": String(AUDIT_HARD_LIMIT),
+          "X-RateLimit-Remaining": "0",
+          "X-RateLimit-Tier": "anonymous",
+        }
+      );
+    }
+
+    if (auditCount >= AUDIT_SOFT_CTA_AT) {
+      auditCta = auditCtaText(auditCount);
+    }
+  }
+
   const results: Array<{
     name: string;
     ecosystem: string;
@@ -771,7 +810,21 @@ app.post("/api/audit", async (c) => {
   }
 
   results.sort((a, b) => (a.score ?? -1) - (b.score ?? -1));
-  return c.json({ count: results.length, results });
+  // _cta is a future-CLI-readable hint (current v1.14.0 ignores unknown
+  // fields). The advisory headers tell scripts the budget remaining.
+  const headers: Record<string, string> = {};
+  if (!apiKeyCtx) {
+    headers["X-RateLimit-Limit"] = String(AUDIT_HARD_LIMIT);
+    headers["X-RateLimit-Remaining"] = String(Math.max(0, AUDIT_HARD_LIMIT - auditCount));
+    headers["X-RateLimit-Tier"] = "anonymous";
+  }
+  return c.json(
+    auditCta
+      ? { count: results.length, results, _cta: auditCta }
+      : { count: results.length, results },
+    200,
+    headers
+  );
 });
 
 /**
@@ -2182,6 +2235,17 @@ const MCP_HARD_LIMIT = 100;     // beyond → 429-style block
 const MCP_SIGNUP_URL =
   "https://getcommit.dev/get-started?ref=mcp-cli";
 
+// /api/audit per-IP daily rate-limit thresholds. Same shape as MCP — mirroring
+// the proven pattern (5751ea0). Closes the silent-leak equivalent for /api/audit:
+// pre-this, anonymous CLI/script users could fire unlimited calls. Now they
+// see escalating CTA pressure and a hard cap at 100/IP/UTC-day. API key
+// holders bypass entirely. See /workspace/commit/conversion-gap-diagnosis-2026-05-20.md.
+const AUDIT_SOFT_CTA_AT = 41;
+const AUDIT_STRONG_CTA_AT = 81;
+const AUDIT_HARD_LIMIT = 100;
+const AUDIT_SIGNUP_URL =
+  "https://getcommit.dev/get-started?ref=audit-cli";
+
 /**
  * MCP traffic + organic-key aggregations used by /api/keys/stats. Exported
  * (not just internal) so test/keys-stats.test.ts can drive them against a
@@ -2192,6 +2256,12 @@ export const MCP_TRAFFIC_THRESHOLDS = {
   soft_cta: MCP_SOFT_CTA_AT,
   strong_cta: MCP_STRONG_CTA_AT,
   hard_limit: MCP_HARD_LIMIT,
+} as const;
+
+export const AUDIT_TRAFFIC_THRESHOLDS = {
+  soft_cta: AUDIT_SOFT_CTA_AT,
+  strong_cta: AUDIT_STRONG_CTA_AT,
+  hard_limit: AUDIT_HARD_LIMIT,
 } as const;
 
 export const DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS =
@@ -2354,6 +2424,89 @@ export async function buildMcpTrafficStats(db: D1Database): Promise<McpTrafficSt
 }
 
 /**
+ * Aggregate the audit_rate_limits table into today + last_7d traffic stats.
+ * Same shape as buildMcpTrafficStats — mirror table, separate counters.
+ */
+export async function buildAuditTrafficStats(db: D1Database): Promise<McpTrafficStats> {
+  const today = new Date().toISOString().slice(0, 10);
+  const sevenDaysAgo = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+
+  const todayRow = await db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(count), 0) as calls,
+         COUNT(DISTINCT ip) as unique_ips,
+         COUNT(CASE WHEN count >= ? THEN 1 END) as ips_at_soft_cta,
+         COUNT(CASE WHEN count >= ? THEN 1 END) as ips_at_strong_cta,
+         COUNT(CASE WHEN count >= ? THEN 1 END) as ips_at_hard_limit
+       FROM audit_rate_limits
+       WHERE date = ?`
+    )
+    .bind(AUDIT_SOFT_CTA_AT, AUDIT_STRONG_CTA_AT, AUDIT_HARD_LIMIT, today)
+    .first<{
+      calls: number;
+      unique_ips: number;
+      ips_at_soft_cta: number;
+      ips_at_strong_cta: number;
+      ips_at_hard_limit: number;
+    }>();
+
+  const dailyRows = await db
+    .prepare(
+      `SELECT
+         date,
+         COUNT(DISTINCT ip) as ips_today,
+         SUM(count) as calls_today
+       FROM audit_rate_limits
+       WHERE date >= ?
+       GROUP BY date`
+    )
+    .bind(sevenDaysAgo)
+    .all<{ date: string; ips_today: number; calls_today: number }>();
+
+  const dailyResults = dailyRows.results ?? [];
+  let totalCalls7d = 0;
+  let maxDailyCalls = 0;
+  let ipsSum = 0;
+  for (const r of dailyResults) {
+    totalCalls7d += r.calls_today ?? 0;
+    if ((r.calls_today ?? 0) > maxDailyCalls) maxDailyCalls = r.calls_today ?? 0;
+    ipsSum += r.ips_today ?? 0;
+  }
+  const avgIps = Math.round(ipsSum / 7);
+
+  const ipsHitSoftCtaRow = await db
+    .prepare(
+      `SELECT COUNT(DISTINCT ip) as count
+       FROM audit_rate_limits
+       WHERE date >= ? AND count >= ?`
+    )
+    .bind(sevenDaysAgo, AUDIT_SOFT_CTA_AT)
+    .first<{ count: number }>();
+
+  return {
+    today: {
+      date: today,
+      calls: todayRow?.calls ?? 0,
+      unique_ips: todayRow?.unique_ips ?? 0,
+      ips_at_soft_cta: todayRow?.ips_at_soft_cta ?? 0,
+      ips_at_strong_cta: todayRow?.ips_at_strong_cta ?? 0,
+      ips_at_hard_limit: todayRow?.ips_at_hard_limit ?? 0,
+    },
+    last_7d: {
+      from_date: sevenDaysAgo,
+      to_date: today,
+      calls: totalCalls7d,
+      unique_ips_per_day_avg: avgIps,
+      max_daily_calls: maxDailyCalls,
+      ips_that_hit_soft_cta_in_7d: ipsHitSoftCtaRow?.count ?? 0,
+    },
+  };
+}
+
+/**
  * Count `source='mcp-soft-cta'` keys split organic vs internal-test by the
  * `INTERNAL_TEST_EMAIL_PATTERNS` env var (comma-separated globs).
  * Doesn't throw — empty list on query failure.
@@ -2440,6 +2593,16 @@ app.get("/api/keys/stats", async (c) => {
     mcpTrafficError = err instanceof Error ? err.message : String(err);
   }
 
+  // /api/audit traffic. Same defensive try/catch — if the table is missing
+  // (migration hasn't run yet), surface the error string but keep serving.
+  let auditTraffic: McpTrafficStats | null = null;
+  let auditTrafficError: string | null = null;
+  try {
+    auditTraffic = await buildAuditTrafficStats(c.env.DB);
+  } catch (err) {
+    auditTrafficError = err instanceof Error ? err.message : String(err);
+  }
+
   const organicMcpKeys = await buildOrganicMcpKeyStats(
     c.env.DB,
     c.env.INTERNAL_TEST_EMAIL_PATTERNS
@@ -2461,6 +2624,9 @@ app.get("/api/keys/stats", async (c) => {
     mcp_traffic: mcpTraffic,
     mcp_traffic_error: mcpTrafficError,
     mcp_traffic_thresholds: MCP_TRAFFIC_THRESHOLDS,
+    audit_traffic: auditTraffic,
+    audit_traffic_error: auditTrafficError,
+    audit_traffic_thresholds: AUDIT_TRAFFIC_THRESHOLDS,
     organic_mcp_keys: organicMcpKeys,
   });
 });
@@ -3015,6 +3181,36 @@ function mcpHardBlockText(count: number): string {
     `Once you have a key, pass it as Authorization: Bearer sk_commit_…`,
     `(MCP clients: configure as a custom header on this server.)`,
   ].join("\n");
+}
+
+/**
+ * Increment today's /api/audit counter for this IP. Returns the post-increment
+ * count. Atomically performed in D1 via ON CONFLICT … RETURNING count.
+ * Same shape as bumpMcpCount — separate table so /audit and /mcp counters
+ * don't share a budget; a heavy MCP user shouldn't lock out CLI traffic.
+ */
+async function bumpAuditCount(env: Bindings, ip: string): Promise<number> {
+  const date = todayUtcDate();
+  try {
+    const row = await env.DB.prepare(
+      `INSERT INTO audit_rate_limits (ip, date, count) VALUES (?, ?, 1)
+       ON CONFLICT(ip, date) DO UPDATE SET count = count + 1
+       RETURNING count`
+    ).bind(ip, date).first<{ count: number }>();
+    return row?.count ?? 1;
+  } catch {
+    // Defensive: never break /api/audit on bookkeeping failure.
+    // Fail open with count=1 — worst case is the user skips the soft-CTA tier.
+    return 1;
+  }
+}
+
+function auditCtaText(count: number): string {
+  const remaining = Math.max(0, AUDIT_HARD_LIMIT - count);
+  if (count >= AUDIT_STRONG_CTA_AT) {
+    return `⚠ Commit free tier — ${count}/${AUDIT_HARD_LIMIT} audits used today (${remaining} left). Get a free API key for higher limits: ${AUDIT_SIGNUP_URL}`;
+  }
+  return `Commit free tier — ${count}/${AUDIT_HARD_LIMIT} audits used today. Heavy user? Free API key (200/day): ${AUDIT_SIGNUP_URL}`;
 }
 
 /**

@@ -20,6 +20,7 @@ import { describe, expect, test } from "bun:test";
 import { Database, type Statement } from "bun:sqlite";
 import {
   buildMcpTrafficStats,
+  buildAuditTrafficStats,
   buildOrganicMcpKeyStats,
   parseEmailPatterns,
   isInternalTestEmail,
@@ -63,6 +64,12 @@ function d1Shim(sqlite: Database): unknown {
 function setupSchema(db: Database) {
   db.exec(`
     CREATE TABLE mcp_rate_limits (
+      ip TEXT NOT NULL,
+      date TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (ip, date)
+    );
+    CREATE TABLE audit_rate_limits (
       ip TEXT NOT NULL,
       date TEXT NOT NULL,
       count INTEGER NOT NULL DEFAULT 0,
@@ -241,6 +248,76 @@ describe("buildMcpTrafficStats", () => {
     // No setupSchema — table doesn't exist
     const db = d1Shim(sqlite) as Parameters<typeof buildMcpTrafficStats>[0];
     await expect(buildMcpTrafficStats(db)).rejects.toThrow();
+  });
+});
+
+// ── buildAuditTrafficStats (mirrors MCP) ─────────────────────────────────
+
+describe("buildAuditTrafficStats", () => {
+  test("empty table → all zeros", async () => {
+    const sqlite = new Database(":memory:");
+    setupSchema(sqlite);
+    const db = d1Shim(sqlite) as Parameters<typeof buildAuditTrafficStats>[0];
+
+    const stats = await buildAuditTrafficStats(db);
+    expect(stats.today.calls).toBe(0);
+    expect(stats.today.unique_ips).toBe(0);
+    expect(stats.today.ips_at_soft_cta).toBe(0);
+    expect(stats.today.ips_at_strong_cta).toBe(0);
+    expect(stats.today.ips_at_hard_limit).toBe(0);
+    expect(stats.today.date).toBe(utcToday());
+  });
+
+  test("traffic at threshold edges — 40/41/81/100", async () => {
+    const sqlite = new Database(":memory:");
+    setupSchema(sqlite);
+    const today = utcToday();
+    const insert = sqlite.query(
+      `INSERT INTO audit_rate_limits (ip, date, count) VALUES (?, ?, ?)`
+    );
+    insert.run("ip-40", today, 40);   // below soft
+    insert.run("ip-41", today, 41);   // at soft (inclusive)
+    insert.run("ip-81", today, 81);   // at strong (inclusive)
+    insert.run("ip-100", today, 100); // at hard (inclusive of soft/strong/hard)
+    insert.run("ip-101", today, 101); // beyond hard
+
+    const db = d1Shim(sqlite) as Parameters<typeof buildAuditTrafficStats>[0];
+    const stats = await buildAuditTrafficStats(db);
+
+    expect(stats.today.calls).toBe(40 + 41 + 81 + 100 + 101);
+    expect(stats.today.unique_ips).toBe(5);
+    expect(stats.today.ips_at_soft_cta).toBe(4);     // 41, 81, 100, 101
+    expect(stats.today.ips_at_strong_cta).toBe(3);   // 81, 100, 101
+    expect(stats.today.ips_at_hard_limit).toBe(2);   // 100, 101
+  });
+
+  test("audit and mcp counters are independent", async () => {
+    // Per-channel budgets — heavy MCP user shouldn't lock out CLI, and v.v.
+    const sqlite = new Database(":memory:");
+    setupSchema(sqlite);
+    const today = utcToday();
+    sqlite
+      .query(`INSERT INTO mcp_rate_limits (ip, date, count) VALUES (?, ?, ?)`)
+      .run("shared-ip", today, 99); // heavy MCP
+    sqlite
+      .query(`INSERT INTO audit_rate_limits (ip, date, count) VALUES (?, ?, ?)`)
+      .run("shared-ip", today, 5); // light audit
+
+    const db = d1Shim(sqlite) as Parameters<typeof buildAuditTrafficStats>[0];
+    const auditStats = await buildAuditTrafficStats(db);
+    expect(auditStats.today.calls).toBe(5);
+    expect(auditStats.today.ips_at_soft_cta).toBe(0);
+
+    const mcpStats = await buildMcpTrafficStats(db);
+    expect(mcpStats.today.calls).toBe(99);
+    expect(mcpStats.today.ips_at_strong_cta).toBe(1);
+  });
+
+  test("missing audit_rate_limits table → throws (handler catches)", async () => {
+    const sqlite = new Database(":memory:");
+    // No setupSchema — table doesn't exist
+    const db = d1Shim(sqlite) as Parameters<typeof buildAuditTrafficStats>[0];
+    await expect(buildAuditTrafficStats(db)).rejects.toThrow();
   });
 });
 
