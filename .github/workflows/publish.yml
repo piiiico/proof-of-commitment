@@ -34,13 +34,13 @@ jobs:
             echo "SKIP_PUBLISH=false" >> $GITHUB_ENV
           fi
 
-      - name: Diagnose npm auth (token identity + write scope)
-        # Diagnostic step — verifies WHICH npm user the token authenticates as,
-        # and WHICH packages that user can publish to. Required because E404 on
-        # PUT /proof-of-commitment was returned even with NPM_TOKEN set: 404
-        # rather than 401/403 is npm's security-by-obscurity response when the
-        # authenticated identity lacks write access to the target package.
+      - name: Verify npm auth (fail-fast on bad token)
+        # Confirms WHICH npm user the token authenticates as and WHICH packages
+        # that user can write. Fails fast with a clear message if the token is
+        # invalid (401 whoami) or lacks write access to proof-of-commitment —
+        # so we don't waste a publish attempt + get a misleading 404 downstream.
         # Never echoes the token value — only length + npm_ prefix presence.
+        if: env.SKIP_PUBLISH == 'false'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -48,26 +48,39 @@ jobs:
 
           echo "::group::Token shape (no value leaked)"
           if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "ERROR: NODE_AUTH_TOKEN is empty — NPM_TOKEN secret may not be set or accessible"
-          else
-            echo "Token length: ${#NODE_AUTH_TOKEN}"
-            case "$NODE_AUTH_TOKEN" in
-              npm_*) echo "Token type: granular or automation (npm_* prefix)" ;;
-              *) echo "Token type: classic (no npm_ prefix)" ;;
-            esac
+            echo "::error::NPM_TOKEN secret is empty — set it at: Settings → Secrets and variables → Actions"
+            exit 1
           fi
+          echo "Token length: ${#NODE_AUTH_TOKEN}"
+          case "$NODE_AUTH_TOKEN" in
+            npm_*) echo "Token type: granular or automation (npm_* prefix)" ;;
+            *) echo "Token type: classic (no npm_ prefix)" ;;
+          esac
           echo "::endgroup::"
 
           echo "::group::npm whoami (who does this token authenticate as?)"
-          npm whoami 2>&1 || echo "(npm whoami failed — token invalid or registry unreachable)"
+          WHOAMI_OUT=$(npm whoami 2>&1) || WHOAMI_FAILED=1
+          echo "$WHOAMI_OUT"
           echo "::endgroup::"
+
+          if [ -n "$WHOAMI_FAILED" ]; then
+            echo "::error::NPM_TOKEN is invalid (whoami returned non-200). Regenerate at https://www.npmjs.com/settings/<user>/tokens with publish permission on proof-of-commitment, then update the NPM_TOKEN repo secret."
+            exit 1
+          fi
 
           echo "::group::npm access list packages (which packages can this token write?)"
-          npm access list packages 2>&1 | head -50 || echo "(npm access list packages failed)"
+          ACCESS_OUT=$(npm access list packages 2>&1 | head -50) || true
+          echo "$ACCESS_OUT"
           echo "::endgroup::"
 
-          echo "::group::Target package owners (does the token's user appear here?)"
-          npm owner ls proof-of-commitment 2>&1 || echo "(npm owner ls failed)"
+          # Confirm the token can write proof-of-commitment specifically.
+          # Output format: "proof-of-commitment: read-write" (or read-only).
+          if ! echo "$ACCESS_OUT" | grep -qE "proof-of-commitment.*read-write"; then
+            echo "::warning::Token does not show 'proof-of-commitment: read-write' — publish may 404. Verify the token's package scope and the user's maintainer role."
+          fi
+
+          echo "::group::Target package owners"
+          npm owner ls proof-of-commitment 2>&1 || true
           echo "::endgroup::"
 
       - name: Publish with provenance
