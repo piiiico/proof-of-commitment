@@ -34,6 +34,42 @@ jobs:
             echo "SKIP_PUBLISH=false" >> $GITHUB_ENV
           fi
 
+      - name: Diagnose npm auth (token identity + write scope)
+        # Diagnostic step — verifies WHICH npm user the token authenticates as,
+        # and WHICH packages that user can publish to. Required because E404 on
+        # PUT /proof-of-commitment was returned even with NPM_TOKEN set: 404
+        # rather than 401/403 is npm's security-by-obscurity response when the
+        # authenticated identity lacks write access to the target package.
+        # Never echoes the token value — only length + npm_ prefix presence.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set +x
+
+          echo "::group::Token shape (no value leaked)"
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "ERROR: NODE_AUTH_TOKEN is empty — NPM_TOKEN secret may not be set or accessible"
+          else
+            echo "Token length: ${#NODE_AUTH_TOKEN}"
+            case "$NODE_AUTH_TOKEN" in
+              npm_*) echo "Token type: granular or automation (npm_* prefix)" ;;
+              *) echo "Token type: classic (no npm_ prefix)" ;;
+            esac
+          fi
+          echo "::endgroup::"
+
+          echo "::group::npm whoami (who does this token authenticate as?)"
+          npm whoami 2>&1 || echo "(npm whoami failed — token invalid or registry unreachable)"
+          echo "::endgroup::"
+
+          echo "::group::npm access list packages (which packages can this token write?)"
+          npm access list packages 2>&1 | head -50 || echo "(npm access list packages failed)"
+          echo "::endgroup::"
+
+          echo "::group::Target package owners (does the token's user appear here?)"
+          npm owner ls proof-of-commitment 2>&1 || echo "(npm owner ls failed)"
+          echo "::endgroup::"
+
       - name: Publish with provenance
         if: env.SKIP_PUBLISH == 'false'
         working-directory: ./npm-package
