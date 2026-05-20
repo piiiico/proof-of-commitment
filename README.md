@@ -23,6 +23,50 @@ They won't appear in your `package.json` either — but these are in almost ever
 
 Behavioral signals surface this. Stars and READMEs don't.
 
+## Quick install (MCP)
+
+No login required. Add to any MCP-compatible AI tool and start querying supply chain risk.
+
+**Claude Desktop**
+
+Open `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS ([config file reference](https://modelcontextprotocol.io/quickstart/user)) or `%APPDATA%\Claude\claude_desktop_config.json` on Windows, then add:
+
+```json
+{
+  "mcpServers": {
+    "commit": {
+      "type": "streamable-http",
+      "url": "https://poc-backend.amdal-dev.workers.dev/mcp"
+    }
+  }
+}
+```
+
+Restart Claude Desktop. A tool icon appears in the chat input — ask it to audit your `package.json`.
+
+**Cursor**
+
+Open `~/.cursor/mcp.json` ([Cursor MCP docs](https://cursor.com/docs/mcp)) and add:
+
+```json
+{
+  "mcpServers": {
+    "commit": {
+      "type": "streamable-http",
+      "url": "https://poc-backend.amdal-dev.workers.dev/mcp"
+    }
+  }
+}
+```
+
+**Smithery** (once indexed)
+
+```bash
+npx -y @smithery/cli install proof-of-commitment --client claude
+```
+
+---
+
 ## Try it now
 
 **Terminal (zero install):**
