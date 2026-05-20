@@ -12,7 +12,7 @@
     {
       "registryType": "npm",
       "identifier": "proof-of-commitment",
-      "version": "1.14.3",
+      "version": "1.14.0",
       "transport": {
         "type": "stdio"
       }
