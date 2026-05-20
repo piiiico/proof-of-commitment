@@ -165,6 +165,10 @@ type Bindings = {
   STRIPE_PRICE_PRO?: string;       // Stripe Price ID for Pro ($29/mo recurring)
   STRIPE_PRICE_DEV?: string;       // Stripe Price ID for Developer ($15/mo recurring)
   ADMIN_SECRET?: string;
+  // Comma-separated glob patterns (use `*` for wildcard) of email addresses
+  // that count as internal test signups, not organic ones. Used by
+  // /api/keys/stats to classify source=mcp-soft-cta keys.
+  INTERNAL_TEST_EMAIL_PATTERNS?: string;
 };
 
 // API key context attached to requests that use Bearer authentication
@@ -2165,10 +2169,236 @@ app.get("/api/keys/usage", async (c) => {
   });
 });
 
+// MCP rate-limit thresholds. Declared here (not next to the MCP server
+// definition further down) so MCP_TRAFFIC_THRESHOLDS below can reference them
+// at module-init time without TDZ. The MCP server reuses these same constants.
+const MCP_SOFT_CTA_AT = 41;     // first call to include CTA
+const MCP_STRONG_CTA_AT = 81;   // upgrade message tone
+const MCP_HARD_LIMIT = 100;     // beyond → 429-style block
+// Points at the real signup form. /signup doesn't exist on getcommit.dev — the
+// SPA fallback serves the homepage, so users following the CTA landed on the
+// marketing page with no form. /get-started is the actual email-capture page
+// and reads `ref=mcp-cli` to set source=mcp-soft-cta on the created key.
+const MCP_SIGNUP_URL =
+  "https://getcommit.dev/get-started?ref=mcp-cli";
+
+/**
+ * MCP traffic + organic-key aggregations used by /api/keys/stats. Exported
+ * (not just internal) so test/keys-stats.test.ts can drive them against a
+ * bun:sqlite-backed D1 shim without booting the worker. The shape returned by
+ * `buildMcpTrafficStats` is the wire shape — keep stable, callers depend on it.
+ */
+export const MCP_TRAFFIC_THRESHOLDS = {
+  soft_cta: MCP_SOFT_CTA_AT,
+  strong_cta: MCP_STRONG_CTA_AT,
+  hard_limit: MCP_HARD_LIMIT,
+} as const;
+
+export const DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS =
+  "pico+*@*,hawkaa+*@*,test-evaluator-probe@example.com";
+
+export type McpTrafficStats = {
+  today: {
+    date: string;
+    calls: number;
+    unique_ips: number;
+    ips_at_soft_cta: number;
+    ips_at_strong_cta: number;
+    ips_at_hard_limit: number;
+  };
+  last_7d: {
+    from_date: string;
+    to_date: string;
+    calls: number;
+    unique_ips_per_day_avg: number;
+    max_daily_calls: number;
+    ips_that_hit_soft_cta_in_7d: number;
+  };
+};
+
+export type OrganicMcpKeyStats = {
+  total_with_source_mcp: number;
+  organic: number;
+  internal_test: number;
+  internal_test_patterns: string[];
+};
+
+/**
+ * Convert a comma-separated list of glob patterns ("pico+*@*,foo@bar.com")
+ * into compiled case-insensitive anchored regexes. Empty/whitespace patterns
+ * are dropped. Regex metacharacters in the glob are escaped before `*` →
+ * `.*` substitution so an attacker-controlled pattern can't blow up matching.
+ */
+export function parseEmailPatterns(raw: string | undefined | null): RegExp[] {
+  const src = (raw ?? "").trim();
+  if (!src) return [];
+  return src
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+    .map((pattern) => {
+      const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+      const wildcarded = escaped.replace(/\*/g, ".*");
+      return new RegExp(`^${wildcarded}$`, "i");
+    });
+}
+
+/** True if `email` matches any of the compiled patterns. */
+export function isInternalTestEmail(email: string, patterns: RegExp[]): boolean {
+  for (const re of patterns) {
+    if (re.test(email)) return true;
+  }
+  return false;
+}
+
+/**
+ * Aggregate the mcp_rate_limits table into today + last_7d traffic stats.
+ * Three D1 queries, all aggregations done server-side; no per-row work.
+ * If the table is missing or any query errors, throws — caller wraps in
+ * try/catch so /api/keys/stats stays 200 even when MCP metrics break.
+ */
+export async function buildMcpTrafficStats(db: D1Database): Promise<McpTrafficStats> {
+  // UTC date format must match what bumpMcpCount writes: YYYY-MM-DD (see
+  // todayUtcDate() above — `new Date().toISOString().slice(0, 10)`). SQLite's
+  // `date('now')` also produces YYYY-MM-DD in UTC, so they line up.
+  const today = new Date().toISOString().slice(0, 10);
+  // 7-day window inclusive of today: today + 6 prior days. SQLite arithmetic
+  // is on the ISO date string, so '-6 days' from a YYYY-MM-DD string works.
+  const sevenDaysAgo = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+
+  // 1. Today: single-query aggregation across today's rows.
+  const todayRow = await db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(count), 0) as calls,
+         COUNT(DISTINCT ip) as unique_ips,
+         COUNT(CASE WHEN count >= ? THEN 1 END) as ips_at_soft_cta,
+         COUNT(CASE WHEN count >= ? THEN 1 END) as ips_at_strong_cta,
+         COUNT(CASE WHEN count >= ? THEN 1 END) as ips_at_hard_limit
+       FROM mcp_rate_limits
+       WHERE date = ?`
+    )
+    .bind(MCP_SOFT_CTA_AT, MCP_STRONG_CTA_AT, MCP_HARD_LIMIT, today)
+    .first<{
+      calls: number;
+      unique_ips: number;
+      ips_at_soft_cta: number;
+      ips_at_strong_cta: number;
+      ips_at_hard_limit: number;
+    }>();
+
+  // 2. Last 7d, per-day breakdown — needed for unique_ips_per_day_avg and
+  //    max_daily_calls. Small result set (≤7 rows), aggregated in JS.
+  const dailyRows = await db
+    .prepare(
+      `SELECT
+         date,
+         COUNT(DISTINCT ip) as ips_today,
+         SUM(count) as calls_today
+       FROM mcp_rate_limits
+       WHERE date >= ?
+       GROUP BY date`
+    )
+    .bind(sevenDaysAgo)
+    .all<{ date: string; ips_today: number; calls_today: number }>();
+
+  const dailyResults = dailyRows.results ?? [];
+  let totalCalls7d = 0;
+  let maxDailyCalls = 0;
+  let ipsSum = 0;
+  for (const r of dailyResults) {
+    totalCalls7d += r.calls_today ?? 0;
+    if ((r.calls_today ?? 0) > maxDailyCalls) maxDailyCalls = r.calls_today ?? 0;
+    ipsSum += r.ips_today ?? 0;
+  }
+  // Avg over the calendar window (7 days), not just observed days — silent
+  // days are zero, not missing. This makes "did anyone hit us this week" a
+  // single readable number.
+  const avgIps = Math.round(ipsSum / 7);
+
+  // 3. Distinct IPs across the 7d window that ever crossed the soft-CTA bar.
+  //    Cannot derive from daily query because an IP at count=20 on Mon and
+  //    count=22 on Tue never hits 41 on any single day.
+  //    Note: this counts IPs where any single day's count ≥ soft-CTA — matches
+  //    the spec ("hit soft CTA") since the CTA fires per-day, not on rolling
+  //    7d totals.
+  const ipsHitSoftCtaRow = await db
+    .prepare(
+      `SELECT COUNT(DISTINCT ip) as count
+       FROM mcp_rate_limits
+       WHERE date >= ? AND count >= ?`
+    )
+    .bind(sevenDaysAgo, MCP_SOFT_CTA_AT)
+    .first<{ count: number }>();
+
+  return {
+    today: {
+      date: today,
+      calls: todayRow?.calls ?? 0,
+      unique_ips: todayRow?.unique_ips ?? 0,
+      ips_at_soft_cta: todayRow?.ips_at_soft_cta ?? 0,
+      ips_at_strong_cta: todayRow?.ips_at_strong_cta ?? 0,
+      ips_at_hard_limit: todayRow?.ips_at_hard_limit ?? 0,
+    },
+    last_7d: {
+      from_date: sevenDaysAgo,
+      to_date: today,
+      calls: totalCalls7d,
+      unique_ips_per_day_avg: avgIps,
+      max_daily_calls: maxDailyCalls,
+      ips_that_hit_soft_cta_in_7d: ipsHitSoftCtaRow?.count ?? 0,
+    },
+  };
+}
+
+/**
+ * Count `source='mcp-soft-cta'` keys split organic vs internal-test by the
+ * `INTERNAL_TEST_EMAIL_PATTERNS` env var (comma-separated globs).
+ * Doesn't throw — empty list on query failure.
+ */
+export async function buildOrganicMcpKeyStats(
+  db: D1Database,
+  patternsRaw: string | undefined
+): Promise<OrganicMcpKeyStats> {
+  const patternList = (patternsRaw ?? DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS)
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  const compiled = parseEmailPatterns(patternsRaw ?? DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS);
+
+  let emails: string[] = [];
+  try {
+    const rows = await db
+      .prepare(
+        `SELECT email FROM api_keys
+         WHERE revoked_at IS NULL AND source = 'mcp-soft-cta'`
+      )
+      .all<{ email: string }>();
+    emails = (rows.results ?? []).map((r) => r.email);
+  } catch {
+    emails = [];
+  }
+
+  let internal = 0;
+  for (const email of emails) {
+    if (isInternalTestEmail(email, compiled)) internal++;
+  }
+  const total = emails.length;
+  return {
+    total_with_source_mcp: total,
+    organic: total - internal,
+    internal_test: internal,
+    internal_test_patterns: patternList,
+  };
+}
+
 /**
  * GET /api/keys/stats
  * Admin endpoint — requires X-Admin-Secret header matching ADMIN_SECRET env var.
- * Returns aggregate signup stats for measuring Show HN / launch conversion.
+ * Returns aggregate signup stats for measuring Show HN / launch conversion,
+ * plus MCP traffic + organic-key breakdown (v1.14 conversion telemetry).
  */
 app.get("/api/keys/stats", async (c) => {
   const adminSecret = c.env.ADMIN_SECRET;
@@ -2197,6 +2427,24 @@ app.get("/api/keys/stats", async (c) => {
     sourceBreakdown[row.source] = row.count;
   }
 
+  // MCP traffic + organic-key splits. Wrapped in try/catch so an aggregation
+  // bug or missing mcp_rate_limits table never breaks the endpoint. If MCP
+  // metrics fail, mcp_traffic is returned as null with an error string for
+  // debuggability — the endpoint still serves source_breakdown / recent /
+  // counts so the rest of the admin dashboard stays useful.
+  let mcpTraffic: McpTrafficStats | null = null;
+  let mcpTrafficError: string | null = null;
+  try {
+    mcpTraffic = await buildMcpTrafficStats(c.env.DB);
+  } catch (err) {
+    mcpTrafficError = err instanceof Error ? err.message : String(err);
+  }
+
+  const organicMcpKeys = await buildOrganicMcpKeyStats(
+    c.env.DB,
+    c.env.INTERNAL_TEST_EMAIL_PATTERNS
+  );
+
   return c.json({
     total_keys: totalRow?.count ?? 0,
     keys_today: todayRow?.count ?? 0,
@@ -2210,6 +2458,10 @@ app.get("/api/keys/stats", async (c) => {
       source: r.source,
       created_at: r.created_at,
     })),
+    mcp_traffic: mcpTraffic,
+    mcp_traffic_error: mcpTrafficError,
+    mcp_traffic_thresholds: MCP_TRAFFIC_THRESHOLDS,
+    organic_mcp_keys: organicMcpKeys,
   });
 });
 
@@ -2713,11 +2965,9 @@ app.post("/api/admin/trigger-pro-scan", async (c) => {
 //   101+    hard block
 // API key holders bypass.
 
-const MCP_SOFT_CTA_AT = 41;     // first call to include CTA
-const MCP_STRONG_CTA_AT = 81;   // upgrade message tone
-const MCP_HARD_LIMIT = 100;     // beyond → 429-style block
-const MCP_SIGNUP_URL =
-  "https://getcommit.dev/signup?ref=mcp-cli";
+// MCP rate-limit thresholds + signup URL are declared earlier in the file
+// (next to /api/keys/stats so MCP_TRAFFIC_THRESHOLDS can reference them at
+// module-init without hitting the temporal dead zone). Reused below.
 
 type McpToolResult = {
   content: Array<{ type: "text"; text: string }>;

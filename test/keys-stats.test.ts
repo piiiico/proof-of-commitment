@@ -1,0 +1,347 @@
+/**
+ * Tests for /api/keys/stats aggregation helpers.
+ *
+ * Why these helpers and not the HTTP handler?
+ *   The handler is thin glue: admin-secret auth + Promise.all of the helpers
+ *   + json shape. The risk lives in the SQL aggregations and the email-pattern
+ *   matching — that's what these tests cover.
+ *
+ *   buildMcpTrafficStats and buildOrganicMcpKeyStats take a D1Database. We
+ *   drive them through a tiny bun:sqlite-backed shim that implements the
+ *   methods the helpers actually use (prepare → first / all / bind). The
+ *   shim is intentionally minimal — it's NOT a full D1 emulator. If a future
+ *   change in the helpers reaches for env.DB.batch or .exec, the shim will
+ *   throw, which is the test catching scope creep, not a test bug.
+ *
+ * Run: `bun test test/keys-stats.test.ts` from the project root.
+ */
+
+import { describe, expect, test } from "bun:test";
+import { Database, type Statement } from "bun:sqlite";
+import {
+  buildMcpTrafficStats,
+  buildOrganicMcpKeyStats,
+  parseEmailPatterns,
+  isInternalTestEmail,
+  DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS,
+} from "../src/backend/worker.ts";
+
+// ── Minimal D1 shim over bun:sqlite ──────────────────────────────────────
+// D1 surface used by the helpers:
+//   db.prepare(sql).bind(...).first<T>()
+//   db.prepare(sql).bind(...).all<T>() → { results: T[] }
+//
+// bun:sqlite returns plain rows from .get()/.all(). We adapt.
+
+function d1Shim(sqlite: Database): unknown {
+  function prepare(sql: string) {
+    let stmt: Statement | null = null;
+    let boundArgs: unknown[] = [];
+    const lazyStmt = () => {
+      if (stmt === null) stmt = sqlite.query(sql);
+      return stmt;
+    };
+    const api = {
+      bind(...args: unknown[]) {
+        boundArgs = args;
+        return api;
+      },
+      async first<T = unknown>(): Promise<T | null> {
+        const row = lazyStmt().get(...(boundArgs as never[])) as T | null;
+        return row ?? null;
+      },
+      async all<T = unknown>(): Promise<{ results: T[] }> {
+        const rows = lazyStmt().all(...(boundArgs as never[])) as T[];
+        return { results: rows };
+      },
+    };
+    return api;
+  }
+  return { prepare };
+}
+
+function setupSchema(db: Database) {
+  db.exec(`
+    CREATE TABLE mcp_rate_limits (
+      ip TEXT NOT NULL,
+      date TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (ip, date)
+    );
+    CREATE TABLE api_keys (
+      id TEXT PRIMARY KEY,
+      key_prefix TEXT,
+      email TEXT,
+      tier TEXT,
+      source TEXT NOT NULL DEFAULT 'web',
+      revoked_at TEXT,
+      created_at TEXT
+    );
+  `);
+}
+
+function utcToday(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function utcOffset(days: number): string {
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+// ── parseEmailPatterns / isInternalTestEmail ─────────────────────────────
+
+describe("parseEmailPatterns", () => {
+  test("empty input → empty array", () => {
+    expect(parseEmailPatterns("")).toEqual([]);
+    expect(parseEmailPatterns(undefined)).toEqual([]);
+    expect(parseEmailPatterns(null)).toEqual([]);
+    expect(parseEmailPatterns("   ")).toEqual([]);
+  });
+
+  test("single literal pattern", () => {
+    const pats = parseEmailPatterns("foo@bar.com");
+    expect(pats).toHaveLength(1);
+    expect(pats[0]!.test("foo@bar.com")).toBe(true);
+    expect(pats[0]!.test("FOO@BAR.COM")).toBe(true); // case-insensitive
+    expect(pats[0]!.test("foo@bar.co")).toBe(false);
+  });
+
+  test("glob wildcard matches", () => {
+    const pats = parseEmailPatterns("pico+*@*");
+    expect(pats[0]!.test("pico+test@amdal.dev")).toBe(true);
+    expect(pats[0]!.test("pico+anything@anything.co")).toBe(true);
+    expect(pats[0]!.test("pico@amdal.dev")).toBe(false); // no `+`
+    expect(pats[0]!.test("foo+bar@baz.com")).toBe(false);
+  });
+
+  test("comma-separated multiple patterns", () => {
+    const pats = parseEmailPatterns("pico+*@*,hawkaa+*@*,test@example.com");
+    expect(pats).toHaveLength(3);
+    expect(isInternalTestEmail("pico+x@y.z", pats)).toBe(true);
+    expect(isInternalTestEmail("hawkaa+probe@example.com", pats)).toBe(true);
+    expect(isInternalTestEmail("test@example.com", pats)).toBe(true);
+    expect(isInternalTestEmail("stranger@example.com", pats)).toBe(false);
+  });
+
+  test("regex metacharacters in pattern are escaped, not interpreted", () => {
+    // If `.` were treated as regex, `a.b@c.d` would match `axb@cyd`. It must not.
+    const pats = parseEmailPatterns("a.b@c.d");
+    expect(pats[0]!.test("a.b@c.d")).toBe(true);
+    expect(pats[0]!.test("axb@cyd")).toBe(false);
+  });
+});
+
+// ── buildMcpTrafficStats ─────────────────────────────────────────────────
+
+describe("buildMcpTrafficStats", () => {
+  test("empty table → all zeros", async () => {
+    const sqlite = new Database(":memory:");
+    setupSchema(sqlite);
+    const db = d1Shim(sqlite) as Parameters<typeof buildMcpTrafficStats>[0];
+
+    const stats = await buildMcpTrafficStats(db);
+    expect(stats.today.calls).toBe(0);
+    expect(stats.today.unique_ips).toBe(0);
+    expect(stats.today.ips_at_soft_cta).toBe(0);
+    expect(stats.today.ips_at_strong_cta).toBe(0);
+    expect(stats.today.ips_at_hard_limit).toBe(0);
+    expect(stats.last_7d.calls).toBe(0);
+    expect(stats.last_7d.unique_ips_per_day_avg).toBe(0);
+    expect(stats.last_7d.max_daily_calls).toBe(0);
+    expect(stats.last_7d.ips_that_hit_soft_cta_in_7d).toBe(0);
+    expect(stats.today.date).toBe(utcToday());
+  });
+
+  test("single IP at count=42 → ips_at_soft_cta=1, not strong/hard", async () => {
+    const sqlite = new Database(":memory:");
+    setupSchema(sqlite);
+    sqlite
+      .query(`INSERT INTO mcp_rate_limits (ip, date, count) VALUES (?, ?, ?)`)
+      .run("1.2.3.4", utcToday(), 42);
+
+    const db = d1Shim(sqlite) as Parameters<typeof buildMcpTrafficStats>[0];
+    const stats = await buildMcpTrafficStats(db);
+
+    expect(stats.today.calls).toBe(42);
+    expect(stats.today.unique_ips).toBe(1);
+    expect(stats.today.ips_at_soft_cta).toBe(1);
+    expect(stats.today.ips_at_strong_cta).toBe(0);
+    expect(stats.today.ips_at_hard_limit).toBe(0);
+  });
+
+  test("threshold edges — 40/41/81/100", async () => {
+    const sqlite = new Database(":memory:");
+    setupSchema(sqlite);
+    const today = utcToday();
+    const insert = sqlite.query(
+      `INSERT INTO mcp_rate_limits (ip, date, count) VALUES (?, ?, ?)`
+    );
+    insert.run("ip-40", today, 40);  // below soft CTA
+    insert.run("ip-41", today, 41);  // at soft CTA (inclusive)
+    insert.run("ip-80", today, 80);  // soft only
+    insert.run("ip-81", today, 81);  // at strong CTA (inclusive)
+    insert.run("ip-99", today, 99);  // strong only
+    insert.run("ip-100", today, 100); // at hard limit (inclusive)
+    insert.run("ip-150", today, 150); // past hard limit
+
+    const db = d1Shim(sqlite) as Parameters<typeof buildMcpTrafficStats>[0];
+    const stats = await buildMcpTrafficStats(db);
+
+    // soft CTA threshold (≥41): 41, 80, 81, 99, 100, 150 = 6 IPs
+    expect(stats.today.ips_at_soft_cta).toBe(6);
+    // strong CTA threshold (≥81): 81, 99, 100, 150 = 4 IPs
+    expect(stats.today.ips_at_strong_cta).toBe(4);
+    // hard limit threshold (≥100): 100, 150 = 2 IPs
+    expect(stats.today.ips_at_hard_limit).toBe(2);
+
+    expect(stats.today.unique_ips).toBe(7);
+    expect(stats.today.calls).toBe(40 + 41 + 80 + 81 + 99 + 100 + 150);
+  });
+
+  test("multi-day aggregates correctly in last_7d", async () => {
+    const sqlite = new Database(":memory:");
+    setupSchema(sqlite);
+    const insert = sqlite.query(
+      `INSERT INTO mcp_rate_limits (ip, date, count) VALUES (?, ?, ?)`
+    );
+    // Today and 5 prior days within window
+    insert.run("a", utcOffset(0), 10);
+    insert.run("b", utcOffset(0), 50);   // a soft-CTA-hitter today
+    insert.run("a", utcOffset(-1), 5);
+    insert.run("c", utcOffset(-1), 60);  // distinct soft-CTA hitter yesterday
+    insert.run("d", utcOffset(-3), 200); // max-daily candidate
+    // Outside the 7d window (8 days back) — must NOT count
+    insert.run("e", utcOffset(-8), 999);
+
+    const db = d1Shim(sqlite) as Parameters<typeof buildMcpTrafficStats>[0];
+    const stats = await buildMcpTrafficStats(db);
+
+    // Today: a + b = 60 calls, 2 unique IPs
+    expect(stats.today.calls).toBe(60);
+    expect(stats.today.unique_ips).toBe(2);
+    expect(stats.today.ips_at_soft_cta).toBe(1); // only b
+    // 7d totals exclude the 8-days-back row
+    expect(stats.last_7d.calls).toBe(10 + 50 + 5 + 60 + 200);
+    // max_daily_calls: 200 (day -3, single row)
+    expect(stats.last_7d.max_daily_calls).toBe(200);
+    // Distinct soft-CTA IPs: b (today, 50), c (-1, 60), d (-3, 200) = 3
+    expect(stats.last_7d.ips_that_hit_soft_cta_in_7d).toBe(3);
+    // unique_ips_per_day_avg over 7 days: 3 observed days have ips 2,2,1,
+    //   total ips_sum=5, divided by 7 calendar days → round(0.71...) = 1
+    expect(stats.last_7d.unique_ips_per_day_avg).toBe(1);
+    // Window boundaries
+    expect(stats.last_7d.to_date).toBe(utcToday());
+    expect(stats.last_7d.from_date).toBe(utcOffset(-6));
+  });
+
+  test("missing mcp_rate_limits table → throws (handler catches)", async () => {
+    const sqlite = new Database(":memory:");
+    // No setupSchema — table doesn't exist
+    const db = d1Shim(sqlite) as Parameters<typeof buildMcpTrafficStats>[0];
+    await expect(buildMcpTrafficStats(db)).rejects.toThrow();
+  });
+});
+
+// ── buildOrganicMcpKeyStats ──────────────────────────────────────────────
+
+describe("buildOrganicMcpKeyStats", () => {
+  test("no mcp-soft-cta keys → zeros", async () => {
+    const sqlite = new Database(":memory:");
+    setupSchema(sqlite);
+    sqlite
+      .query(`INSERT INTO api_keys (id, email, source) VALUES ('k1', 'web@user.com', 'web')`)
+      .run();
+    const db = d1Shim(sqlite) as Parameters<typeof buildOrganicMcpKeyStats>[0];
+    const stats = await buildOrganicMcpKeyStats(db, undefined);
+    expect(stats.total_with_source_mcp).toBe(0);
+    expect(stats.organic).toBe(0);
+    expect(stats.internal_test).toBe(0);
+  });
+
+  test("mix of internal + organic with default patterns", async () => {
+    const sqlite = new Database(":memory:");
+    setupSchema(sqlite);
+    const insert = sqlite.query(
+      `INSERT INTO api_keys (id, email, source) VALUES (?, ?, 'mcp-soft-cta')`
+    );
+    insert.run("k1", "pico+test1@amdal.dev");                // internal
+    insert.run("k2", "hawkaa+probe@example.com");             // internal
+    insert.run("k3", "test-evaluator-probe@example.com");    // internal (literal)
+    insert.run("k4", "real-user@stranger.com");              // organic
+    insert.run("k5", "another@gmail.com");                   // organic
+
+    const db = d1Shim(sqlite) as Parameters<typeof buildOrganicMcpKeyStats>[0];
+    const stats = await buildOrganicMcpKeyStats(db, undefined);
+
+    expect(stats.total_with_source_mcp).toBe(5);
+    expect(stats.internal_test).toBe(3);
+    expect(stats.organic).toBe(2);
+    expect(stats.internal_test_patterns).toEqual([
+      "pico+*@*",
+      "hawkaa+*@*",
+      "test-evaluator-probe@example.com",
+    ]);
+  });
+
+  test("custom patterns override defaults", async () => {
+    const sqlite = new Database(":memory:");
+    setupSchema(sqlite);
+    sqlite
+      .query(
+        `INSERT INTO api_keys (id, email, source) VALUES ('k1', 'pico+x@y.z', 'mcp-soft-cta')`
+      )
+      .run();
+    sqlite
+      .query(
+        `INSERT INTO api_keys (id, email, source) VALUES ('k2', 'special@brand.com', 'mcp-soft-cta')`
+      )
+      .run();
+
+    const db = d1Shim(sqlite) as Parameters<typeof buildOrganicMcpKeyStats>[0];
+    // Custom env var matches only special@brand.com — so pico+ is now ORGANIC.
+    const stats = await buildOrganicMcpKeyStats(db, "special@brand.com");
+    expect(stats.internal_test).toBe(1);
+    expect(stats.organic).toBe(1);
+    expect(stats.internal_test_patterns).toEqual(["special@brand.com"]);
+  });
+
+  test("revoked keys excluded", async () => {
+    const sqlite = new Database(":memory:");
+    setupSchema(sqlite);
+    sqlite
+      .query(
+        `INSERT INTO api_keys (id, email, source, revoked_at) VALUES ('k1', 'real@user.com', 'mcp-soft-cta', '2026-01-01T00:00:00Z')`
+      )
+      .run();
+    sqlite
+      .query(
+        `INSERT INTO api_keys (id, email, source) VALUES ('k2', 'other@user.com', 'mcp-soft-cta')`
+      )
+      .run();
+    const db = d1Shim(sqlite) as Parameters<typeof buildOrganicMcpKeyStats>[0];
+    const stats = await buildOrganicMcpKeyStats(db, undefined);
+    expect(stats.total_with_source_mcp).toBe(1); // k1 excluded
+    expect(stats.organic).toBe(1);
+  });
+
+  test("DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS matches wrangler.toml default", () => {
+    // Guardrail: the default constant in worker.ts and the default in
+    // wrangler.toml must stay in sync, otherwise a missing env var binding
+    // silently flips ALL internal keys into the "organic" bucket.
+    expect(DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS).toBe(
+      "pico+*@*,hawkaa+*@*,test-evaluator-probe@example.com"
+    );
+  });
+
+  test("missing api_keys table → empty stats, no throw", async () => {
+    const sqlite = new Database(":memory:");
+    // intentionally no setupSchema
+    const db = d1Shim(sqlite) as Parameters<typeof buildOrganicMcpKeyStats>[0];
+    const stats = await buildOrganicMcpKeyStats(db, undefined);
+    expect(stats.total_with_source_mcp).toBe(0);
+    expect(stats.organic).toBe(0);
+    expect(stats.internal_test).toBe(0);
+  });
+});
