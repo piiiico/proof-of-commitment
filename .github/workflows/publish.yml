@@ -103,6 +103,7 @@ jobs:
 
   publish-mcp-registry:
     name: Publish to MCP Registry
+    if: always()  # Run even if npm publish fails (uses OIDC, not npm token)
     needs: publish-npm
     runs-on: ubuntu-latest
     permissions:
