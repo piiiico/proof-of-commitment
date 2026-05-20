@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.14.0
+ * proof-of-commitment CLI v1.15.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -221,12 +221,15 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
  * into a single CLI prompt.
  */
 async function inlineSignup(results) {
-  // Only prompt in interactive TTY when CRITICAL packages found and no key saved
+  // Only prompt in interactive TTY when findings make monitoring relevant and no key saved
   if (!process.stdin.isTTY || !process.stdout.isTTY) return;
   const hasKey = !!process.env.COMMIT_API_KEY || _cachedHasKey;
   if (hasKey) return;
   const critPkgs = results.filter(r => hasCritical(r.riskFlags));
-  if (critPkgs.length === 0) return;
+  const lowScorePkgs = results.filter(r => typeof r.score === 'number' && r.score < 60);
+  // Gate: ≥1 CRITICAL, OR ≥2 packages with score<60, OR large scan (≥50 packages)
+  const shouldPrompt = critPkgs.length >= 1 || lowScorePkgs.length >= 2 || results.length >= 50;
+  if (!shouldPrompt) return;
 
   console.log(clr(c.dim, '  ─────────────────────────────────────────────'));
   console.log(clr(c.bold, '  🔔 Get alerts when these scores change?'));
@@ -286,7 +289,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.14.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.15.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -699,6 +702,7 @@ async function auditBatched(packages, ecosystem, { onProgress } = {}) {
   }
 
   let completed = 0;
+  let batchedCta = null;
   const results = await Promise.all(
     batches.map(async (batch) => {
       const res = await fetch(API, {
@@ -711,6 +715,7 @@ async function auditBatched(packages, ecosystem, { onProgress } = {}) {
         throw new Error(`API error ${res.status}: ${text}`);
       }
       const data = await res.json();
+      if (data._cta) batchedCta = data._cta;
       completed += batch.length;
       if (onProgress) onProgress(completed, packages.length);
       return data.results || [];
@@ -727,7 +732,7 @@ async function auditBatched(packages, ecosystem, { onProgress } = {}) {
     return (a.score || 100) - (b.score || 100);
   });
 
-  return all;
+  return { results: all, _cta: batchedCta };
 }
 
 /** Parse --fail-on=<level>. Returns one of 'critical' | 'risky' | 'none'. */
@@ -1292,7 +1297,7 @@ async function cmdReport(packages, ecosystem, { filePath, isLockfile, totalScann
       const data = await res.json();
       allResults = data.results || [];
     } else {
-      allResults = await auditBatched(packages, ecosystem);
+      allResults = (await auditBatched(packages, ecosystem)).results;
     }
   } catch (err) {
     console.error(`\nError: ${err.message}`);
@@ -1674,6 +1679,7 @@ async function main() {
   const t0 = Date.now();
 
   let allResults;
+  let apiCta = null;
 
   if (packages.length <= 20) {
     if (!jsonOutput) process.stdout.write(clr(c.dim, `Scoring ${packages.length} ${ecosystem} package${packages.length > 1 ? 's' : ''}...`));
@@ -1690,6 +1696,7 @@ async function main() {
       }
       const data = await res.json();
       allResults = data.results || [];
+      apiCta = data._cta || null;
     } catch (err) {
       console.error(`\nError: ${err.message}`);
       process.exit(1);
@@ -1704,7 +1711,7 @@ async function main() {
 
     let lastPct = 0;
     try {
-      allResults = await auditBatched(packages, ecosystem, {
+      const batchResult = await auditBatched(packages, ecosystem, {
         onProgress: (done, total) => {
           const pct = Math.round((done / total) * 100);
           if (pct >= lastPct + 20) {
@@ -1713,6 +1720,8 @@ async function main() {
           }
         }
       });
+      allResults = batchResult.results;
+      apiCta = batchResult._cta;
     } catch (err) {
       console.error(`\nError: ${err.message}`);
       process.exit(1);
@@ -1739,6 +1748,7 @@ async function main() {
     const displayed = allResults.slice(0, MAX_DISPLAY);
     const criticalTotal = allResults.filter(r => hasCritical(r.riskFlags)).length;
     printTable(displayed, { totalScanned: allResults.length, totalCritical: criticalTotal, lockfile: true });
+    if (apiCta) console.log(clr(c.dim + c.cyan, `\n  ${apiCta}`));
     await inlineSignup(displayed);
     if (shouldFail(allResults, failOn)) {
       console.error(clr(c.red + c.bold, `\n✗ --fail-on=${failOn} threshold met. Exit 1.`));
@@ -1770,6 +1780,7 @@ async function main() {
   }
 
   printTable(allResults);
+  if (apiCta) console.log(clr(c.dim + c.cyan, `\n  ${apiCta}`));
   await inlineSignup(allResults);
   if (shouldFail(allResults, failOn)) {
     console.error(clr(c.red + c.bold, `✗ --fail-on=${failOn} threshold met. Exit 1.`));
