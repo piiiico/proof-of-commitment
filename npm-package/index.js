@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.16.0
+ * proof-of-commitment CLI v1.17.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -44,25 +44,70 @@ function clr(code, text) {
 
 /**
  * Renders a human-readable rate-limit message to stderr and exits with code 1.
- * Parses JSON body from a 429 response; falls back to raw text.
+ * Parses JSON body from a 429 response.
+ *
+ * v1.17.0: reads structured `shared_ip_hint` / `instant_key_url` /
+ * `packages_already_scored` / `retry_after_seconds` fields (see /api/audit
+ * 429 response). Older backends just return `message` + `upgrade_url`;
+ * the helper degrades gracefully. Single CTA only — paid upgrade is removed
+ * here because dogfood (2026-05-21) found that splitting attention between
+ * "free key" and "paid upgrade" lowers free-key conversion on the rescue
+ * step. The user is hitting the *free* wall — surface the free fix.
  */
 async function handle429(res) {
-  let message, upgradeUrl;
+  let data = {};
   try {
-    const data = await res.json();
-    message = data.message;
-    upgradeUrl = data.upgrade_url;
+    data = await res.json();
   } catch {
-    // Non-JSON fallback
+    // Non-JSON fallback — leave data as {}
   }
 
-  const limitLine = message || 'Daily free audit limit reached.';
-  const paidUrl = upgradeUrl || 'https://getcommit.dev/pricing?utm_source=cli';
+  const message = data.message || 'Daily free audit limit reached on this network IP.';
+  const instantKeyUrl =
+    data.instant_key_url ||
+    data.upgrade_url ||
+    'https://getcommit.dev/get-started?ref=audit-cli-429';
+  const partial = Array.isArray(data.packages_already_scored)
+    ? data.packages_already_scored
+    : [];
+  const retryAfter = Number.isFinite(data.retry_after_seconds)
+    ? data.retry_after_seconds
+    : null;
+
+  // Forward-compat: if backend ever returns partial scoring on 429,
+  // print what we have BEFORE the rescue message. Falls back to JSON
+  // dump if the row shape isn't a complete table row.
+  if (partial.length > 0) {
+    try {
+      console.log();
+      console.log(clr(c.dim, `  Partial results scored before the limit hit (${partial.length}):`));
+      printTable(partial, { totalScanned: partial.length });
+    } catch {
+      console.log(JSON.stringify(partial, null, 2));
+    }
+  }
 
   console.error('');
-  console.error(clr(c.yellow + c.bold, `⚠  ${limitLine}`));
-  console.error(clr(c.cyan, `   Get a free API key for 200/day: https://getcommit.dev/get-started?ref=audit-cli`));
-  console.error(clr(c.cyan, `   Or upgrade to paid for unlimited: ${paidUrl}`));
+  console.error(clr(c.yellow + c.bold, `⚠  ${message}`));
+  if (data.shared_ip_hint) {
+    console.error(
+      clr(
+        c.dim,
+        '   Heads up: corporate NAT, CI runners, and dev containers all share egress IPs,'
+      )
+    );
+    console.error(
+      clr(c.dim, '   so the free-tier counter ticks faster than your personal usage suggests.')
+    );
+  }
+  console.error('');
+  console.error(clr(c.cyan + c.bold, `   → Free API key in 30 seconds (no card): ${instantKeyUrl}`));
+  if (retryAfter && retryAfter > 0) {
+    const hours = Math.floor(retryAfter / 3600);
+    const mins = Math.floor((retryAfter % 3600) / 60);
+    const resetIn = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+    console.error(clr(c.dim, `     or wait — free-tier resets in ${resetIn} (00:00 UTC).`));
+  }
   console.error('');
   process.exit(1);
 }

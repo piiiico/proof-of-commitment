@@ -699,11 +699,43 @@ app.post("/api/audit", async (c) => {
     auditCount = await bumpAuditCount(c.env, ip);
 
     if (auditCount > AUDIT_HARD_LIMIT) {
+      // Seconds until 00:00 UTC reset — informs `Retry-After` + CLI countdown.
+      const now = new Date();
+      const tomorrowUtc = Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() + 1
+      );
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.floor((tomorrowUtc - now.getTime()) / 1000)
+      );
+
+      // Rescue funnel for shared-IP hits (corporate NAT, CI runners,
+      // dev containers, PicoClaw-style swarms all egress through a small
+      // pool of IPs). The dogfood (2026-05-21) caught a clean-room first
+      // run returning 429 before *any* value was delivered — buyer journey
+      // measured 5-10 lost per 100 CLI buyers. The rewrite swaps blame-on-user
+      // copy for one-step recovery: name the likely cause (shared egress) +
+      // direct link to a 30-second instant key with funnel attribution
+      // (`source=audit-cli-429`) so we can measure conversion of this rescue.
+      const instantKeyUrl =
+        "https://getcommit.dev/get-started?ref=audit-cli-429";
+
       return c.json(
         {
           error: "rate_limit_exceeded",
-          message: `Daily free audit limit reached (${auditCount}/${AUDIT_HARD_LIMIT}). Resets at 00:00 UTC. Get a free API key for higher limits (200/day): ${AUDIT_SIGNUP_URL}`,
-          upgrade_url: AUDIT_SIGNUP_URL,
+          message:
+            "You hit the free-tier daily limit on this network IP (likely shared with other developers via corporate NAT, CI runner, or dev container). Get a free API key in 30 seconds — no credit card — to lift the limit to 200/day.",
+          shared_ip_hint: true,
+          instant_key_url: instantKeyUrl,
+          // Forward-compat: partial results aren't scored on the request
+          // that trips the limit (the bump happens before scoring). Field
+          // is present-but-empty so CLI versions can rely on its shape.
+          packages_already_scored: [],
+          retry_after_seconds: retryAfterSeconds,
+          // Preserve legacy field for v≤1.16 CLIs still parsing this name.
+          upgrade_url: instantKeyUrl,
           limit: AUDIT_HARD_LIMIT,
           count: auditCount,
         },
@@ -712,6 +744,7 @@ app.post("/api/audit", async (c) => {
           "X-RateLimit-Limit": String(AUDIT_HARD_LIMIT),
           "X-RateLimit-Remaining": "0",
           "X-RateLimit-Tier": "anonymous",
+          "Retry-After": String(retryAfterSeconds),
         }
       );
     }
@@ -2006,12 +2039,16 @@ app.get("/badge/*", async (c) => {
  * Rate limit: 3 requests per IP per day
  *
  * source — funnel attribution (persisted to api_keys.source). Valid values:
- *   'web' (default), 'cli', 'api', 'mcp-soft-cta'
+ *   'web' (default), 'cli', 'api', 'mcp-soft-cta', 'audit-cli-429'
+ *
+ * 'audit-cli-429' is set by the get-started landing page when a visitor
+ * arrives via the CLI 429 rescue flow (?ref=audit-cli-429). Lets us
+ * measure rate-limit-recovery conversion vs. organic CLI signups.
  */
 app.post("/api/keys/create", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
