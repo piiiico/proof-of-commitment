@@ -687,14 +687,16 @@ app.post("/api/audit", async (c) => {
 
   // Per-IP daily rate limit for anonymous traffic. API key holders bypass
   // (the /api/* middleware already attached them via c.get("apiKey")).
-  // Mirrors the MCP pattern shipped in v1.14.0 / commit 5751ea0 — same
-  // table shape, same threshold semantics, separate budget per channel.
-  // Computed AFTER body parsing so malformed requests don't burn a slot
-  // (matches MCP behavior).
+  // SSR bypass: the Pages worker (getcommit.dev _worker.js) calls /api/audit
+  // to render /npm/:pkg pages. Without a bypass it shares the IP rate-limit
+  // pool with real users and hits 502 on busy days. X-SSR-Token matching
+  // ADMIN_SECRET skips rate limiting entirely — no counter increment, no CTA.
   const apiKeyCtx = c.get("apiKey");
+  const ssrToken = c.req.header("X-SSR-Token");
+  const isSSR = ssrToken != null && ssrToken.length > 0 && ssrToken === c.env.ADMIN_SECRET;
   let auditCount = 0;
   let auditCta: string | null = null;
-  if (!apiKeyCtx) {
+  if (!apiKeyCtx && !isSSR) {
     const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
     auditCount = await bumpAuditCount(c.env, ip);
 
