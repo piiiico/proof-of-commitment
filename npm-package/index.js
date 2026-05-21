@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.15.0
+ * proof-of-commitment CLI v1.16.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -43,7 +43,7 @@ function clr(code, text) {
 }
 
 /**
- * Renders a styled rate-limit box to stderr and exits.
+ * Renders a human-readable rate-limit message to stderr and exits with code 1.
  * Parses JSON body from a 429 response; falls back to raw text.
  */
 async function handle429(res) {
@@ -53,16 +53,17 @@ async function handle429(res) {
     message = data.message;
     upgradeUrl = data.upgrade_url;
   } catch {
-    const text = await res.text().catch(() => '');
-    console.error(`\nAPI error 429: ${text}`);
-    process.exit(1);
+    // Non-JSON fallback
   }
-  const divider = '─────────────────────────────────────────────────';
-  console.error('\n' + clr(c.cyan, divider));
-  if (message) console.error(clr(c.cyan, message));
-  if (upgradeUrl) console.error(clr(c.cyan, `→ ${upgradeUrl}`));
-  console.error(clr(c.cyan, `   Log in with: npx proof-of-commitment login`));
-  console.error(clr(c.cyan, divider));
+
+  const limitLine = message || 'Daily free audit limit reached.';
+  const paidUrl = upgradeUrl || 'https://getcommit.dev/pricing?utm_source=cli';
+
+  console.error('');
+  console.error(clr(c.yellow + c.bold, `⚠  ${limitLine}`));
+  console.error(clr(c.cyan, `   Get a free API key for 200/day: https://getcommit.dev/get-started?ref=audit-cli`));
+  console.error(clr(c.cyan, `   Or upgrade to paid for unlimited: ${paidUrl}`));
+  console.error('');
   process.exit(1);
 }
 
@@ -313,7 +314,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.15.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.16.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir

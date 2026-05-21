@@ -1,6 +1,6 @@
 {
   "name": "proof-of-commitment",
-  "version": "1.15.0",
+  "version": "1.16.0",
   "mcpName": "io.github.piiiico/proof-of-commitment",
   "description": "Supply chain risk scorer for npm, PyPI, Cargo, and Go packages — behavioral signals that can't be faked",
   "type": "module",
