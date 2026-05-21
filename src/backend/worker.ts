@@ -5123,6 +5123,122 @@ app.get("/api/checkout/session", async (c) => {
 });
 
 /**
+ * POST /api/checkout-intent
+ * Captures email lead before Stripe redirect. Stores the lead in D1 so
+ * abandoned checkouts are visible in the admin dashboard.
+ *
+ * Body: { email: string, tier: "pro" | "developer" }
+ * Returns: { ok: true, checkout_url: string }
+ */
+app.post("/api/checkout-intent", async (c) => {
+  const stripeKey = c.env.STRIPE_SECRET_KEY;
+
+  if (!stripeKey) {
+    return c.json({ error: "stripe_not_configured" }, 503);
+  }
+
+  let body: { email?: string; tier?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+
+  const rawEmail = (body.email ?? "").trim().toLowerCase();
+  if (!rawEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
+    return c.json({ error: "invalid_email" }, 400);
+  }
+
+  const tier = (body.tier ?? "pro").toLowerCase();
+  if (tier !== "pro" && tier !== "developer") {
+    return c.json({ error: "invalid_tier" }, 400);
+  }
+
+  const priceId = tier === "developer" ? c.env.STRIPE_PRICE_DEV : c.env.STRIPE_PRICE_PRO;
+  if (!priceId) {
+    return c.json({ error: "tier_unavailable" }, 503);
+  }
+
+  // Persist lead before Stripe redirect — abandoned checkouts remain queryable.
+  try {
+    const emailHash = await sha256Hex(rawEmail);
+    const idBytes = new Uint8Array(8);
+    crypto.getRandomValues(idBytes);
+    const leadId = Array.from(idBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+    const ts = new Date().toISOString();
+
+    await c.env.DB.prepare(
+      `INSERT INTO checkout_leads (id, email_hash, email, tier, source, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(leadId, emailHash, rawEmail, tier, "pricing-modal", ts).run();
+  } catch (err) {
+    // Non-fatal: log but continue to Stripe redirect. Lead capture shouldn't block checkout.
+    console.error("checkout_intent lead persist error:", err instanceof Error ? err.message : err);
+  }
+
+  // Create Stripe checkout session.
+  const params = new URLSearchParams({
+    mode: "subscription",
+    success_url: "https://getcommit.dev/checkout/success?session_id={CHECKOUT_SESSION_ID}",
+    cancel_url: "https://getcommit.dev/pricing",
+    "line_items[0][price]": priceId,
+    "line_items[0][quantity]": "1",
+    allow_promotion_codes: "true",
+    billing_address_collection: "required",
+    "metadata[tier]": tier,
+    customer_email: rawEmail,
+  });
+
+  try {
+    const resp = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${stripeKey}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params.toString(),
+    });
+
+    if (!resp.ok) {
+      const err = (await resp.json()) as { error?: { message?: string } };
+      console.error("Stripe API error (checkout-intent):", err.error?.message ?? resp.status);
+      return c.json({ error: "checkout_failed" }, 502);
+    }
+
+    const session = (await resp.json()) as { url: string };
+    return c.json({ ok: true, checkout_url: session.url });
+  } catch (err) {
+    console.error("checkout-intent Stripe error:", err instanceof Error ? err.message : err);
+    return c.json({ error: "checkout_failed" }, 502);
+  }
+});
+
+/**
+ * GET /api/admin/leads
+ * Admin endpoint — requires X-Admin-Secret header matching ADMIN_SECRET env var.
+ * Returns recent checkout leads captured before Stripe redirect (pricing-modal source).
+ * Useful for identifying abandoned checkouts.
+ */
+app.get("/api/admin/leads", async (c) => {
+  const adminSecret = c.env.ADMIN_SECRET;
+  if (!adminSecret || c.req.header("X-Admin-Secret") !== adminSecret) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const source = c.req.query("source") ?? "pricing-modal";
+  const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10), 200);
+
+  const rows = await c.env.DB.prepare(
+    `SELECT id, email, tier, source, created_at FROM checkout_leads WHERE source = ? ORDER BY created_at DESC LIMIT ?`
+  ).bind(source, limit).all<{ id: string; email: string; tier: string; source: string; created_at: string }>();
+
+  return c.json({
+    leads: rows.results ?? [],
+    count: (rows.results ?? []).length,
+    source,
+  });
+});
+
+/**
  * POST /api/stripe/webhook
  * Handles Stripe events. Register this URL in Stripe Dashboard → Webhooks.
  *
