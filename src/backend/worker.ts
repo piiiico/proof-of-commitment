@@ -5031,6 +5031,12 @@ app.get("/api/checkout", async (c) => {
     return c.redirect("https://getcommit.dev/pricing?error=tier_unavailable", 302);
   }
 
+  // Optional email pre-fill — captured by the pricing page modal before redirect.
+  // Strips whitespace; silently ignored if invalid (Stripe will ask anyway).
+  const rawEmail = (c.req.query("email") ?? "").trim().toLowerCase();
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail);
+  const prefillEmail = emailValid ? rawEmail : null;
+
   const params = new URLSearchParams({
     mode: "subscription",
     success_url: "https://getcommit.dev/checkout/success?session_id={CHECKOUT_SESSION_ID}",
@@ -5041,6 +5047,12 @@ app.get("/api/checkout", async (c) => {
     billing_address_collection: "required",
     "metadata[tier]": tier,
   });
+
+  // Pre-fill customer email in Stripe so the checkout form starts filled.
+  // Stripe will verify it via OTP anyway — this just saves a step.
+  if (prefillEmail) {
+    params.set("customer_email", prefillEmail);
+  }
 
   try {
     const resp = await fetch("https://api.stripe.com/v1/checkout/sessions", {
