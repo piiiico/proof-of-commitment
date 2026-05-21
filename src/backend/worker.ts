@@ -5276,6 +5276,75 @@ app.get("/api/admin/leads", async (c) => {
 });
 
 /**
+ * GET /api/stats/teams-protected
+ * Public stats for the /pricing page social-proof line.
+ *
+ * Returns the count of distinct teams (active API keys) that joined recently.
+ * Tries 7d window first; falls back to 30d, then total. Returns the first
+ * window with count >= 5 — anything smaller is suppressed by the frontend
+ * to avoid shipping a zero-signal trust badge.
+ *
+ * Cached at the edge for 5min so this can be called inline from /pricing
+ * without warming up the worker per visitor.
+ */
+app.get("/api/stats/teams-protected", async (c) => {
+  try {
+    // Count distinct emails on active (non-revoked) API keys, by window.
+    // api_keys.created_at is stored as ISO string; D1 SQLite handles
+    // datetime() comparisons on ISO-8601 lexicographically.
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const [row7, row30, rowTotal] = await Promise.all([
+      c.env.DB.prepare(
+        `SELECT COUNT(DISTINCT email) AS n FROM api_keys WHERE revoked_at IS NULL AND created_at >= ?`
+      ).bind(sevenDaysAgo).first<{ n: number }>(),
+      c.env.DB.prepare(
+        `SELECT COUNT(DISTINCT email) AS n FROM api_keys WHERE revoked_at IS NULL AND created_at >= ?`
+      ).bind(thirtyDaysAgo).first<{ n: number }>(),
+      c.env.DB.prepare(
+        `SELECT COUNT(DISTINCT email) AS n FROM api_keys WHERE revoked_at IS NULL`
+      ).first<{ n: number }>(),
+    ]);
+
+    const count_7d = row7?.n ?? 0;
+    const count_30d = row30?.n ?? 0;
+    const count_total = rowTotal?.n ?? 0;
+
+    // Pick the tightest meaningful window. Threshold matches the frontend
+    // suppression rule (don't show <5) so callers don't have to re-check.
+    let displayCount = 0;
+    let displayPeriod: "7d" | "30d" | "total" | "none" = "none";
+    if (count_7d >= 5) {
+      displayCount = count_7d;
+      displayPeriod = "7d";
+    } else if (count_30d >= 5) {
+      displayCount = count_30d;
+      displayPeriod = "30d";
+    } else if (count_total >= 5) {
+      displayCount = count_total;
+      displayPeriod = "total";
+    }
+
+    // 5-minute edge cache. Stats lag is fine; cache misses are the point.
+    c.header("Cache-Control", "public, max-age=300");
+    return c.json({
+      ok: true,
+      count: displayCount,
+      period: displayPeriod,
+      counts: {
+        last_7d: count_7d,
+        last_30d: count_30d,
+        total: count_total,
+      },
+    });
+  } catch (err) {
+    console.error("stats/teams-protected error:", err instanceof Error ? err.message : err);
+    return c.json({ ok: false, count: 0, period: "none" }, 500);
+  }
+});
+
+/**
  * POST /api/stripe/webhook
  * Handles Stripe events. Register this URL in Stripe Dashboard → Webhooks.
  *
