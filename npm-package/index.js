@@ -42,6 +42,30 @@ function clr(code, text) {
   return `${code}${text}${c.reset}`;
 }
 
+/**
+ * Renders a styled rate-limit box to stderr and exits.
+ * Parses JSON body from a 429 response; falls back to raw text.
+ */
+async function handle429(res) {
+  let message, upgradeUrl;
+  try {
+    const data = await res.json();
+    message = data.message;
+    upgradeUrl = data.upgrade_url;
+  } catch {
+    const text = await res.text().catch(() => '');
+    console.error(`\nAPI error 429: ${text}`);
+    process.exit(1);
+  }
+  const divider = '─────────────────────────────────────────────────';
+  console.error('\n' + clr(c.cyan, divider));
+  if (message) console.error(clr(c.cyan, message));
+  if (upgradeUrl) console.error(clr(c.cyan, `→ ${upgradeUrl}`));
+  console.error(clr(c.cyan, `   Log in with: npx proof-of-commitment login`));
+  console.error(clr(c.cyan, divider));
+  process.exit(1);
+}
+
 /** Check if riskFlags array contains a CRITICAL-level flag (handles both "CRITICAL" and "CRITICAL: ..." formats) */
 function hasCritical(flags) {
   return flags && flags.some(f => typeof f === 'string' && f.startsWith('CRITICAL'));
@@ -711,6 +735,7 @@ async function auditBatched(packages, ecosystem, { onProgress } = {}) {
         body: JSON.stringify({ packages: batch, ecosystem }),
       });
       if (!res.ok) {
+        if (res.status === 429) await handle429(res);
         const text = await res.text();
         throw new Error(`API error ${res.status}: ${text}`);
       }
@@ -1293,7 +1318,10 @@ async function cmdReport(packages, ecosystem, { filePath, isLockfile, totalScann
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ packages, ecosystem }),
       });
-      if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+      if (!res.ok) {
+        if (res.status === 429) await handle429(res);
+        throw new Error(`API error ${res.status}: ${await res.text()}`);
+      }
       const data = await res.json();
       allResults = data.results || [];
     } else {
@@ -1691,6 +1719,7 @@ async function main() {
         body: JSON.stringify({ packages, ecosystem }),
       });
       if (!res.ok) {
+        if (res.status === 429) await handle429(res);
         const text = await res.text();
         throw new Error(`API error ${res.status}: ${text}`);
       }
