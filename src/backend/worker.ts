@@ -1185,11 +1185,38 @@ app.post("/api/repos/:owner/:repo/endorse", async (c) => {
  */
 app.post("/api/audit/github", async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const repoInput: string = body?.repo ?? "";
+  // Accept multiple shapes the LLM-generated client is likely to emit:
+  //   { repo: "owner/repo" }                         — documented
+  //   { repo: "https://github.com/owner/repo" }      — URL form
+  //   { repo: { owner, name | repo } }               — object idiom
+  //   { owner, repo }                                — split fields
+  // Pre-fix the worker crashed with bare 500 on any non-string shape
+  // (parseGitHubRepo calls .trim() before validating), wrecking first-impression
+  // conversion for AI-assisted integrations. Coerce here; clean 400 otherwise.
+  let repoInput = "";
+  const rawRepo = body?.repo;
+  if (typeof rawRepo === "string") {
+    repoInput = rawRepo;
+  } else if (rawRepo && typeof rawRepo === "object" && !Array.isArray(rawRepo)) {
+    const obj = rawRepo as Record<string, unknown>;
+    const owner = typeof obj.owner === "string" ? obj.owner : "";
+    const name = typeof obj.name === "string" ? obj.name : typeof obj.repo === "string" ? obj.repo : "";
+    if (owner && name) repoInput = `${owner}/${name}`;
+    else if (typeof obj.url === "string") repoInput = obj.url;
+  } else if (typeof body?.owner === "string" && typeof body?.repo === "string") {
+    // already covered by typeof rawRepo === "string" branch above
+  }
+  // Split { owner, name } at top level (LLMs sometimes split the fields)
+  if (!repoInput && typeof body?.owner === "string" && typeof body?.name === "string") {
+    repoInput = `${body.owner}/${body.name}`;
+  }
 
-  const parsed = parseGitHubRepo(repoInput);
+  const parsed = repoInput ? parseGitHubRepo(repoInput) : null;
   if (!parsed) {
-    return c.json({ error: "Invalid repo. Use 'owner/repo' or a GitHub URL." }, 400);
+    return c.json({
+      error: "Invalid repo. Use 'owner/repo' or a GitHub URL.",
+      hint: "Send: { \"repo\": \"facebook/react\" } or { \"repo\": \"https://github.com/facebook/react\" }. Object shape { owner, name } also accepted.",
+    }, 400);
   }
 
   const { owner, repo } = parsed;
@@ -1876,11 +1903,25 @@ async function buildNpmDepGraph(
  */
 app.post("/api/graph/npm", async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const pkg: string = body?.package ?? "";
+  // Accept BOTH shapes: { package: "express" } and { package: { name: "express", version: "4.x" } }.
+  // Pre-fix the worker crashed with bare 500 on the object shape because pkg.trim()
+  // assumes string. LLM-generated integration code defaults to the npm package.json
+  // idiom — wrong-looking 500 was a first-impression conversion killer.
+  let pkg = "";
+  const rawPkg = body?.package;
+  if (typeof rawPkg === "string") {
+    pkg = rawPkg;
+  } else if (rawPkg && typeof rawPkg === "object" && !Array.isArray(rawPkg)) {
+    const name = (rawPkg as Record<string, unknown>).name;
+    if (typeof name === "string") pkg = name;
+  }
   const depth: 1 | 2 = body?.depth === 2 ? 2 : 1;
 
   if (!pkg || pkg.trim().length === 0) {
-    return c.json({ error: "package is required. E.g. { \"package\": \"express\" }" }, 400);
+    return c.json({
+      error: "package is required. E.g. { \"package\": \"express\" }",
+      hint: "Object shape { name, version } also accepted; the 'version' field is ignored.",
+    }, 400);
   }
 
   const { nodes, edges, criticalTransitivePaths } = await buildNpmDepGraph(pkg.trim(), depth);
