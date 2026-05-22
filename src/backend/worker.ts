@@ -714,12 +714,23 @@ app.post("/api/audit", async (c) => {
   const isSSR = ssrToken != null && ssrToken.length > 0 && ssrToken === c.env.ADMIN_SECRET;
   let auditCount = 0;
   let auditCta: string | null = null;
+  let rateLimitTaste: {
+    retryAfterSeconds: number;
+    instantKeyUrl: string;
+    totalRequested: number;
+  } | null = null;
   if (!apiKeyCtx && !isSSR) {
     const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
     auditCount = await bumpAuditCount(c.env, ip);
 
+    // --- Rate-limit taste gate ---
+    // Instead of returning 429 with zero results (the old behavior that
+    // killed first-impression conversion for shared-IP users — 40→297→1570
+    // downloads/wk growth curve with 0 organic signups), we set a flag
+    // and fall through to score RATE_LIMIT_TASTE packages. The CLI
+    // already handles `packages_already_scored` (npm-package/index.js
+    // lines 77-95) — this gate is what finally activates that code path.
     if (auditCount > AUDIT_HARD_LIMIT) {
-      // Seconds until 00:00 UTC reset — informs `Retry-After` + CLI countdown.
       const now = new Date();
       const tomorrowUtc = Date.UTC(
         now.getUTCFullYear(),
@@ -730,88 +741,15 @@ app.post("/api/audit", async (c) => {
         1,
         Math.floor((tomorrowUtc - now.getTime()) / 1000)
       );
-
-      // Rescue funnel for shared-IP hits (corporate NAT, CI runners,
-      // dev containers, PicoClaw-style swarms all egress through a small
-      // pool of IPs). The dogfood (2026-05-21) caught a clean-room first
-      // run returning 429 before *any* value was delivered — buyer journey
-      // measured 5-10 lost per 100 CLI buyers. The rewrite swaps blame-on-user
-      // copy for one-step recovery: name the likely cause (shared egress) +
-      // direct link to a 30-second instant key with funnel attribution
-      // (`source=audit-cli-429`) so we can measure conversion of this rescue.
       const instantKeyUrl =
         "https://getcommit.dev/get-started?ref=audit-cli-429";
-
-      const rescueMessage =
-        "You hit the free-tier daily limit on this network IP (likely shared with other developers via corporate NAT, CI runner, or dev container). Get a free API key in 30 seconds — no credit card — to lift the limit to 200/day.";
-
-      const rateLimitHeaders: Record<string, string> = {
-        "X-RateLimit-Limit": String(AUDIT_HARD_LIMIT),
-        "X-RateLimit-Remaining": "0",
-        "X-RateLimit-Tier": "anonymous",
-        "Retry-After": String(retryAfterSeconds),
+      rateLimitTaste = {
+        retryAfterSeconds,
+        instantKeyUrl,
+        totalRequested: packages.length,
       };
-
-      // Content negotiation: the published CLI v1.14.0 does
-      // `throw new Error(\`API error ${res.status}: ${text}\`)` — when the
-      // body is JSON, the user sees a single-line `{...}` dump on what
-      // should be the conversion moment. v1.17.0 (unpublished, blocked
-      // on NPM_TOKEN) renders nicely, but in the meantime ~70-150 shared-IP
-      // users/wk see the raw dump (buyer-journey-audit 2026-05-21 §#1).
-      //
-      // Fix: when the client doesn't explicitly Accept JSON (v1.14.0
-      // sends the fetch default `*/*`), return a plain-text rescue body
-      // that wraps cleanly inside the CLI's Error template. v1.17.0+
-      // sets `Accept: application/json` explicitly and continues to
-      // get the structured JSON it parses in handle429().
-      //
-      // No machine clients consume the JSON 429 body today (the only
-      // documented consumer is the CLI). If one appears later, it can
-      // opt into JSON by sending the standard Accept header.
-      const acceptHeader = (c.req.header("Accept") || "").toLowerCase();
-      const wantsJson = acceptHeader.includes("application/json");
-
-      if (!wantsJson) {
-        // Plain-text body designed to be readable even after the CLI's
-        // `Error: API error 429: ${text}` prefix and on the same line as
-        // it. Leading newline pushes the message past the prefix; the
-        // arrow + URL is the single rescue CTA (no paid-tier split — the
-        // user is hitting the *free* wall, surface the free fix).
-        const textBody = [
-          "",
-          "",
-          "⚠  Daily free audit limit reached on this network IP",
-          "   (likely shared via corporate NAT, CI runner, or dev container).",
-          "",
-          `   → Free API key in 30 seconds (no card): ${instantKeyUrl}`,
-          "     Resets at 00:00 UTC.",
-          "",
-        ].join("\n");
-        return c.text(textBody, 429, {
-          ...rateLimitHeaders,
-          "Content-Type": "text/plain; charset=utf-8",
-        });
-      }
-
-      return c.json(
-        {
-          error: "rate_limit_exceeded",
-          message: rescueMessage,
-          shared_ip_hint: true,
-          instant_key_url: instantKeyUrl,
-          // Forward-compat: partial results aren't scored on the request
-          // that trips the limit (the bump happens before scoring). Field
-          // is present-but-empty so CLI versions can rely on its shape.
-          packages_already_scored: [],
-          retry_after_seconds: retryAfterSeconds,
-          // Preserve legacy field for v≤1.16 CLIs still parsing this name.
-          upgrade_url: instantKeyUrl,
-          limit: AUDIT_HARD_LIMIT,
-          count: auditCount,
-        },
-        429,
-        rateLimitHeaders
-      );
+      // Trim to taste — user sees real value, then the CTA.
+      packages.splice(RATE_LIMIT_TASTE);
     }
 
     if (auditCount >= AUDIT_SOFT_CTA_AT) {
@@ -908,6 +846,88 @@ app.post("/api/audit", async (c) => {
   }
 
   results.sort((a, b) => (a.score ?? -1) - (b.score ?? -1));
+
+  // --- Rate-limit taste: return 429 WITH partial results ---
+  // The user sees real value (up to RATE_LIMIT_TASTE packages scored)
+  // before the CTA. This turns the 429 from a wall into a sample.
+  if (rateLimitTaste) {
+    const { retryAfterSeconds, instantKeyUrl, totalRequested } = rateLimitTaste;
+    const rateLimitHeaders: Record<string, string> = {
+      "X-RateLimit-Limit": String(AUDIT_HARD_LIMIT),
+      "X-RateLimit-Remaining": "0",
+      "X-RateLimit-Tier": "anonymous",
+      "Retry-After": String(retryAfterSeconds),
+    };
+
+    const rescueMessage =
+      `Scored ${results.length} of ${totalRequested} packages — free-tier daily limit reached on this IP (likely shared via corporate NAT, CI runner, or dev container). Get a free API key in 30 seconds — no credit card — to lift the limit to 200/day.`;
+
+    const acceptHeader = (c.req.header("Accept") || "").toLowerCase();
+    const wantsJson = acceptHeader.includes("application/json");
+
+    if (!wantsJson) {
+      // Plain-text for legacy CLI v1.14.0 (sends `Accept: */*`).
+      // Format: partial table + CTA. The CLI wraps this inside
+      // `Error: API error 429: ${text}` — leading newline pushes
+      // past the prefix for readability.
+      const tasteLines = results.map((r) => {
+        const score = r.score != null ? String(r.score).padStart(3) : " N/A";
+        const risk = r.riskFlags.some((f: string) => f.startsWith("CRITICAL"))
+          ? "🔴 CRITICAL"
+          : r.riskFlags.some((f: string) => f.startsWith("HIGH"))
+          ? "🟡 HIGH"
+          : "✅ OK";
+        const dl = r.weeklyDownloads != null
+          ? r.weeklyDownloads >= 1_000_000
+            ? `${(r.weeklyDownloads / 1_000_000).toFixed(0)}M/wk`
+            : r.weeklyDownloads >= 1_000
+            ? `${Math.round(r.weeklyDownloads / 1_000)}k/wk`
+            : `${r.weeklyDownloads}/wk`
+          : "";
+        return `  ${r.name.padEnd(20)} ${score}  ${risk.padEnd(14)} ${r.maintainers ?? "?"}p  ${dl}`;
+      });
+
+      const textBody = [
+        "",
+        "",
+        `  Scored ${results.length} of ${totalRequested} packages:`,
+        ...tasteLines,
+        "",
+        "⚠  Free-tier daily limit reached on this network IP",
+        "   (likely shared via corporate NAT, CI runner, or dev container).",
+        "",
+        `   → Free API key in 30 seconds (no card): ${instantKeyUrl}`,
+        `     Unlocks all ${totalRequested} packages + 200 audits/day.`,
+        "     Resets at 00:00 UTC.",
+        "",
+      ].join("\n");
+      return c.text(textBody, 429, {
+        ...rateLimitHeaders,
+        "Content-Type": "text/plain; charset=utf-8",
+      });
+    }
+
+    // Structured JSON for v1.17.0+ CLI (sends `Accept: application/json`).
+    // The CLI's handle429() prints packages_already_scored via printTable()
+    // before showing the rescue CTA — this is the path that finally
+    // activates that forward-compatible handler.
+    return c.json(
+      {
+        error: "rate_limit_exceeded",
+        message: rescueMessage,
+        shared_ip_hint: true,
+        instant_key_url: instantKeyUrl,
+        packages_already_scored: results,
+        retry_after_seconds: retryAfterSeconds,
+        upgrade_url: instantKeyUrl,
+        limit: AUDIT_HARD_LIMIT,
+        count: auditCount,
+      },
+      429,
+      rateLimitHeaders
+    );
+  }
+
   // _cta is a future-CLI-readable hint (current v1.14.0 ignores unknown
   // fields). The advisory headers tell scripts the budget remaining.
   const headers: Record<string, string> = {};
@@ -2367,6 +2387,12 @@ const MCP_SIGNUP_URL =
 const AUDIT_SOFT_CTA_AT = 41;
 const AUDIT_STRONG_CTA_AT = 81;
 const AUDIT_HARD_LIMIT = 100;
+/** On 429, score this many packages as a free "taste" so the user sees
+ *  real value before the signup CTA. The CLI already handles the
+ *  `packages_already_scored` field — it just never fires because the
+ *  backend returned [] until now. 3 packages is enough to demonstrate
+ *  value without making the free tier pointless. */
+const RATE_LIMIT_TASTE = 3;
 const AUDIT_SIGNUP_URL =
   "https://getcommit.dev/get-started?ref=audit-cli";
 
