@@ -696,11 +696,33 @@ app.get("/api/business/:orgNumber", async (c) => {
  */
 app.post("/api/audit", async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const packages: string[] = Array.isArray(body?.packages) ? body.packages.slice(0, 20) : [];
+  // Accept BOTH shapes: ["express", "lodash"] and [{name:"express",version:"4.x"}].
+  // The README documents the string shape, but LLM-generated integration code
+  // (Claude/Copilot/etc.) almost always emits the package.json {name,version}
+  // object shape because that's the npm idiom. Pre-fix the worker would crash
+  // with a bare 500 "Internal Server Error" on the object shape — wrong-looking
+  // error to anyone evaluating the API for the first time, and not actionable.
+  // Coerce here so both shapes work; if items are something else (numbers,
+  // nulls, nested arrays) return a clean 400 explaining the expected shape.
+  const rawItems: unknown[] = Array.isArray(body?.packages) ? body.packages.slice(0, 20) : [];
+  const packages: string[] = [];
+  for (const item of rawItems) {
+    if (typeof item === "string" && item.length > 0) {
+      packages.push(item);
+    } else if (item && typeof item === "object" && !Array.isArray(item)) {
+      const name = (item as Record<string, unknown>).name;
+      if (typeof name === "string" && name.length > 0) {
+        packages.push(name);
+      }
+    }
+  }
   const ecosystem: string = body?.ecosystem ?? "auto";
 
   if (packages.length === 0) {
-    return c.json({ error: "'packages' array is required (max 20)" }, 400);
+    return c.json({
+      error: "'packages' array is required (max 20)",
+      hint: "Send an array of package names: { packages: [\"express\", \"lodash\"] }. Object shape { name, version } also accepted; the 'version' field is ignored.",
+    }, 400);
   }
 
   // Per-IP daily rate limit for anonymous traffic. API key holders bypass
