@@ -176,14 +176,22 @@ interface ApiKeyContext {
   id: string;
   key_prefix: string;
   email: string;
-  tier: "free" | "pro" | "enterprise";
+  tier: "free" | "developer" | "pro" | "enterprise";
   requests_this_period: number;
   period_reset_at: string;
 }
 
-// Rate limits per tier
+// Rate limits per tier. Keep in sync with /pricing tier cards.
+//   free       — 200/day  (Open tier)
+//   developer  — 1000/day ($15/mo, 5× free)
+//   pro        — 10K/mo   ($29/mo)
+//   enterprise — unlimited
+// Lookup is defensive: row.tier from D1 falls back to TIER_LIMITS.free if unknown.
+// A missing developer entry was a silent revenue bug — paid Developer customers
+// would have been served free-tier limits.
 const TIER_LIMITS = {
   free: { limit: 200, period: "daily" as const },
+  developer: { limit: 1000, period: "daily" as const },
   pro: { limit: 10000, period: "monthly" as const },
   enterprise: { limit: Infinity, period: "monthly" as const },
 };
@@ -273,7 +281,7 @@ async function resolveApiKey(
   }
 
   // Check if period has reset
-  const tier = (row.tier as "free" | "pro" | "enterprise") || "free";
+  const tier = (row.tier as "free" | "developer" | "pro" | "enterprise") || "free";
   const tierConfig = TIER_LIMITS[tier] || TIER_LIMITS.free;
   let requestsThisPeriod = row.requests_this_period;
   let periodResetAt = row.period_reset_at;
@@ -300,6 +308,22 @@ async function resolveApiKey(
   // Check usage limits
   if (tier !== "enterprise" && requestsThisPeriod >= tierConfig.limit) {
     const retryAfterSec = Math.floor((new Date(periodResetAt).getTime() - Date.now()) / 1000);
+    // Upgrade target = next tier up. Free → Developer (cheaper first step), Developer → Pro.
+    const upgrade = tier === "free"
+      ? {
+          url: "https://getcommit.dev/pricing",
+          plan: "developer",
+          price: "$15/month",
+          limit: "1,000 requests/day",
+          message: "Upgrade to Developer for 5x more requests, batch API, and CI auto-trigger.",
+        }
+      : {
+          url: "https://getcommit.dev/pricing",
+          plan: "pro",
+          price: "$29/month",
+          limit: "10,000 requests/month",
+          message: "Upgrade to Pro for 10x more requests, batch API, and dependency monitoring.",
+        };
     return {
       key: keyCtx,
       error: {
@@ -308,13 +332,7 @@ async function resolveApiKey(
           error: "rate_limit_exceeded",
           message: `You've used ${requestsThisPeriod}/${tierConfig.limit} requests this period. Resets in ${timeUntil(periodResetAt)}.`,
           tier,
-          upgrade: {
-            url: "https://getcommit.dev/pricing",
-            plan: "pro",
-            price: "$29/month",
-            limit: "10,000 requests/month",
-            message: "Upgrade to Pro for 50x more requests, batch API, and dependency monitoring.",
-          },
+          upgrade,
           retry_after: retryAfterSec,
         },
       },
@@ -2161,33 +2179,42 @@ app.post("/api/keys/create", async (c) => {
   // Send via Resend email API (RESEND_API_KEY is a worker secret)
   let emailSent = false;
 
-  const emailBody = `Your Commit API Key
-
-Here is your free API key for Commit:
+  const emailBody = `Your Commit API key + 3 things to try
 
   ${apiKey}
 
-Keep this key safe — it won't be shown again.
+Save it. It won't be shown again.
 
-Usage limits (free tier):
-  • 200 requests/day
-  • Resets daily at midnight UTC
 
-Quick start:
-  curl https://poc-backend.amdal-dev.workers.dev/api/audit \\
-    -H "Authorization: Bearer ${apiKey}" \\
-    -H "Content-Type: application/json" \\
-    -d '{"packages": ["express", "lodash"]}'
+1) Add a CI gate to one of your repos (free, 1 repo):
+   cd your-project
+   npx proof-of-commitment poc login    # paste the key above
+   npx proof-of-commitment poc init     # adds GitHub Action + README badge
 
-Check your usage:
-  curl https://poc-backend.amdal-dev.workers.dev/api/keys/usage \\
-    -H "Authorization: Bearer ${apiKey}"
+   Every PR fails if it introduces a CRITICAL dependency.
 
-Need more? Upgrade to Pro ($29/month, 10K requests/month):
+2) Score any project from the command line:
+   npx proof-of-commitment --file package-lock.json
+
+3) Use the API directly:
+   curl https://poc-backend.amdal-dev.workers.dev/api/audit \\
+     -H "Authorization: Bearer ${apiKey}" \\
+     -H "Content-Type: application/json" \\
+     -d '{"packages": ["express", "lodash"]}'
+
+
+Your free tier:
+  • 200 audits/day (resets midnight UTC)
+  • 1 CI-gated repo · README badges (unlimited)
+
+When you need more (batch API, multi-repo CI auto-trigger, package monitoring):
+  • Developer $15/mo — 1,000 audits/day, batch up to 5, unlimited CI repos, watch 3 projects
+  • Pro $29/mo — 10K audits/mo, batch up to 20, webhooks, watch 10 projects
   https://getcommit.dev/pricing
+  30-day money-back guarantee.
 
 —
-Commit by getcommit.dev`;
+Commit · supply-chain risk scoring · getcommit.dev`;
 
   if (c.env.RESEND_API_KEY) {
     try {
@@ -2200,7 +2227,7 @@ Commit by getcommit.dev`;
         body: JSON.stringify({
           from: "Commit <noreply@getcommit.dev>",
           to: [email],
-          subject: "Your Commit API Key",
+          subject: "Your Commit API key + 3 things to try",
           text: emailBody,
         }),
       });
@@ -2278,7 +2305,7 @@ app.get("/api/keys/usage", async (c) => {
     return c.json({ error: "api_key_revoked", message: "This API key has been revoked." }, 401);
   }
 
-  const tier = (row.tier as "free" | "pro" | "enterprise") || "free";
+  const tier = (row.tier as "free" | "developer" | "pro" | "enterprise") || "free";
   const tierConfig = TIER_LIMITS[tier] || TIER_LIMITS.free;
 
   // Check if period has reset
@@ -2966,9 +2993,14 @@ app.get("/api/subscribe/stats", async (c) => {
 // drops. Schema: monitored_projects → monitored_packages (migration 0005).
 // For MVP we flatten the project model — one default project per API key.
 
+// Monitored-package caps per tier. Keep ratios in sync with /pricing project counts:
+//   developer (3 projects)  → 15 packages (5/project)
+//   pro       (10 projects) → 50 packages (5/project)
+//   enterprise (unlimited)  → 500 packages (hard cap, soft-sell to higher)
 const PACKAGE_LIMITS = {
   free: 0,           // free tier cannot use monitoring
-  pro: 50,           // 50 monitored packages
+  developer: 15,     // $15/mo: 3 projects × ~5 packages
+  pro: 50,           // $29/mo: 10 projects × ~5 packages
   enterprise: 500,
 } as const;
 
@@ -2996,7 +3028,9 @@ async function getOrCreateDefaultProject(db: D1Database, apiKeyId: string, email
   return id;
 }
 
-/** Require a Pro/Enterprise API key; returns the key context or an error response. */
+/** Require a paid API key (Developer/Pro/Enterprise); returns the key context or an error response.
+ *  Per /pricing: monitoring is included from Developer ($15/mo) upward.
+ */
 function requireProKey(
   c: { get: (k: string) => ApiKeyContext | null; json: (b: unknown, s?: number) => Response }
 ): ApiKeyContext | Response {
@@ -3007,12 +3041,12 @@ function requireProKey(
       message: "Provide an API key via Authorization: Bearer sk_commit_...",
     }, 401);
   }
-  if (key.tier !== "pro" && key.tier !== "enterprise") {
+  if (key.tier !== "developer" && key.tier !== "pro" && key.tier !== "enterprise") {
     return c.json({
       error: "upgrade_required",
-      message: "Monitoring + alerts are a Pro feature. Upgrade at https://getcommit.dev/pricing",
+      message: "Monitoring + alerts start on Developer ($15/mo). Upgrade at https://getcommit.dev/pricing",
       current_tier: key.tier,
-      upgrade: { url: "https://getcommit.dev/pricing", plan: "pro", price: "$29/month" },
+      upgrade: { url: "https://getcommit.dev/pricing", plan: "developer", price: "$15/month" },
     }, 402);
   }
   return key;
@@ -3070,7 +3104,11 @@ app.post("/api/watchlist", async (c) => {
       message: `Your ${key.tier} tier allows ${cap} monitored packages. Currently watching ${existingCount}.`,
       current: existingCount,
       limit: cap,
-      upgrade: key.tier === "pro" ? { url: "https://getcommit.dev/pricing", plan: "enterprise" } : undefined,
+      upgrade: key.tier === "developer"
+        ? { url: "https://getcommit.dev/pricing", plan: "pro", price: "$29/month" }
+        : key.tier === "pro"
+          ? { url: "https://getcommit.dev/pricing", plan: "enterprise" }
+          : undefined,
     }, 422);
   }
 
