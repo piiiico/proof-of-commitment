@@ -10,6 +10,18 @@ const KEYS_API = 'https://poc-backend.amdal-dev.workers.dev/api/keys';
 const WATCHLIST_API = 'https://poc-backend.amdal-dev.workers.dev/api/watchlist';
 const WEB = 'https://getcommit.dev/audit';
 
+// Backend uses Accept header to decide JSON vs plain-text body on 429
+// (added 2026-05-22 so v1.14.0 CLI, which sends the fetch default `*/*`,
+// gets a readable text body inside its Error wrapper instead of a JSON
+// dump). v1.17.0+ explicitly opts into JSON so handle429() can parse
+// shared_ip_hint, retry_after_seconds, etc. Default fetch in Node 20+
+// sends `Accept: */*` — without this header the backend would assume
+// the legacy raw-dump path.
+const JSON_API_HEADERS = {
+  'Content-Type': 'application/json',
+  'Accept': 'application/json',
+};
+
 // ANSI color helpers
 const c = {
   reset: '\x1b[0m',
@@ -777,7 +789,7 @@ async function auditBatched(packages, ecosystem, { onProgress } = {}) {
     batches.map(async (batch) => {
       const res = await fetch(API, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: JSON_API_HEADERS,
         body: JSON.stringify({ packages: batch, ecosystem }),
       });
       if (!res.ok) {
@@ -1361,7 +1373,7 @@ async function cmdReport(packages, ecosystem, { filePath, isLockfile, totalScann
     if (packages.length <= 20) {
       const res = await fetch(API, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: JSON_API_HEADERS,
         body: JSON.stringify({ packages, ecosystem }),
       });
       if (!res.ok) {
@@ -1761,7 +1773,7 @@ async function main() {
     try {
       const res = await fetch(API, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: JSON_API_HEADERS,
         body: JSON.stringify({ packages, ecosystem }),
       });
       if (!res.ok) {

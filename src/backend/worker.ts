@@ -724,11 +724,61 @@ app.post("/api/audit", async (c) => {
       const instantKeyUrl =
         "https://getcommit.dev/get-started?ref=audit-cli-429";
 
+      const rescueMessage =
+        "You hit the free-tier daily limit on this network IP (likely shared with other developers via corporate NAT, CI runner, or dev container). Get a free API key in 30 seconds — no credit card — to lift the limit to 200/day.";
+
+      const rateLimitHeaders: Record<string, string> = {
+        "X-RateLimit-Limit": String(AUDIT_HARD_LIMIT),
+        "X-RateLimit-Remaining": "0",
+        "X-RateLimit-Tier": "anonymous",
+        "Retry-After": String(retryAfterSeconds),
+      };
+
+      // Content negotiation: the published CLI v1.14.0 does
+      // `throw new Error(\`API error ${res.status}: ${text}\`)` — when the
+      // body is JSON, the user sees a single-line `{...}` dump on what
+      // should be the conversion moment. v1.17.0 (unpublished, blocked
+      // on NPM_TOKEN) renders nicely, but in the meantime ~70-150 shared-IP
+      // users/wk see the raw dump (buyer-journey-audit 2026-05-21 §#1).
+      //
+      // Fix: when the client doesn't explicitly Accept JSON (v1.14.0
+      // sends the fetch default `*/*`), return a plain-text rescue body
+      // that wraps cleanly inside the CLI's Error template. v1.17.0+
+      // sets `Accept: application/json` explicitly and continues to
+      // get the structured JSON it parses in handle429().
+      //
+      // No machine clients consume the JSON 429 body today (the only
+      // documented consumer is the CLI). If one appears later, it can
+      // opt into JSON by sending the standard Accept header.
+      const acceptHeader = (c.req.header("Accept") || "").toLowerCase();
+      const wantsJson = acceptHeader.includes("application/json");
+
+      if (!wantsJson) {
+        // Plain-text body designed to be readable even after the CLI's
+        // `Error: API error 429: ${text}` prefix and on the same line as
+        // it. Leading newline pushes the message past the prefix; the
+        // arrow + URL is the single rescue CTA (no paid-tier split — the
+        // user is hitting the *free* wall, surface the free fix).
+        const textBody = [
+          "",
+          "",
+          "⚠  Daily free audit limit reached on this network IP",
+          "   (likely shared via corporate NAT, CI runner, or dev container).",
+          "",
+          `   → Free API key in 30 seconds (no card): ${instantKeyUrl}`,
+          "     Resets at 00:00 UTC.",
+          "",
+        ].join("\n");
+        return c.text(textBody, 429, {
+          ...rateLimitHeaders,
+          "Content-Type": "text/plain; charset=utf-8",
+        });
+      }
+
       return c.json(
         {
           error: "rate_limit_exceeded",
-          message:
-            "You hit the free-tier daily limit on this network IP (likely shared with other developers via corporate NAT, CI runner, or dev container). Get a free API key in 30 seconds — no credit card — to lift the limit to 200/day.",
+          message: rescueMessage,
           shared_ip_hint: true,
           instant_key_url: instantKeyUrl,
           // Forward-compat: partial results aren't scored on the request
@@ -742,12 +792,7 @@ app.post("/api/audit", async (c) => {
           count: auditCount,
         },
         429,
-        {
-          "X-RateLimit-Limit": String(AUDIT_HARD_LIMIT),
-          "X-RateLimit-Remaining": "0",
-          "X-RateLimit-Tier": "anonymous",
-          "Retry-After": String(retryAfterSeconds),
-        }
+        rateLimitHeaders
       );
     }
 
