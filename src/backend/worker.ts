@@ -2104,16 +2104,20 @@ app.get("/badge/*", async (c) => {
  * Rate limit: 3 requests per IP per day
  *
  * source — funnel attribution (persisted to api_keys.source). Valid values:
- *   'web' (default), 'cli', 'api', 'mcp-soft-cta', 'audit-cli-429'
+ *   'web' (default), 'cli', 'api', 'mcp-soft-cta', 'audit-cli-429', 'audit-web'
  *
  * 'audit-cli-429' is set by the get-started landing page when a visitor
  * arrives via the CLI 429 rescue flow (?ref=audit-cli-429). Lets us
  * measure rate-limit-recovery conversion vs. organic CLI signups.
+ *
+ * 'audit-web' is set when a visitor arrives via the post-audit CTA on
+ * /audit (?ref=audit-web). Added 2026-05-22 after replacing the dead
+ * /api/waitlist 404 form (0 real signups in 6 weeks of being broken).
  */
 app.post("/api/keys/create", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
@@ -2238,13 +2242,16 @@ Commit · supply-chain risk scoring · getcommit.dev`;
   }
 
   if (emailSent) {
-    // In-flow callers (CLI rescue, MCP soft-CTA, audit-cli-429 web rescue)
-    // are in the middle of trying to use the API — they need the key NOW,
-    // not after an email round-trip. The get-started landing page JS already
-    // renders the key inline when `key` is in the response (with "Save this
-    // key now" UI). Email is sent as backup. For organic web signups (source
-    // === "web"), the email round-trip stays as a soft verification step.
-    const INLINE_KEY_SOURCES = new Set(["cli", "audit-cli-429", "mcp-soft-cta"]);
+    // In-flow callers (CLI rescue, MCP soft-CTA, audit-cli-429 web rescue,
+    // audit-web post-audit CTA) are in the middle of trying to use the API
+    // — they need the key NOW, not after an email round-trip. The get-started
+    // landing page JS already renders the key inline when `key` is in the
+    // response (with "Save this key now" UI). Email is sent as backup. For
+    // organic web signups (source === "web"), the email round-trip stays as
+    // a soft verification step. 'audit-web' added 2026-05-22 because users
+    // landing here just ran an audit and saw CRITICAL findings — they need
+    // to wire CI immediately, not wait for an email.
+    const INLINE_KEY_SOURCES = new Set(["cli", "audit-cli-429", "mcp-soft-cta", "audit-web"]);
     if (INLINE_KEY_SOURCES.has(source)) {
       return c.json({
         ok: true,
