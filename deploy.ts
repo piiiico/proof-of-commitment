@@ -20,6 +20,39 @@ if (!ACCOUNT_ID || !EMAIL || !API_KEY) {
 }
 
 // ---------------------------------------------------------------------------
+// PRE-DEPLOY GUARD: local branch staleness check
+// ---------------------------------------------------------------------------
+//
+// Catches the case where a long-running container has a checkout that's behind
+// origin/main. Without this, wrangler will happily build the stale source and
+// the deploy will wipe out commits that landed on main while the container was
+// asleep. (2026-05-22 incident: a session container deployed a worker.ts that
+// was 4 commits behind origin/main, regressing the shared-IP 429 rescue and
+// SSR bypass for ~5 minutes before re-deploy fixed it.)
+//
+// Override: DEPLOY_FORCE_STALE=1.
+{
+  const { $ } = await import("bun");
+  const fetchResult = await $`git fetch origin main`.quiet().nothrow();
+  if (fetchResult.exitCode === 0) {
+    const behindResult = await $`git rev-list --count HEAD..origin/main`.quiet().nothrow();
+    const behind = parseInt(behindResult.stdout.toString().trim(), 10);
+    if (Number.isFinite(behind) && behind > 0) {
+      console.error(`⛔ Pre-deploy guard: local HEAD is ${behind} commit(s) behind origin/main.`);
+      console.error("   Deploying now would wipe those commits from production.");
+      console.error("   Run: git pull --rebase origin main");
+      if (process.env.DEPLOY_FORCE_STALE !== "1") {
+        console.error("   Override: DEPLOY_FORCE_STALE=1 bun deploy.ts");
+        process.exit(1);
+      }
+      console.warn("   DEPLOY_FORCE_STALE=1 — proceeding despite staleness.\n");
+    }
+  } else {
+    console.warn("⚠️  Pre-deploy guard: git fetch failed — skipping staleness check");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // PRE-DEPLOY GUARD: source/production divergence detection
 // ---------------------------------------------------------------------------
 
