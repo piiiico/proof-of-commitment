@@ -314,8 +314,8 @@ async function inlineSignup(results) {
   if (!shouldPrompt) return;
 
   console.log(clr(c.dim, '  ─────────────────────────────────────────────'));
-  console.log(clr(c.bold, '  🔔 Get alerts when these scores change?'));
-  console.log(clr(c.dim, '     Free API key — no credit card, 10 seconds.\n'));
+  console.log(clr(c.bold, '  🔔 Lock in this audit. Get alerts if these packages get worse.'));
+  console.log(clr(c.dim, '     Free, no card, 10 seconds. Saves to ~/.commit/config.\n'));
 
   const { createInterface } = await import('readline');
   const rl = createInterface({ input: process.stdin, output: process.stdout });

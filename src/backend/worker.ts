@@ -3285,8 +3285,8 @@ function mcpCtaText(count: number): string {
       "",
       "─────────────────────────────────────────────────",
       `⚠ Commit MCP — ${count}/${MCP_HARD_LIMIT} free queries today (${remaining} left).`,
-      `   Get a free API key for higher limits + no daily wall:`,
-      `   → ${MCP_SIGNUP_URL}`,
+      `   Lock in alerts on packages you query — before the wall:`,
+      `   → ${MCP_SIGNUP_URL}    (free key, 30s, no card)`,
       "─────────────────────────────────────────────────",
     ].join("\n");
   }
@@ -3294,20 +3294,20 @@ function mcpCtaText(count: number): string {
     "",
     "─────────────────────────────────────────────────",
     `Commit MCP — ${count}/${MCP_HARD_LIMIT} free queries used today.`,
-    `Heavy user? Free API key (200/day): ${MCP_SIGNUP_URL}`,
+    `Get notified if any package you queried gets worse — free key, no card:`,
+    `→ ${MCP_SIGNUP_URL}`,
     "─────────────────────────────────────────────────",
   ].join("\n");
 }
 
 function mcpHardBlockText(count: number): string {
   return [
-    `Daily free MCP limit reached (${count}/${MCP_HARD_LIMIT}). Limit resets at 00:00 UTC.`,
+    `Daily free MCP limit reached (${count}/${MCP_HARD_LIMIT}). Resets at 00:00 UTC.`,
     "",
-    `Get a free API key to lift this limit (200 queries/day free tier):`,
-    `→ ${MCP_SIGNUP_URL}`,
+    `Free key lifts the wall + alerts you when packages get worse (200/day):`,
+    `→ ${MCP_SIGNUP_URL}    (30s, no card)`,
     "",
-    `Once you have a key, pass it as Authorization: Bearer sk_commit_…`,
-    `(MCP clients: configure as a custom header on this server.)`,
+    `Then set Authorization: Bearer sk_commit_… on this MCP server.`,
   ].join("\n");
 }
 
@@ -3336,9 +3336,9 @@ async function bumpAuditCount(env: Bindings, ip: string): Promise<number> {
 function auditCtaText(count: number): string {
   const remaining = Math.max(0, AUDIT_HARD_LIMIT - count);
   if (count >= AUDIT_STRONG_CTA_AT) {
-    return `⚠ Commit free tier — ${count}/${AUDIT_HARD_LIMIT} audits used today (${remaining} left). Get a free API key for higher limits: ${AUDIT_SIGNUP_URL}`;
+    return `⚠ Commit free tier — ${count}/${AUDIT_HARD_LIMIT} audits used today (${remaining} left). Lock in alerts on these packages before the wall — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`;
   }
-  return `Commit free tier — ${count}/${AUDIT_HARD_LIMIT} audits used today. Heavy user? Free API key (200/day): ${AUDIT_SIGNUP_URL}`;
+  return `Commit free tier — ${count}/${AUDIT_HARD_LIMIT} audits used today. Get notified when any of these scores get worse — free key, no card: ${AUDIT_SIGNUP_URL}`;
 }
 
 /**
