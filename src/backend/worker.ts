@@ -2238,11 +2238,17 @@ Commit · supply-chain risk scoring · getcommit.dev`;
   }
 
   if (emailSent) {
-    // CLI callers need the key directly (inline signup — no email round-trip)
-    if (source === "cli") {
+    // In-flow callers (CLI rescue, MCP soft-CTA, audit-cli-429 web rescue)
+    // are in the middle of trying to use the API — they need the key NOW,
+    // not after an email round-trip. The get-started landing page JS already
+    // renders the key inline when `key` is in the response (with "Save this
+    // key now" UI). Email is sent as backup. For organic web signups (source
+    // === "web"), the email round-trip stays as a soft verification step.
+    const INLINE_KEY_SOURCES = new Set(["cli", "audit-cli-429", "mcp-soft-cta"]);
+    if (INLINE_KEY_SOURCES.has(source)) {
       return c.json({
         ok: true,
-        message: `API key saved. Backup sent to ${email}.`,
+        message: `API key ready. Backup sent to ${email}.`,
         key: apiKey,
         key_prefix: keyPrefix,
       });
