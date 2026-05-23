@@ -2325,27 +2325,22 @@ Commit · supply-chain risk scoring · getcommit.dev`;
   }
 
   if (emailSent) {
-    // In-flow callers (CLI rescue, MCP soft-CTA, audit-cli-429 web rescue,
-    // audit-web post-audit CTA) are in the middle of trying to use the API
-    // — they need the key NOW, not after an email round-trip. The get-started
-    // landing page JS already renders the key inline when `key` is in the
-    // response (with "Save this key now" UI). Email is sent as backup. For
-    // organic web signups (source === "web"), the email round-trip stays as
-    // a soft verification step. 'audit-web' added 2026-05-22 because users
-    // landing here just ran an audit and saw CRITICAL findings — they need
-    // to wire CI immediately, not wait for an email.
-    const INLINE_KEY_SOURCES = new Set(["cli", "audit-cli-429", "mcp-soft-cta", "audit-web"]);
-    if (INLINE_KEY_SOURCES.has(source)) {
-      return c.json({
-        ok: true,
-        message: `API key ready. Backup sent to ${email}.`,
-        key: apiKey,
-        key_prefix: keyPrefix,
-      });
-    }
+    // Always return the key inline. Email is the backup, not the gate.
+    //
+    // History: this branch used to gate inline-delivery to specific in-flow
+    // sources (cli, audit-cli-429, mcp-soft-cta, audit-web) — the rationale
+    // being that organic 'web' signups should pass through an email
+    // round-trip as "soft verification." 2026-05-23 dogfood showed that
+    // verification framing is illusory: the key works the instant it's
+    // generated regardless of whether the user opens the email, so the
+    // round-trip just adds friction (mental switch to inbox = quit point).
+    // The 3-keys-per-IP-per-day rate limit above already prevents
+    // creation-spam abuse, so email-as-gate provides zero security value.
+    // Get-started JS handles inline display when `key` is present.
     return c.json({
       ok: true,
-      message: `API key sent to ${email}. Check your inbox.`,
+      message: `API key ready. Backup sent to ${email}.`,
+      key: apiKey,
       key_prefix: keyPrefix,
     });
   } else {

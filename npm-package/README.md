@@ -56,7 +56,7 @@ npx proof-of-commitment --file go.sum    # full transitive set
 # Install once, then use the `poc` alias:
 npm install -g proof-of-commitment
 
-# Get a free API key at https://getcommit.dev/get-started, then:
+# Get a free API key at https://getcommit.dev/get-started?utm_source=cli, then:
 poc login sk_commit_your_key_here
 # ✓ Authenticated — Tier: Free — Usage: 0/200 requests (daily)
 

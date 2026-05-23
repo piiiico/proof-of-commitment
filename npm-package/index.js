@@ -408,7 +408,7 @@ ${clr(c.bold, 'Monitoring (Pro):')}
   poc watchlist       List monitored packages with current scores + risk
   poc unwatch <pkg>   Remove a package from monitoring
 
-  Get a free key: https://getcommit.dev/get-started
+  Get a free key: https://getcommit.dev/get-started?utm_source=cli
   Upgrade to Pro:  https://getcommit.dev/pricing
 
 ${clr(c.bold, 'Options:')}
@@ -930,7 +930,7 @@ async function cmdLogin(keyArg) {
 
   if (!key || !key.startsWith('sk_commit_')) {
     console.error(clr(c.red, '\n  Invalid API key format. Keys start with sk_commit_'));
-    console.error(clr(c.dim, '  Get one at https://getcommit.dev/get-started\n'));
+    console.error(clr(c.dim, '  Get one at https://getcommit.dev/get-started?utm_source=cli\n'));
     process.exit(1);
   }
 
@@ -972,7 +972,7 @@ async function cmdStatus() {
   if (!key) {
     console.log(clr(c.dim, '\n  Not logged in.'));
     console.log(clr(c.dim, '  Run ') + clr(c.cyan, 'poc login') + clr(c.dim, ' to authenticate.'));
-    console.log(clr(c.dim, '  Get a free key at https://getcommit.dev/get-started\n'));
+    console.log(clr(c.dim, '  Get a free key at https://getcommit.dev/get-started?utm_source=cli\n'));
     return;
   }
 
