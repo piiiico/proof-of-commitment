@@ -2201,11 +2201,17 @@ app.get("/badge/*", async (c) => {
  * when the form was updated to display the key inline (parity with
  * /get-started/, which had carried the same email-as-gate copy bug).
  * Lets us split pricing-page conversion vs direct-landing conversion.
+ *
+ * 'pkg-profile' is set by the package-profile pages (/npm/:pkg, /pypi/:pkg,
+ * /cargo/:pkg, /go/:module) Monitor-this-package CTA. Added 2026-05-23 so
+ * we can measure SEO-organic conversions from package profile pages
+ * (potentially the largest indexable surface, post-01:08 trailing-slash
+ * fix) vs direct /get-started landings. Refs travel as ?ref=pkg-profile.
  */
 app.post("/api/keys/create", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web", "web-pricing"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web", "web-pricing", "pkg-profile"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
