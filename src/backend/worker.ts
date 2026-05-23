@@ -2214,6 +2214,15 @@ app.get("/badge/*", async (c) => {
  * /get-started/, which had carried the same email-as-gate copy bug).
  * Lets us split pricing-page conversion vs direct-landing conversion.
  *
+ * 'audit-web-inline' is set when the user converts via the inline email
+ * form embedded directly in the /audit post-results CTA (added 2026-05-23).
+ * Collapses the previous 2-step funnel (audit → click CTA → land on
+ * /get-started → enter email → submit) into a single inline form, mirroring
+ * the CLI inlineSignup() pattern from npm-package v1.16. Lets us measure
+ * conversion delta vs the navigate-to-page flow (audit-web-critical /
+ * audit-web-healthy) which now serves only as fallback for browsers with
+ * JS disabled. Drives audit-page → key creations without a second click.
+ *
  * 'pkg-profile' is set by the package-profile pages (/npm/:pkg, /pypi/:pkg,
  * /cargo/:pkg, /go/:module) Monitor-this-package CTA. Added 2026-05-23 so
  * we can measure SEO-organic conversions from package profile pages
@@ -2223,7 +2232,7 @@ app.get("/badge/*", async (c) => {
 app.post("/api/keys/create", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web", "audit-web-critical", "audit-web-healthy", "web-pricing", "pkg-profile"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-inline", "web-pricing", "pkg-profile"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
