@@ -5288,6 +5288,12 @@ app.get("/api/checkout", async (c) => {
     allow_promotion_codes: "true",
     billing_address_collection: "required",
     "metadata[tier]": tier,
+    // Brand bridge — Stripe account legal name is "AS Åmdal Invest" (one
+    // account serves both Commit and Synlig Digital). Per-session display_name
+    // override puts "Commit" at the top of Stripe Checkout. Holding entity
+    // still appears in small print under Link + on card statements.
+    // Verified via API probe 2026-05-23.
+    "branding_settings[display_name]": "Commit",
   });
 
   // Pre-fill customer email in Stripe so the checkout form starts filled.
@@ -5468,6 +5474,9 @@ app.post("/api/checkout-intent", async (c) => {
     billing_address_collection: "required",
     "metadata[tier]": tier,
     customer_email: rawEmail,
+    // Brand bridge — see /api/checkout above. Replaces "AS Åmdal Invest"
+    // header with "Commit". Verified via API probe 2026-05-23.
+    "branding_settings[display_name]": "Commit",
   });
 
   try {
