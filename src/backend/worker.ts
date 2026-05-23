@@ -5604,6 +5604,7 @@ app.get("/api/stats/teams-protected", async (c) => {
  *
  * Events handled:
  *   checkout.session.completed    — provision API key, email to customer
+ *   checkout.session.expired      — send abandonment-recovery email (dedupe on session_id)
  *   customer.subscription.deleted — revoke API key on cancellation
  *
  * Required env var:
@@ -5749,6 +5750,111 @@ Commit · getcommit.dev`;
         });
       } catch (emailErr) {
         console.error("Failed to send API key email:", emailErr instanceof Error ? emailErr.message : emailErr);
+      }
+    }
+  }
+
+  // ── checkout.session.expired: send abandonment-recovery email ──────
+  // Fires when a Stripe checkout session times out (24h default) without
+  // payment. We capture email at /api/checkout-intent before the redirect,
+  // so the recovery email always has a real address. Idempotent on
+  // session_id via INSERT OR IGNORE into checkout_recovery_emails.
+  if (event.type === "checkout.session.expired") {
+    const session = event.data.object as {
+      id?: string;
+      customer_details?: { email?: string };
+      customer_email?: string;
+      metadata?: { tier?: string };
+    };
+
+    const email = (session.customer_details?.email ?? session.customer_email ?? "").toLowerCase().trim();
+    const tier = (session.metadata?.tier ?? "pro") as "pro" | "developer";
+    const sessionId = session.id as string | undefined;
+
+    // Skip if no email or no session_id (webhook payload malformed)
+    if (!email || !sessionId) {
+      return c.json({ ok: true });
+    }
+
+    // Skip internal test emails (pico+*, hawkaa+*, test-evaluator-probe) —
+    // these are dogfood probes from the deploy/test harness, not real
+    // prospects we'd want to nag. Reuses parseEmailPatterns helper that
+    // /api/keys/stats uses to compute organic_mcp_keys.organic.
+    const patterns = parseEmailPatterns(c.env.INTERNAL_TEST_EMAIL_PATTERNS ?? DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS);
+    // Opt-in escape hatch: addresses containing "dogfood-abandon" are allowed
+    // through so we can E2E test the recovery flow end-to-end.
+    if (isInternalTestEmail(email, patterns) && !email.includes("dogfood-abandon")) {
+      return c.json({ ok: true });
+    }
+
+    // Dedupe — INSERT OR IGNORE returns meta.changes=0 if session already sent
+    let alreadySent = false;
+    try {
+      const result = await c.env.DB.prepare(
+        `INSERT OR IGNORE INTO checkout_recovery_emails (session_id, email, tier)
+         VALUES (?, ?, ?)`
+      ).bind(sessionId, email, tier).run();
+      // D1 returns { meta: { changes: 0 | 1 } }
+      const changes = (result as { meta?: { changes?: number } }).meta?.changes ?? 0;
+      alreadySent = changes === 0;
+    } catch (dedupeErr) {
+      // Fail-closed: if we can't write the dedupe row, don't send the email —
+      // better to skip a recovery than to spam someone on every webhook retry.
+      console.error("checkout_recovery_emails dedupe error:", dedupeErr instanceof Error ? dedupeErr.message : dedupeErr);
+      return c.json({ ok: true });
+    }
+
+    if (alreadySent) {
+      return c.json({ ok: true });
+    }
+
+    // Send recovery email via Resend
+    if (c.env.RESEND_API_KEY) {
+      const tierLabel = tier === "developer" ? "Developer" : "Pro";
+      const tierPrice = tier === "developer" ? "$15/mo" : "$29/mo";
+      const recoveryText = `You started a Commit ${tierLabel} checkout — anything we can help with?
+
+We noticed you started signing up for Commit ${tierLabel} (${tierPrice}) but didn't finish.
+
+No pressure. A few common questions:
+
+  • "Will my CLI still work without paying?" — Yes. Free tier stays free.
+    200 audits/day, no credit card. ${tierLabel} unlocks ${tier === "developer" ? "1,000 req/day + batch API" : "10,000 req/month + monitoring + alerts"}.
+
+  • "Can I cancel?" — Yes, instantly from the Stripe portal. No annual lock-in.
+
+  • "Is it really just ${tierPrice}?" — Yes. No setup fee, no per-seat,
+    no per-request charges beyond the included quota.
+
+If anything's blocking you, hit reply — I read every email.
+
+Pick up where you left off: https://getcommit.dev/pricing
+
+—
+Håkon Åmdal
+Commit · getcommit.dev`;
+
+      try {
+        const emailResp = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${c.env.RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            from: "Håkon at Commit <noreply@getcommit.dev>",
+            reply_to: "hawkaamdal@gmail.com",
+            to: [email],
+            subject: `You started a Commit ${tierLabel} checkout — anything we can help with?`,
+            text: recoveryText,
+          }),
+        });
+        if (!emailResp.ok) {
+          const errText = await emailResp.text();
+          console.error("Recovery email Resend error:", emailResp.status, errText.slice(0, 200));
+        }
+      } catch (emailErr) {
+        console.error("Failed to send recovery email:", emailErr instanceof Error ? emailErr.message : emailErr);
       }
     }
   }
