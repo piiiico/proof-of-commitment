@@ -2187,7 +2187,8 @@ app.get("/badge/*", async (c) => {
  * Rate limit: 3 requests per IP per day
  *
  * source — funnel attribution (persisted to api_keys.source). Valid values:
- *   'web' (default), 'cli', 'api', 'mcp-soft-cta', 'audit-cli-429', 'audit-web', 'web-pricing'
+ *   'web' (default), 'cli', 'api', 'mcp-soft-cta', 'audit-cli-429', 'audit-web',
+ *   'audit-web-critical', 'audit-web-healthy', 'web-pricing', 'pkg-profile'
  *
  * 'audit-cli-429' is set by the get-started landing page when a visitor
  * arrives via the CLI 429 rescue flow (?ref=audit-cli-429). Lets us
@@ -2196,6 +2197,17 @@ app.get("/badge/*", async (c) => {
  * 'audit-web' is set when a visitor arrives via the post-audit CTA on
  * /audit (?ref=audit-web). Added 2026-05-22 after replacing the dead
  * /api/waitlist 404 form (0 real signups in 6 weeks of being broken).
+ *
+ * 'audit-web-critical' / 'audit-web-healthy' are set by the post-result
+ * CTA on /audit (?ref=audit-web-critical when ≥1 CRITICAL flag found,
+ * ?ref=audit-web-healthy when 0 CRITICAL + ≥1 HIGH). The audit.astro
+ * page has emitted these two refs since 2026-05-22 but the REF_TO_SOURCE
+ * map on /get-started + VALID_SOURCES here didn't include them — both
+ * fell through to 'web', invisibly bucketing audit-page conversions
+ * with homepage signups. Added 2026-05-23 to close the attribution
+ * leak and split fear-driven (CRITICAL) from prevention-driven (HEALTHY)
+ * signups — the two cohorts likely have different conversion intent
+ * (alarm vs. monitoring) and different ARR.
  *
  * 'web-pricing' is set by the /pricing/ waitlist form. Added 2026-05-23
  * when the form was updated to display the key inline (parity with
@@ -2211,7 +2223,7 @@ app.get("/badge/*", async (c) => {
 app.post("/api/keys/create", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web", "web-pricing", "pkg-profile"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web", "audit-web-critical", "audit-web-healthy", "web-pricing", "pkg-profile"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
