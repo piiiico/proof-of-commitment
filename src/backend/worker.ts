@@ -5773,8 +5773,16 @@ Commit · getcommit.dev`;
       id?: string;
       customer_details?: { email?: string };
       customer_email?: string;
-      metadata?: { tier?: string };
+      metadata?: { tier?: string; slug?: string };
     };
+
+    // Cross-product filter: Synlig sessions always set metadata.slug (or use "direct").
+    // Commit sessions set metadata.tier but never metadata.slug. Skip Synlig sessions
+    // here — synlig-worker handles their abandonment flow.
+    if (session.metadata?.slug) {
+      console.log(`[stripe] checkout.session.expired id=${session.id} skipped (Synlig slug=${session.metadata.slug}) — handled by synlig-worker`);
+      return c.json({ ok: true });
+    }
 
     const email = (session.customer_details?.email ?? session.customer_email ?? "").toLowerCase().trim();
     const tier = (session.metadata?.tier ?? "pro") as "pro" | "developer";
