@@ -2187,7 +2187,7 @@ app.get("/badge/*", async (c) => {
  * Rate limit: 3 requests per IP per day
  *
  * source — funnel attribution (persisted to api_keys.source). Valid values:
- *   'web' (default), 'cli', 'api', 'mcp-soft-cta', 'audit-cli-429', 'audit-web'
+ *   'web' (default), 'cli', 'api', 'mcp-soft-cta', 'audit-cli-429', 'audit-web', 'web-pricing'
  *
  * 'audit-cli-429' is set by the get-started landing page when a visitor
  * arrives via the CLI 429 rescue flow (?ref=audit-cli-429). Lets us
@@ -2196,11 +2196,16 @@ app.get("/badge/*", async (c) => {
  * 'audit-web' is set when a visitor arrives via the post-audit CTA on
  * /audit (?ref=audit-web). Added 2026-05-22 after replacing the dead
  * /api/waitlist 404 form (0 real signups in 6 weeks of being broken).
+ *
+ * 'web-pricing' is set by the /pricing/ waitlist form. Added 2026-05-23
+ * when the form was updated to display the key inline (parity with
+ * /get-started/, which had carried the same email-as-gate copy bug).
+ * Lets us split pricing-page conversion vs direct-landing conversion.
  */
 app.post("/api/keys/create", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web", "web-pricing"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
