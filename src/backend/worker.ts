@@ -5263,8 +5263,8 @@ app.get("/api/checkout", async (c) => {
 
   const params = new URLSearchParams({
     mode: "subscription",
-    success_url: "https://getcommit.dev/checkout/success?session_id={CHECKOUT_SESSION_ID}",
-    cancel_url: "https://getcommit.dev/pricing",
+    success_url: "https://getcommit.dev/checkout/success/?session_id={CHECKOUT_SESSION_ID}",
+    cancel_url: "https://getcommit.dev/pricing/",
     "line_items[0][price]": priceId,
     "line_items[0][quantity]": "1",
     allow_promotion_codes: "true",
@@ -5291,14 +5291,14 @@ app.get("/api/checkout", async (c) => {
     if (!resp.ok) {
       const err = (await resp.json()) as { error?: { message?: string } };
       console.error("Stripe API error:", err.error?.message ?? resp.status);
-      return c.redirect("https://getcommit.dev/pricing?error=checkout_failed", 302);
+      return c.redirect("https://getcommit.dev/pricing/?error=checkout_failed", 302);
     }
 
     const session = (await resp.json()) as { url: string };
     return c.redirect(session.url, 302);
   } catch (err) {
     console.error("Checkout error:", err instanceof Error ? err.message : err);
-    return c.redirect("https://getcommit.dev/pricing?error=checkout_failed", 302);
+    return c.redirect("https://getcommit.dev/pricing/?error=checkout_failed", 302);
   }
 });
 
@@ -5442,8 +5442,8 @@ app.post("/api/checkout-intent", async (c) => {
   // Create Stripe checkout session.
   const params = new URLSearchParams({
     mode: "subscription",
-    success_url: "https://getcommit.dev/checkout/success?session_id={CHECKOUT_SESSION_ID}",
-    cancel_url: "https://getcommit.dev/pricing",
+    success_url: "https://getcommit.dev/checkout/success/?session_id={CHECKOUT_SESSION_ID}",
+    cancel_url: "https://getcommit.dev/pricing/",
     "line_items[0][price]": priceId,
     "line_items[0][quantity]": "1",
     allow_promotion_codes: "true",
