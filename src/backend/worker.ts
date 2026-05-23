@@ -5339,7 +5339,47 @@ app.get("/api/checkout/session", async (c) => {
       ? email.replace(/^(.)(.*)(@.*)$/, (_m, first, _mid, domain) => `${first}${"*".repeat(Math.min(_mid.length, 6))}${domain}`)
       : "";
 
-    return c.json({ email: maskedEmail, tier, paid });
+    // Atomically reveal the raw API key once. The webhook parks it in
+    // pending_key_reveals; the success page reads it here. After the first
+    // successful read we null out raw_key so reloads/sharing the URL can't
+    // re-leak the key. Only honored within 1 hour of webhook write to bound
+    // exposure if the URL is leaked. Email backup is still sent regardless.
+    let revealedKey: string | null = null;
+    if (paid) {
+      try {
+        const row = await c.env.DB.prepare(
+          `SELECT raw_key FROM pending_key_reveals
+            WHERE session_id = ?
+              AND raw_key IS NOT NULL
+              AND revealed_at IS NULL
+              AND datetime(created_at) > datetime('now', '-1 hour')`
+        ).bind(sessionId).first<{ raw_key: string | null }>();
+
+        if (row?.raw_key) {
+          const updateResult = await c.env.DB.prepare(
+            `UPDATE pending_key_reveals
+                SET raw_key = NULL,
+                    revealed_at = datetime('now')
+              WHERE session_id = ?
+                AND revealed_at IS NULL`
+          ).bind(sessionId).run();
+
+          // Only return the key if the UPDATE actually flipped revealed_at —
+          // protects against the read-then-update race if two tabs hit the
+          // endpoint at once.
+          // @ts-ignore D1Result.meta typing varies
+          const changes = (updateResult.meta?.changes ?? updateResult.changes ?? 0) as number;
+          if (changes > 0) {
+            revealedKey = row.raw_key;
+          }
+        }
+      } catch (revealErr) {
+        // Non-fatal: success-page reveal is best-effort, email is the contract.
+        console.error("checkout session reveal error:", revealErr instanceof Error ? revealErr.message : revealErr);
+      }
+    }
+
+    return c.json({ email: maskedEmail, tier, paid, key: revealedKey });
   } catch (err) {
     console.error("Checkout session lookup error:", err instanceof Error ? err.message : err);
     return c.json({ error: "lookup_failed" }, 500);
@@ -5564,6 +5604,7 @@ app.post("/api/stripe/webhook", async (c) => {
   // ── checkout.session.completed: provision API key ──────────────────
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as {
+      id?: string;
       customer_details?: { email?: string };
       customer_email?: string;
       customer?: string;
@@ -5575,6 +5616,7 @@ app.post("/api/stripe/webhook", async (c) => {
     const tier = (session.metadata?.tier ?? "pro") as "pro" | "developer";
     const stripeCustomerId = session.customer as string | undefined;
     const subscriptionId = session.subscription as string | undefined;
+    const stripeSessionId = session.id as string | undefined;
 
     if (!email) {
       console.error("Stripe webhook: no email in checkout session");
@@ -5607,6 +5649,28 @@ app.post("/api/stripe/webhook", async (c) => {
           stripe_customer_id, stripe_subscription_id, created_at)
        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, datetime('now'))`
     ).bind(id, keyHash, keyPrefix, email, tier, periodResetAt, stripeCustomerId ?? null, subscriptionId ?? null).run();
+
+    // Park the raw key briefly so the /checkout/success page can reveal it
+    // inline (mirrors the inline-key pattern shipped on /pricing/ and
+    // /get-started/ 2026-05-23). The success page calls /api/checkout/session
+    // which atomically reveals + nulls the raw key. Email is still sent below
+    // as backup. Idempotent on session_id (webhook may retry).
+    if (stripeSessionId) {
+      try {
+        await c.env.DB.prepare(
+          `INSERT INTO pending_key_reveals (session_id, raw_key, email, tier)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(session_id) DO UPDATE SET
+             raw_key = excluded.raw_key,
+             email = excluded.email,
+             tier = excluded.tier
+           WHERE pending_key_reveals.revealed_at IS NULL`
+        ).bind(stripeSessionId, apiKey, email, tier).run();
+      } catch (revealErr) {
+        // Non-fatal: success-page reveal is a nice-to-have, email is the contract.
+        console.error("pending_key_reveals insert error:", revealErr instanceof Error ? revealErr.message : revealErr);
+      }
+    }
 
     // Email the API key via Resend
     if (c.env.RESEND_API_KEY) {
