@@ -7,13 +7,13 @@
     "url": "https://github.com/piiiico/proof-of-commitment",
     "source": "github"
   },
-  "version": "1.14.3",
+  "version": "1.17.1",
   "websiteUrl": "https://getcommit.dev",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "proof-of-commitment",
-      "version": "1.14.0",
+      "version": "1.17.1",
       "transport": {
         "type": "stdio"
       }
