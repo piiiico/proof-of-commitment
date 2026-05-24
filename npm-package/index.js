@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.17.1
+ * proof-of-commitment CLI v1.18.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -279,10 +279,10 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
     }
   }
 
-  // Contextual upsell — show when findings make monitoring relevant
-  // In TTY mode, inlineSignup() handles the upsell interactively — skip static text
+  // Contextual upsell — show when findings make monitoring relevant.
+  // In TTY mode, inlineSignup() handles the CRITICAL/risky upsell interactively — skip static text there.
+  const hasKey = !!process.env.COMMIT_API_KEY || _cachedHasKey;
   if (effectiveCritical > 0) {
-    const hasKey = !!process.env.COMMIT_API_KEY || _cachedHasKey;
     if (hasKey) {
       console.log(clr(c.dim, `\n  📊 Monitor ${effectiveCritical === 1 ? 'this package' : 'these packages'}: `) +
         clr(c.cyan, `poc watch ${results.find(r => hasCritical(r.riskFlags))?.name || results[0]?.name}`));
@@ -293,6 +293,19 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
       console.log(clr(c.dim, '     Then run: ') + clr(c.cyan, 'poc login'));
     }
     // else: TTY mode — inlineSignup() will prompt interactively after printTable
+  } else if (!hasKey) {
+    // HEALTHY case + no saved key: soft watchlist CTA. The all-healthy
+    // footer previously surfaced only CI-shaped CTAs (Action, `poc init`)
+    // which both require active commitment — workflow change + repo edit.
+    // The lowest-friction conversion (email → API key → watchlist) was
+    // hidden behind the CRITICAL gate of inlineSignup(). Buyer-journey
+    // dogfood 2026-05-24 found 1472 weekly downloads → 0 organic signups;
+    // the watchlist value prop ("alert me when these degrade") is real
+    // for healthy packages too — that's exactly when monitoring matters.
+    // ref=audit-baseline distinguishes this funnel from audit-cli-429
+    // (rate-limit rescue) and from the static utm_source=cli help-line.
+    console.log(clr(c.dim, '\n  📊 Lock in this baseline — get alerted if any package degrades:'));
+    console.log(clr(c.dim, '     ') + clr(c.cyan, 'https://getcommit.dev/get-started?ref=audit-baseline&utm_source=cli') + clr(c.dim, '  (free, no card, 10s)'));
   }
   console.log();
 }
@@ -371,7 +384,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.16.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.18.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir

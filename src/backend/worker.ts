@@ -2228,11 +2228,22 @@ app.get("/badge/*", async (c) => {
  * we can measure SEO-organic conversions from package profile pages
  * (potentially the largest indexable surface, post-01:08 trailing-slash
  * fix) vs direct /get-started landings. Refs travel as ?ref=pkg-profile.
+ *
+ * 'audit-baseline' is set by the CLI's all-healthy footer (npm-package
+ * v1.18.0+). When `npx proof-of-commitment` finds 0 CRITICAL packages,
+ * the static footer now surfaces a soft "Lock in this baseline" CTA
+ * pointing at /get-started?ref=audit-baseline. Added 2026-05-24 after
+ * buyer-journey dogfood found 1472 weekly downloads producing 0 organic
+ * signups — the lowest-friction path (email-only, 10s) was previously
+ * gated behind the CRITICAL-only inlineSignup prompt. Distinguishing
+ * baseline-lock-in conversions from rate-limit-rescue (audit-cli-429)
+ * and from CI-shaped CTAs (cli) measures whether the all-healthy footer
+ * is the missing volume surface.
  */
 app.post("/api/keys/create", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-inline", "web-pricing", "pkg-profile"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-inline", "web-pricing", "pkg-profile"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
