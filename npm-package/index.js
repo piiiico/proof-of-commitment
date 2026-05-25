@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.18.0
+ * proof-of-commitment CLI v1.18.1
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -304,8 +304,8 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
     // for healthy packages too — that's exactly when monitoring matters.
     // ref=audit-baseline distinguishes this funnel from audit-cli-429
     // (rate-limit rescue) and from the static utm_source=cli help-line.
-    console.log(clr(c.dim, '\n  📊 Lock in this baseline — get alerted if any package degrades:'));
-    console.log(clr(c.dim, '     ') + clr(c.cyan, 'https://getcommit.dev/get-started?ref=audit-baseline&utm_source=cli') + clr(c.dim, '  (free, no card, 10s)'));
+    console.log(clr(c.dim, '\n  📊 Save this scan as your baseline. Re-run anytime with a free key:'));
+    console.log(clr(c.dim, '     ') + clr(c.cyan, 'https://getcommit.dev/get-started?ref=audit-baseline&utm_source=cli') + clr(c.dim, '  (200/day free; push alerts on Developer $15/mo)'));
   }
   console.log();
 }
@@ -384,7 +384,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.18.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.18.1 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
