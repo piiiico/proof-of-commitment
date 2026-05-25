@@ -5322,6 +5322,18 @@ app.get("/api/checkout", async (c) => {
     params.set("customer_email", prefillEmail);
   }
 
+  // GET-checkout is the fallback path used by pricing.astro when the POST
+  // checkout-intent flow errors. Forward UTM query params into Stripe metadata
+  // so the fallback doesn't silently drop attribution.
+  applyUtmToStripeMetadata(params, extractUtmFromObject({
+    utm_source: c.req.query("utm_source"),
+    utm_medium: c.req.query("utm_medium"),
+    utm_campaign: c.req.query("utm_campaign"),
+    utm_content: c.req.query("utm_content"),
+    utm_term: c.req.query("utm_term"),
+    referrer: c.req.query("referrer"),
+  }));
+
   try {
     const resp = await fetch("https://api.stripe.com/v1/checkout/sessions", {
       method: "POST",
@@ -5431,12 +5443,69 @@ app.get("/api/checkout/session", async (c) => {
 });
 
 /**
+ * Sanitize one UTM/referrer value for storage + Stripe metadata.
+ * - Drops non-strings.
+ * - Trims, strips control chars, lowercases (UTMs are case-insensitive by convention).
+ * - Caps length (Stripe metadata values are limited to 500 chars; we go shorter
+ *   for UTMs because long UTMs are almost always tracker spam).
+ * Returns null for empty / invalid input so we can skip persistence + metadata.
+ */
+function sanitizeUtmValue(raw: unknown, maxLen = 100): string | null {
+  if (typeof raw !== "string") return null;
+  // Strip ASCII control chars (incl. NUL, newline, tab) — they break Stripe
+  // metadata and corrupt CSV exports.
+  const cleaned = raw.replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, maxLen);
+  return cleaned.length > 0 ? cleaned.toLowerCase() : null;
+}
+
+interface UtmFields {
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  utm_content: string | null;
+  utm_term: string | null;
+  referrer: string | null;
+}
+
+function extractUtmFromObject(obj: Record<string, unknown> | undefined | null): UtmFields {
+  const o = obj ?? {};
+  return {
+    utm_source: sanitizeUtmValue(o.utm_source),
+    utm_medium: sanitizeUtmValue(o.utm_medium),
+    utm_campaign: sanitizeUtmValue(o.utm_campaign),
+    utm_content: sanitizeUtmValue(o.utm_content),
+    utm_term: sanitizeUtmValue(o.utm_term),
+    referrer: sanitizeUtmValue(o.referrer, 500),
+  };
+}
+
+function applyUtmToStripeMetadata(params: URLSearchParams, utm: UtmFields): void {
+  if (utm.utm_source) params.set("metadata[utm_source]", utm.utm_source);
+  if (utm.utm_medium) params.set("metadata[utm_medium]", utm.utm_medium);
+  if (utm.utm_campaign) params.set("metadata[utm_campaign]", utm.utm_campaign);
+  if (utm.utm_content) params.set("metadata[utm_content]", utm.utm_content);
+  if (utm.utm_term) params.set("metadata[utm_term]", utm.utm_term);
+  if (utm.referrer) params.set("metadata[referrer]", utm.referrer);
+}
+
+/**
  * POST /api/checkout-intent
  * Captures email lead before Stripe redirect. Stores the lead in D1 so
  * abandoned checkouts are visible in the admin dashboard.
  *
- * Body: { email: string, tier: "pro" | "developer" }
+ * Body: {
+ *   email: string,
+ *   tier: "pro" | "developer",
+ *   utm_source?, utm_medium?, utm_campaign?, utm_content?, utm_term?, referrer?
+ * }
  * Returns: { ok: true, checkout_url: string }
+ *
+ * UTM fields are persisted to checkout_leads (migration 0013) AND forwarded to
+ * Stripe checkout session metadata[utm_*], so paid conversions can be
+ * attributed back to the funnel (e.g. CLI watch-cmd) in Stripe Dashboard +
+ * webhook handlers. Closes the attribution gap surfaced by reflection
+ * b7d29ba6412805e8 (2026-05-25): UTM was visible in /pricing browser URL but
+ * dropped at this API boundary, making CLI-driven conversions invisible.
  */
 app.post("/api/checkout-intent", async (c) => {
   const stripeKey = c.env.STRIPE_SECRET_KEY;
@@ -5445,7 +5514,16 @@ app.post("/api/checkout-intent", async (c) => {
     return c.json({ error: "stripe_not_configured" }, 503);
   }
 
-  let body: { email?: string; tier?: string };
+  let body: {
+    email?: string;
+    tier?: string;
+    utm_source?: string;
+    utm_medium?: string;
+    utm_campaign?: string;
+    utm_content?: string;
+    utm_term?: string;
+    referrer?: string;
+  };
   try {
     body = await c.req.json();
   } catch {
@@ -5467,7 +5545,10 @@ app.post("/api/checkout-intent", async (c) => {
     return c.json({ error: "tier_unavailable" }, 503);
   }
 
-  // Persist lead before Stripe redirect — abandoned checkouts remain queryable.
+  const utm = extractUtmFromObject(body as Record<string, unknown>);
+
+  // Persist lead before Stripe redirect — abandoned checkouts remain queryable
+  // with their UTM attribution. /api/admin/leads exposes the new columns.
   try {
     const emailHash = await sha256Hex(rawEmail);
     const idBytes = new Uint8Array(8);
@@ -5476,8 +5557,24 @@ app.post("/api/checkout-intent", async (c) => {
     const ts = new Date().toISOString();
 
     await c.env.DB.prepare(
-      `INSERT INTO checkout_leads (id, email_hash, email, tier, source, created_at) VALUES (?, ?, ?, ?, ?, ?)`
-    ).bind(leadId, emailHash, rawEmail, tier, "pricing-modal", ts).run();
+      `INSERT INTO checkout_leads (
+         id, email_hash, email, tier, source, created_at,
+         utm_source, utm_medium, utm_campaign, utm_content, utm_term, referrer
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      leadId,
+      emailHash,
+      rawEmail,
+      tier,
+      "pricing-modal",
+      ts,
+      utm.utm_source,
+      utm.utm_medium,
+      utm.utm_campaign,
+      utm.utm_content,
+      utm.utm_term,
+      utm.referrer,
+    ).run();
   } catch (err) {
     // Non-fatal: log but continue to Stripe redirect. Lead capture shouldn't block checkout.
     console.error("checkout_intent lead persist error:", err instanceof Error ? err.message : err);
@@ -5498,6 +5595,12 @@ app.post("/api/checkout-intent", async (c) => {
     // header with "Commit". Verified via API probe 2026-05-23.
     "branding_settings[display_name]": "Commit",
   });
+
+  // Forward UTM attribution into Stripe metadata so it survives into:
+  //  - Stripe Dashboard session detail view
+  //  - checkout.session.completed webhook (subscription→funnel link)
+  //  - Stripe CSV exports for cohort analysis
+  applyUtmToStripeMetadata(params, utm);
 
   try {
     const resp = await fetch("https://api.stripe.com/v1/checkout/sessions", {
@@ -5539,8 +5642,14 @@ app.get("/api/admin/leads", async (c) => {
   const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10), 200);
 
   const rows = await c.env.DB.prepare(
-    `SELECT id, email, tier, source, created_at FROM checkout_leads WHERE source = ? ORDER BY created_at DESC LIMIT ?`
-  ).bind(source, limit).all<{ id: string; email: string; tier: string; source: string; created_at: string }>();
+    `SELECT id, email, tier, source, created_at,
+            utm_source, utm_medium, utm_campaign, utm_content, utm_term, referrer
+       FROM checkout_leads WHERE source = ? ORDER BY created_at DESC LIMIT ?`
+  ).bind(source, limit).all<{
+    id: string; email: string; tier: string; source: string; created_at: string;
+    utm_source: string | null; utm_medium: string | null; utm_campaign: string | null;
+    utm_content: string | null; utm_term: string | null; referrer: string | null;
+  }>();
 
   return c.json({
     leads: rows.results ?? [],
