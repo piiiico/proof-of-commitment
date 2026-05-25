@@ -309,16 +309,20 @@ async function resolveApiKey(
   if (tier !== "enterprise" && requestsThisPeriod >= tierConfig.limit) {
     const retryAfterSec = Math.floor((new Date(periodResetAt).getTime() - Date.now()) / 1000);
     // Upgrade target = next tier up. Free → Developer (cheaper first step), Developer → Pro.
+    // upgrade.url carries the authenticated user's email so /pricing pre-fills
+    // the modal — closes one re-type step at the exact moment a rate-limited
+    // user is most motivated to upgrade. See buildUpgradeUrl docstring.
+    const upgradeUrl = buildUpgradeUrl(row.email);
     const upgrade = tier === "free"
       ? {
-          url: "https://getcommit.dev/pricing",
+          url: upgradeUrl,
           plan: "developer",
           price: "$15/month",
           limit: "1,000 requests/day",
           message: "Upgrade to Developer for 5x more requests, batch API, and CI auto-trigger.",
         }
       : {
-          url: "https://getcommit.dev/pricing",
+          url: upgradeUrl,
           plan: "pro",
           price: "$29/month",
           limit: "10,000 requests/month",
@@ -3170,7 +3174,22 @@ async function getOrCreateDefaultProject(db: D1Database, apiKeyId: string, email
 
 /** Require a paid API key (Developer/Pro/Enterprise); returns the key context or an error response.
  *  Per /pricing: monitoring is included from Developer ($15/mo) upward.
+ *
+ *  The upgrade.url carries the authenticated user's email as a query param so
+ *  the /pricing modal pre-fills it — removes one re-type step at the highest-
+ *  stakes click in the funnel. The user is already authenticated to this
+ *  endpoint, so returning their own email back to them is not a leak. UTM
+ *  source/campaign is conventionally added by the CLI when it surfaces the
+ *  URL to the user (printUpgradeRequired in npm-package/index.js). The
+ *  pre-fill in /pricing.astro reads `email` from URLSearchParams and only
+ *  applies it when the value looks like an email.
  */
+function buildUpgradeUrl(email: string | undefined): string {
+  const base = "https://getcommit.dev/pricing";
+  if (!email) return base;
+  return `${base}?email=${encodeURIComponent(email)}`;
+}
+
 function requireProKey(
   c: { get: (k: string) => ApiKeyContext | null; json: (b: unknown, s?: number) => Response }
 ): ApiKeyContext | Response {
@@ -3182,11 +3201,12 @@ function requireProKey(
     }, 401);
   }
   if (key.tier !== "developer" && key.tier !== "pro" && key.tier !== "enterprise") {
+    const upgradeUrl = buildUpgradeUrl(key.email);
     return c.json({
       error: "upgrade_required",
-      message: "Monitoring + alerts start on Developer ($15/mo). Upgrade at https://getcommit.dev/pricing",
+      message: `Monitoring + alerts start on Developer ($15/mo). Upgrade at ${upgradeUrl}`,
       current_tier: key.tier,
-      upgrade: { url: "https://getcommit.dev/pricing", plan: "developer", price: "$15/month" },
+      upgrade: { url: upgradeUrl, plan: "developer", price: "$15/month" },
     }, 402);
   }
   return key;
@@ -3245,9 +3265,9 @@ app.post("/api/watchlist", async (c) => {
       current: existingCount,
       limit: cap,
       upgrade: key.tier === "developer"
-        ? { url: "https://getcommit.dev/pricing", plan: "pro", price: "$29/month" }
+        ? { url: buildUpgradeUrl(key.email), plan: "pro", price: "$29/month" }
         : key.tier === "pro"
-          ? { url: "https://getcommit.dev/pricing", plan: "enterprise" }
+          ? { url: buildUpgradeUrl(key.email), plan: "enterprise" }
           : undefined,
     }, 422);
   }
