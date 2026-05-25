@@ -367,7 +367,7 @@ async function inlineSignup(results) {
       console.log(clr(c.bold, '  Next steps:'));
       console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc status') + clr(c.dim, '       — check your account'));
       if (critPkgs.length > 0) {
-        console.log(clr(c.dim, '    • ') + clr(c.cyan, `poc watch ${critPkgs[0].name}`) + clr(c.dim, '  — start monitoring (Pro)'));
+        console.log(clr(c.dim, '    • ') + clr(c.cyan, `poc watch ${critPkgs[0].name}`) + clr(c.dim, '  — start monitoring (Developer $15/mo)'));
       }
       console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc init') + clr(c.dim, '          — add CI gate to this project'));
     } else if (data.message) {
@@ -384,7 +384,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.18.1 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.18.2 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -415,14 +415,14 @@ ${clr(c.bold, 'Account:')}
   poc status          Show current tier, usage, and limits
   poc logout          Remove saved API key
 
-${clr(c.bold, 'Monitoring (Pro):')}
+${clr(c.bold, 'Monitoring (Developer $15/mo+):')}
   poc watch <package> [--ecosystem npm|pypi|cargo|golang]
                       Add a package to daily monitoring
   poc watchlist       List monitored packages with current scores + risk
   poc unwatch <pkg>   Remove a package from monitoring
 
-  Get a free key: https://getcommit.dev/get-started?utm_source=cli
-  Upgrade to Pro:  https://getcommit.dev/pricing
+  Get a free key:        https://getcommit.dev/get-started?utm_source=cli
+  Enable monitoring:     https://getcommit.dev/pricing?utm_source=cli&utm_campaign=help
 
 ${clr(c.bold, 'Options:')}
   --json              Output results as JSON
@@ -965,13 +965,14 @@ async function cmdLogin(keyArg) {
   console.log(clr(c.dim, `  Saved to: ${configPath}`));
   console.log();
 
-  if (info.tier === 'pro' || info.tier === 'enterprise') {
-    console.log(clr(c.cyan, '  Pro features unlocked:'));
+  if (info.tier === 'developer' || info.tier === 'pro' || info.tier === 'enterprise') {
+    console.log(clr(c.cyan, '  Monitoring unlocked:'));
     console.log(clr(c.dim, '    poc watch <package>    Add a package to daily monitoring'));
     console.log(clr(c.dim, '    poc watchlist          View monitored packages'));
     console.log(clr(c.dim, '    poc unwatch <package>  Remove from monitoring'));
   } else {
-    console.log(clr(c.dim, '  Upgrade to Pro for monitoring + alerts: https://getcommit.dev/pricing?utm_source=cli'));
+    console.log(clr(c.dim, '  Enable monitoring + alerts on Developer ($15/mo):'));
+    console.log(clr(c.cyan, '    https://getcommit.dev/pricing?utm_source=cli&utm_campaign=post-login'));
   }
   console.log();
 }
@@ -1009,7 +1010,8 @@ async function cmdStatus() {
   if (info.tier === 'free') {
     const pct = info.requests_limit > 0 ? Math.round((info.requests_used / info.requests_limit) * 100) : 0;
     if (pct >= 80) {
-      console.log(clr(c.yellow, `  ⚠ ${pct}% of daily limit used. Upgrade for 10K/month: https://getcommit.dev/pricing`));
+      console.log(clr(c.yellow, `  ⚠ ${pct}% of daily limit used. Developer ($15/mo) gets 10K/month + monitoring:`));
+      console.log(clr(c.cyan, `    https://getcommit.dev/pricing?utm_source=cli&utm_campaign=status-limit`));
     }
   }
 }
@@ -1036,11 +1038,24 @@ function tierLabel(tier) {
 
 /**
  * Handle 402 upgrade response from watchlist endpoints.
+ * Reads server response so the tier name, price, and URL stay authoritative
+ * (server is canonical — CLI was historically out of date saying "Pro" when
+ * "Developer" was the actual gate). Appends CLI UTM for attribution.
  */
-function printUpgradeRequired() {
-  console.error(clr(c.yellow + c.bold, '\n  ✦ Commit Pro required'));
-  console.error(clr(c.dim, '    Monitoring, daily scans, and alerts are Pro features.'));
-  console.error(clr(c.cyan, '    Upgrade at https://getcommit.dev/pricing\n'));
+async function printUpgradeRequired(res, campaign = 'watchlist-402') {
+  let body = null;
+  try { body = await res.json(); } catch {}
+  const plan = (body && body.upgrade && body.upgrade.plan) || 'developer';
+  const planLabel = plan.charAt(0).toUpperCase() + plan.slice(1);
+  const price = (body && body.upgrade && body.upgrade.price) || '$15/month';
+  const baseUrl = (body && body.upgrade && body.upgrade.url) || 'https://getcommit.dev/pricing';
+  const url = baseUrl + (baseUrl.includes('?') ? '&' : '?') + `utm_source=cli&utm_campaign=${campaign}`;
+  const currentTier = body && body.current_tier ? body.current_tier : 'free';
+
+  console.error(clr(c.yellow + c.bold, `\n  ✦ ${planLabel} (${price}) required`));
+  console.error(clr(c.dim, `    Monitoring, daily scans, and alerts start on ${planLabel}.`));
+  console.error(clr(c.dim, `    Current tier: ${currentTier}`));
+  console.error(clr(c.cyan, `    Upgrade at ${url}\n`));
 }
 
 /**
@@ -1061,7 +1076,7 @@ async function cmdWatch(pkg, ecosystem) {
     body: JSON.stringify({ package: pkg, ecosystem }),
   });
 
-  if (res.status === 402) { printUpgradeRequired(); process.exit(1); }
+  if (res.status === 402) { process.stdout.write('\n'); await printUpgradeRequired(res, 'watch-cmd'); process.exit(1); }
 
   const data = await res.json();
   if (!res.ok) {
@@ -1093,7 +1108,7 @@ async function cmdWatchlist() {
     headers: { 'Authorization': `Bearer ${key}` },
   });
 
-  if (res.status === 402) { printUpgradeRequired(); process.exit(1); }
+  if (res.status === 402) { await printUpgradeRequired(res, 'watchlist-cmd'); process.exit(1); }
 
   const data = await res.json();
   if (!res.ok) {
@@ -1132,7 +1147,7 @@ async function cmdWatchlist() {
   const divider = '─'.repeat(divWidth);
 
   console.log('\n' + divider);
-  console.log(clr(c.dim, `  Commit Pro watchlist · ${pkgs.length}/${data.limit} packages · tier: ${data.tier}`));
+  console.log(clr(c.dim, `  Commit watchlist · ${pkgs.length}/${data.limit} packages · tier: ${data.tier}`));
   console.log(divider);
   console.log(header);
   console.log(divider);
@@ -1175,7 +1190,7 @@ async function cmdUnwatch(pkg, ecosystem) {
     body: JSON.stringify({ package: pkg, ecosystem }),
   });
 
-  if (res.status === 402) { printUpgradeRequired(); process.exit(1); }
+  if (res.status === 402) { process.stdout.write('\n'); await printUpgradeRequired(res, 'unwatch-cmd'); process.exit(1); }
 
   const data = await res.json();
   if (!res.ok) {
@@ -1315,7 +1330,7 @@ ${rows}
 <div class="footer">
   <span>Generated by <a href="${WEB}" target="_blank">proof-of-commitment</a></span>
   <span><a href="https://github.com/piiiico/commit-action" target="_blank">GitHub Action</a></span>
-  <span><a href="https://getcommit.dev/pricing?utm_source=cli&amp;utm_medium=report" target="_blank">Commit Pro</a></span>
+  <span><a href="https://getcommit.dev/pricing?utm_source=cli&amp;utm_medium=report" target="_blank">Enable monitoring</a></span>
 </div>
 <script>
 function copyMd() {
@@ -1573,9 +1588,11 @@ jobs:
     console.log(clr(c.white, '  1. The badge updates daily with your project\'s score'));
     console.log(clr(c.white, '  2. Push to trigger the existing workflow'));
   }
-  console.log(clr(c.dim, `\n  Want daily monitoring + alerts? Get a free key:`));
-  console.log(clr(c.cyan, '  https://getcommit.dev/get-started?utm_source=cli'));
-  console.log(clr(c.dim, '  Then run: ') + clr(c.cyan, 'poc login') + clr(c.dim, ' + ') + clr(c.cyan, 'poc watch <package>\n'));
+  console.log(clr(c.dim, `\n  Want daily monitoring + alerts on your dependencies?`));
+  console.log(clr(c.dim, '    1. Free key (200 scans/day):  ') + clr(c.cyan, 'https://getcommit.dev/get-started?utm_source=cli'));
+  console.log(clr(c.dim, '    2. Authenticate:              ') + clr(c.cyan, 'poc login'));
+  console.log(clr(c.dim, '    3. Enable monitoring ($15/mo): ') + clr(c.cyan, 'https://getcommit.dev/pricing?utm_source=cli&utm_campaign=init'));
+  console.log(clr(c.dim, '    4. Watch a package:           ') + clr(c.cyan, 'poc watch <package>\n'));
 }
 
 async function main() {
