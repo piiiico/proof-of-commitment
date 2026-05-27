@@ -806,10 +806,20 @@ app.post("/api/audit", async (c) => {
   const useGolang = ecosystem === "golang" || ecosystem === "go";
 
   // For npm packages: bulk-fetch all download data in ONE request before processing.
+  //
+  // Consistency note: the bulk path skips trend computation (buildNpmCommitmentProfile
+  // sets trend=null when preloadedWeekly is supplied). This makes the score diverge
+  // from the slow path by up to ±3 (the trend bonus in scoreDownloads). The badge
+  // endpoint at /badge/npm/* always uses the slow path. To keep single-package audit
+  // calls consistent with the badge (the case Frank/operators test side-by-side when
+  // evaluating us), skip the bulk path when there's only one unscoped npm package.
+  // For ≥2 packages we still use bulk for race-safety against concurrent npm 429s.
+  // TODO: extend bulk path to compute trend (fetch 60-day point series per package)
+  // to close the remaining inconsistency on multi-package bulk audits.
   const npmPackages = (!usePypi && !useCargo && !useGolang) ? packages : [];
   const unscopedNpm = npmPackages.filter((p) => !p.startsWith("@"));
 
-  const bulkWeekly = unscopedNpm.length > 0
+  const bulkWeekly = unscopedNpm.length >= 2
     ? await bulkFetchNpmWeeklyDownloads(unscopedNpm)
     : new Map<string, number | null>();
 
