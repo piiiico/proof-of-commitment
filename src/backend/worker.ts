@@ -725,7 +725,7 @@ app.post("/api/audit", async (c) => {
   if (packages.length === 0) {
     return c.json({
       error: "'packages' array is required (max 20)",
-      hint: "Send an array of package names: { packages: [\"express\", \"lodash\"] }. Object shape { name, version } also accepted; the 'version' field is ignored.",
+      hint: "Send an array of package names: { packages: [\"express\", \"lodash\"] }. Inside the array, the object shape { name, version } is also accepted (e.g. { packages: [{ name: \"express\", version: \"4.x\" }] }); the version field is ignored.",
     }, 400);
   }
 
