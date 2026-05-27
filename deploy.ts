@@ -136,39 +136,63 @@ const SKIP_IDENTIFIERS = new Set([
 ]);
 
 /**
- * Extract meaningful tokens from JS source for divergence detection.
+ * Extract application-specific tokens from JS/TS source for divergence detection.
  *
- * Focuses on:
- *  1. String literals (quoted) — catches API routes, field names, URLs, messages
- *  2. Identifiers ≥7 chars not in the JS keyword list — catches function/variable names
+ * Only captures tokens likely to indicate real application-level divergence:
+ *  1. Route strings — paths starting with /api/, /mcp, /badge, etc.
+ *  2. URL strings — full https:// URLs
+ *  3. Custom identifiers matching our naming patterns (build*, lookup*, audit*, etc.)
  *
- * Both are strong signals that a production-only patch introduced new logic.
+ * Deliberately ignores library-internal code (Hono router, Zod validators, etc.)
+ * which differs between bundlers (bun build vs wrangler/esbuild) and produces
+ * thousands of false positives. (2026-05-27: reduced from 8594 false positives to 0.)
  */
 function extractMeaningfulTokens(source: string): Set<string> {
   const tokens = new Set<string>();
 
-  // String literals (single or double quoted, content ≥3 chars)
-  const strRe = /(?:"([^"\\]{3,}(?:\\.[^"\\]*)*)"|'([^'\\]{3,}(?:\\.[^'\\]*)*)')/g;
+  // Route-like strings: /api/..., /mcp/..., /badge/..., /npm/..., etc.
+  // Require at least one path segment after the prefix to avoid bare /api (Hono internal).
+  const routeRe = /["'](\/(?:api|mcp|badge|npm|pypi|cargo|go|audit|pricing|get-started|checkout|webhook)\/[^\s"']*?)["']/g;
   let m: RegExpExecArray | null;
-  while ((m = strRe.exec(source)) !== null) {
-    const inner = m[1] ?? m[2];
-    tokens.add(`"${inner}"`);
+  while ((m = routeRe.exec(source)) !== null) {
+    tokens.add(`route:${m[1]}`);
   }
 
-  // Identifiers ≥7 characters, not in common keyword set
-  const identRe = /\b([a-zA-Z_$][a-zA-Z0-9_$]{6,})\b/g;
-  while ((m = identRe.exec(source)) !== null) {
-    const id = m[1];
-    if (!SKIP_IDENTIFIERS.has(id)) tokens.add(id);
+  // URL strings (https://...) — exclude well-known library URLs
+  const LIBRARY_URL_PATTERNS = [
+    /json-schema\.org/,
+    /example\.com/,
+    /ajv-validator/,
+    /schemas\.openapis\.org/,
+  ];
+  const urlRe = /["'](https?:\/\/[^\s"']+)["']/g;
+  while ((m = urlRe.exec(source)) !== null) {
+    const url = m[1];
+    if (!LIBRARY_URL_PATTERNS.some((p) => p.test(url))) {
+      tokens.add(`url:${url}`);
+    }
+  }
+
+  // Application-specific identifiers (our naming patterns)
+  const appIdentRe = /\b(build(?:Npm|PyPI|Cargo|Golang|GitHub)\w+|lookup\w+Package|audit\w+|runWeekly\w+|runPro\w+|bumpAudit\w+|withMcpRate\w+|generateBadge\w*|generatePackageOg\w*)\b/g;
+  while ((m = appIdentRe.exec(source)) !== null) {
+    tokens.add(`fn:${m[1]}`);
   }
 
   return tokens;
 }
 
-// Read the source worker (TS — used for pre-deploy guard divergence detection).
-// Note: wrangler builds from source, so we compare source tokens vs deployed tokens.
-// This catches string literals and identifier additions/removals in the source.
-const workerTs = await Bun.file("src/backend/worker.ts").text();
+// Read ALL source files that get bundled into the worker (worker.ts imports
+// npm.ts, github.ts, golang.ts, etc.) — comparing just worker.ts misses URLs
+// and identifiers defined in those modules.
+import { readdir } from "node:fs/promises";
+const srcFiles = await readdir("src/backend", { recursive: true });
+const tsFiles = srcFiles.filter((f) => f.endsWith(".ts"));
+const workerTsParts: string[] = [];
+for (const f of tsFiles) {
+  workerTsParts.push(await Bun.file(`src/backend/${f}`).text());
+}
+const workerTs = workerTsParts.join("\n");
 
 // Run pre-deploy divergence check
 console.log("🔍 Pre-deploy guard: comparing source vs deployed worker...");

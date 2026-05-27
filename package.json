@@ -11,7 +11,7 @@
     "dev:backend": "bun run --hot src/backend/server.ts",
     "start:backend": "bun run src/backend/server.ts",
     "start:mcp": "bun run src/mcp/server.ts",
-    "build:worker": "bun build src/backend/worker.ts --target=browser --format=esm --minify --outfile=dist/worker.js",
+    "build:worker": "bun build src/backend/worker.ts --target=browser --format=esm --minify --outdir=dist --entry-naming=worker.js",
     "deploy": "bun deploy.ts",
     "build:all": "bun run build:ext && bun run build:worker",
     "test:e2e": "bun run src/test/e2e.ts"
