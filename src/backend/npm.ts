@@ -541,8 +541,10 @@ export async function buildNpmCommitmentProfile(
   const releaseConsistency = scoreReleases(versionCount, daysSinceLastPublish);
   const maintainerDepth = scoreMaintainers(maintainerCount);
   const trustedPublishingScore = trustedPublishing ? 2 : 0;
-  const commitmentScore =
-    longevity + downloadMomentum + releaseConsistency + maintainerDepth + githubBacking + trustedPublishingScore;
+  const commitmentScore = Math.min(
+    100,
+    longevity + downloadMomentum + releaseConsistency + maintainerDepth + githubBacking + trustedPublishingScore,
+  );
 
   // 5. Build summary
   const ageStr =
