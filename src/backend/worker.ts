@@ -2683,9 +2683,9 @@ app.get("/api/keys/usage", async (c) => {
 // MCP rate-limit thresholds. Declared here (not next to the MCP server
 // definition further down) so MCP_TRAFFIC_THRESHOLDS below can reference them
 // at module-init time without TDZ. The MCP server reuses these same constants.
-const MCP_SOFT_CTA_AT = 41;     // first call to include CTA
-const MCP_STRONG_CTA_AT = 81;   // upgrade message tone
-const MCP_HARD_LIMIT = 100;     // beyond → 429-style block
+const MCP_SOFT_CTA_AT = 5;      // first call to include CTA
+const MCP_STRONG_CTA_AT = 10;   // upgrade message tone
+const MCP_HARD_LIMIT = 15;      // beyond → 429-style block (was 100 — tightened to drive signups)
 // Points at the real signup form. /signup doesn't exist on getcommit.dev — the
 // SPA fallback serves the homepage, so users following the CTA landed on the
 // marketing page with no form. /get-started is the actual email-capture page
@@ -2698,9 +2698,9 @@ const MCP_SIGNUP_URL =
 // pre-this, anonymous CLI/script users could fire unlimited calls. Now they
 // see escalating CTA pressure and a hard cap at 100/IP/UTC-day. API key
 // holders bypass entirely. See /workspace/commit/conversion-gap-diagnosis-2026-05-20.md.
-const AUDIT_SOFT_CTA_AT = 41;
-const AUDIT_STRONG_CTA_AT = 81;
-const AUDIT_HARD_LIMIT = 100;
+const AUDIT_SOFT_CTA_AT = 5;
+const AUDIT_STRONG_CTA_AT = 10;
+const AUDIT_HARD_LIMIT = 15;    // was 100 — tightened to drive free-key signups (free key = 200/day)
 /** On 429, score this many packages as a free "taste" so the user sees
  *  real value before the signup CTA. The CLI already handles the
  *  `packages_already_scored` field — it just never fires because the
