@@ -1235,6 +1235,55 @@ app.post("/api/audit/github", async (c) => {
 
   const { owner, repo } = parsed;
 
+  // Per-IP daily rate limit for anonymous traffic. API key holders bypass
+  // (their tier quota in TIER_LIMITS governs total /api/* usage — the
+  // /api/* middleware already attached them via c.get("apiKey")). SSR bypass
+  // matches the /api/audit + /api/graph patterns: the Pages worker calls this
+  // endpoint to render the audit page server-side, and X-SSR-Token matching
+  // ADMIN_SECRET skips the counter so SSR traffic doesn't share a budget with
+  // real users. Bump-first → 429-on-over avoids running the slow npm/PyPI
+  // scoring path for over-limit traffic (saves CPU + outbound GitHub calls).
+  // _cta + X-RateLimit-* headers attached to the success response below.
+  const apiKeyCtx = c.get("apiKey");
+  const githubAuditSsrToken = c.req.header("X-SSR-Token");
+  const githubAuditIsSSR = githubAuditSsrToken != null && githubAuditSsrToken.length > 0 && githubAuditSsrToken === c.env.ADMIN_SECRET;
+  let githubAuditCount = 0;
+  let githubAuditRateLimited = false;
+  if (!apiKeyCtx && !githubAuditIsSSR) {
+    githubAuditRateLimited = true;
+    const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
+    githubAuditCount = await bumpGithubAuditCount(c.env, ip);
+    if (githubAuditCount > GITHUB_AUDIT_HARD_LIMIT) {
+      const now = new Date();
+      const tomorrowUtc = Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() + 1
+      );
+      const retryAfterSec = Math.max(1, Math.floor((tomorrowUtc - now.getTime()) / 1000));
+      return c.json(
+        {
+          error: "github_audit_rate_limit_exceeded",
+          message: `You've used ${Math.min(githubAuditCount - 1, GITHUB_AUDIT_HARD_LIMIT)}/${GITHUB_AUDIT_HARD_LIMIT} free GitHub repo audits today. Whole-repo dependency audit is a Developer feature ($15/mo, 50 repos/month) or Pro ($29/mo, 500/month). Single-package scoring at /api/audit and /api/score remains free.`,
+          upgrade: {
+            url: GITHUB_AUDIT_UPGRADE_URL,
+            plan: "developer",
+            price: "$15/month",
+            limit: "50 GitHub repo audits/month",
+          },
+          retry_after: retryAfterSec,
+        },
+        429,
+        {
+          "Retry-After": String(retryAfterSec),
+          "X-RateLimit-Limit": String(GITHUB_AUDIT_HARD_LIMIT),
+          "X-RateLimit-Remaining": "0",
+          "X-RateLimit-Tier": "anonymous",
+        }
+      );
+    }
+  }
+
   // Try to fetch package.json and/or requirements.txt
   const [packageJsonContent, requirementsTxtContent] = await Promise.all([
     fetchGitHubRaw(owner, repo, "package.json"),
@@ -1311,13 +1360,29 @@ app.post("/api/audit/github", async (c) => {
   const allResults = [...npmResults, ...pypiResults];
   allResults.sort((a, b) => (a.score ?? 101) - (b.score ?? 101));
 
-  return c.json({
+  const responseBody: Record<string, unknown> = {
     repo: `${owner}/${repo}`,
     npmPackages: npmPackages.length,
     pypiPackages: pypiPackages.length,
     count: allResults.length,
     results: allResults,
-  });
+  };
+  // Attach soft-CTA upgrade nudge once anon traffic hits the threshold. At
+  // HARD_LIMIT=2 / SOFT_CTA_AT=2 this fires on the second-and-last free call,
+  // visible just before the wall — same shape as graph_rate_limits.
+  if (githubAuditRateLimited && githubAuditCount >= GITHUB_AUDIT_SOFT_CTA_AT) {
+    responseBody._cta = githubAuditCtaText(githubAuditCount);
+  }
+
+  if (githubAuditRateLimited) {
+    return c.json(responseBody, 200, {
+      "X-RateLimit-Limit": String(GITHUB_AUDIT_HARD_LIMIT),
+      "X-RateLimit-Remaining": String(Math.max(0, GITHUB_AUDIT_HARD_LIMIT - githubAuditCount)),
+      "X-RateLimit-Tier": "anonymous",
+    });
+  }
+
+  return c.json(responseBody);
 });
 
 // ── SVG Badge Generator ───────────────────────────────────────────────
@@ -2660,6 +2725,20 @@ const GRAPH_HARD_LIMIT = 3;
 const GRAPH_UPGRADE_URL =
   "https://getcommit.dev/pricing?ref=graph-paywall";
 
+// /api/audit/github per-IP daily rate-limit thresholds. Tightest of the three
+// counters (audit=100, graph=3, github-audit=2) because /pricing has no free
+// allowance for github audit at all: Developer ($15/mo) gets 50/mo, Pro ($29/mo)
+// gets 500/mo, Open lists nothing. Pre-this, POST /api/audit/github was
+// completely unauthenticated and unlimited — the whole-repo dependency walk
+// was being given away to anonymous traffic with zero conversion pressure.
+// HARD_LIMIT=2 gives two free repo audits as a taste, then walls off. API key
+// holders bypass entirely. SSR token bypass mirrors /api/audit + /api/graph.
+// See buyer-journey audit 2026-05-28 + migration 0015_github_audit_rate_limits.
+const GITHUB_AUDIT_SOFT_CTA_AT = 2;
+const GITHUB_AUDIT_HARD_LIMIT = 2;
+const GITHUB_AUDIT_UPGRADE_URL =
+  "https://getcommit.dev/pricing?ref=github-audit-paywall";
+
 /**
  * MCP traffic + organic-key aggregations used by /api/keys/stats. Exported
  * (not just internal) so test/keys-stats.test.ts can drive them against a
@@ -3679,6 +3758,34 @@ async function bumpGraphCount(env: Bindings, ip: string): Promise<number> {
 function graphCtaText(count: number): string {
   const remaining = Math.max(0, GRAPH_HARD_LIMIT - count);
   return `Commit free tier — ${count}/${GRAPH_HARD_LIMIT} graph queries used today (${remaining} left). Transitive dependency analysis is a Pro feature ($29/mo) — upgrade for 200/month: ${GRAPH_UPGRADE_URL}`;
+}
+
+/**
+ * Increment today's /api/audit/github counter for this IP. Returns the
+ * post-increment count. Atomic via ON CONFLICT … RETURNING count. Separate
+ * table from /api/audit and /api/graph so the three counters never share a
+ * budget — a heavy single-package CLI user shouldn't lock out repo audits
+ * (or vice versa). See migration 0015_github_audit_rate_limits.sql.
+ */
+async function bumpGithubAuditCount(env: Bindings, ip: string): Promise<number> {
+  const date = todayUtcDate();
+  try {
+    const row = await env.DB.prepare(
+      `INSERT INTO github_audit_rate_limits (ip, date, count) VALUES (?, ?, 1)
+       ON CONFLICT(ip, date) DO UPDATE SET count = count + 1
+       RETURNING count`
+    ).bind(ip, date).first<{ count: number }>();
+    return row?.count ?? 1;
+  } catch {
+    // Defensive: never break /api/audit/github on bookkeeping failure.
+    // Fail open with count=1 — worst case is the user skips the soft-CTA tier.
+    return 1;
+  }
+}
+
+function githubAuditCtaText(count: number): string {
+  const remaining = Math.max(0, GITHUB_AUDIT_HARD_LIMIT - count);
+  return `Commit free tier — ${count}/${GITHUB_AUDIT_HARD_LIMIT} GitHub repo audits used today (${remaining} left). Repo-wide dependency audit is a Developer feature ($15/mo, 50/month) or Pro ($29/mo, 500/month): ${GITHUB_AUDIT_UPGRADE_URL}`;
 }
 
 /**
