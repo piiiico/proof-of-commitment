@@ -5697,6 +5697,14 @@ app.get("/api/checkout", async (c) => {
     referrer: c.req.query("referrer"),
   }));
 
+  // Forward audit-context — symmetric with POST /api/checkout-intent.
+  // Audit-critical-key flow lands here on POST-failure fallback; preserving
+  // packages= keeps the closing-the-loop UX intact even on the fallback path.
+  applyAuditCtxToStripeMetadata(params, extractAuditCtxFromObject({
+    packages: c.req.query("packages"),
+    eco: c.req.query("eco"),
+  }));
+
   try {
     const resp = await fetch("https://api.stripe.com/v1/checkout/sessions", {
       method: "POST",
@@ -5746,12 +5754,20 @@ app.get("/api/checkout/session", async (c) => {
       customer_details?: { email?: string };
       customer_email?: string;
       payment_status?: string;
-      metadata?: { tier?: string };
+      metadata?: { tier?: string; audit_packages?: string; audit_eco?: string };
     };
 
     const email = session.customer_details?.email ?? session.customer_email ?? "";
     const tier = session.metadata?.tier ?? "pro";
     const paid = session.payment_status === "paid";
+
+    // Audit-context — re-validate Stripe metadata defensively. Stripe
+    // doesn't tamper with metadata, but anything coming back over the wire
+    // from a 3rd party gets the same shape check we apply on entry.
+    const auditCtx = extractAuditCtxFromObject({
+      packages: session.metadata?.audit_packages,
+      eco: session.metadata?.audit_eco,
+    });
 
     // Mask email for privacy: "h***@example.com"
     const maskedEmail = email
@@ -5798,7 +5814,16 @@ app.get("/api/checkout/session", async (c) => {
       }
     }
 
-    return c.json({ email: maskedEmail, tier, paid, key: revealedKey });
+    return c.json({
+      email: maskedEmail,
+      tier,
+      paid,
+      key: revealedKey,
+      // Audit-context for one-click "watch these N packages" on success page.
+      // Null when visitor came from non-audit funnel (CLI, direct, etc).
+      audit_packages: auditCtx.packages,
+      audit_eco: auditCtx.eco,
+    });
   } catch (err) {
     console.error("Checkout session lookup error:", err instanceof Error ? err.message : err);
     return c.json({ error: "lookup_failed" }, 500);
@@ -5840,6 +5865,46 @@ function extractUtmFromObject(obj: Record<string, unknown> | undefined | null): 
     utm_term: sanitizeUtmValue(o.utm_term),
     referrer: sanitizeUtmValue(o.referrer, 500),
   };
+}
+
+/**
+ * Audit-context: comma-separated package names + ecosystem that the visitor
+ * had in their /audit results CRITICAL list. Threaded through Stripe metadata
+ * so the post-payment /checkout/success page can offer "watch these N
+ * packages on your new Developer/Pro plan" in one click — closing the
+ * audit→pay→watchlist loop without making the user re-enter what they
+ * audited 60 seconds earlier.
+ *
+ * Validation matches /api/watchlist's POST body shape: package name regex
+ * `[@a-zA-Z0-9._/-]+` up to 214 chars; ecosystem ∈ {npm,pypi,cargo,golang}.
+ * Caps total length at 480 chars (Stripe metadata values are 500-char limit).
+ */
+interface AuditCtxFields {
+  packages: string | null;
+  eco: string | null;
+}
+
+function extractAuditCtxFromObject(obj: Record<string, unknown> | undefined | null): AuditCtxFields {
+  const o = obj ?? {};
+  let packages: string | null = null;
+  if (typeof o.packages === "string" && o.packages.length > 0 && o.packages.length < 480) {
+    const names = o.packages.split(",").map((n) => n.trim()).filter(Boolean);
+    const valid = names
+      .filter((n) => /^[@a-zA-Z0-9._/-]+$/.test(n) && n.length <= 214)
+      .slice(0, 5);
+    if (valid.length > 0) packages = valid.join(",");
+  }
+  let eco: string | null = null;
+  if (typeof o.eco === "string") {
+    const lower = o.eco.toLowerCase();
+    if (ECOSYSTEMS.has(lower)) eco = lower;
+  }
+  return { packages, eco };
+}
+
+function applyAuditCtxToStripeMetadata(params: URLSearchParams, ctx: AuditCtxFields): void {
+  if (ctx.packages) params.set("metadata[audit_packages]", ctx.packages);
+  if (ctx.eco) params.set("metadata[audit_eco]", ctx.eco);
 }
 
 function applyUtmToStripeMetadata(params: URLSearchParams, utm: UtmFields): void {
@@ -5895,6 +5960,8 @@ app.post("/api/checkout-intent", async (c) => {
     utm_content?: string;
     utm_term?: string;
     referrer?: string;
+    packages?: string;
+    eco?: string;
   };
   try {
     body = await c.req.json();
@@ -5973,6 +6040,11 @@ app.post("/api/checkout-intent", async (c) => {
   //  - checkout.session.completed webhook (subscription→funnel link)
   //  - Stripe CSV exports for cohort analysis
   applyUtmToStripeMetadata(params, utm);
+
+  // Forward audit-context (packages + eco) into Stripe metadata so the
+  // post-payment /checkout/success page can offer "watch these N packages"
+  // in one click. Closes audit→pay→watchlist loop.
+  applyAuditCtxToStripeMetadata(params, extractAuditCtxFromObject(body as Record<string, unknown>));
 
   try {
     const resp = await fetch("https://api.stripe.com/v1/checkout/sessions", {
