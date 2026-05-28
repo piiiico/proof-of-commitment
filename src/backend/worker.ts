@@ -2739,6 +2739,13 @@ const GITHUB_AUDIT_HARD_LIMIT = 2;
 const GITHUB_AUDIT_UPGRADE_URL =
   "https://getcommit.dev/pricing?ref=github-audit-paywall";
 
+// /api/checkout + /api/checkout-intent per-IP hourly rate limit.
+// Bot analysis 2026-05-28: ~100 fake sessions/day hitting the backend
+// directly (bypassing getcommit.dev proxy). 3/hr/IP caps each burst
+// without blocking legitimate users (real humans rarely retry 4× in one hour).
+// Window resets at the top of each UTC hour.
+const CHECKOUT_HOURLY_LIMIT = 3;
+
 /**
  * MCP traffic + organic-key aggregations used by /api/keys/stats. Exported
  * (not just internal) so test/keys-stats.test.ts can drive them against a
@@ -3779,6 +3786,35 @@ async function bumpGithubAuditCount(env: Bindings, ip: string): Promise<number> 
   } catch {
     // Defensive: never break /api/audit/github on bookkeeping failure.
     // Fail open with count=1 — worst case is the user skips the soft-CTA tier.
+    return 1;
+  }
+}
+
+/**
+ * Increment this IP's checkout count within a 1-hour sliding window.
+ * Returns the post-increment count. Window resets 1 hour after the first
+ * request in the window (stored in reset_at).
+ *
+ * Table schema (migration 0016): checkout_rate_limits(ip TEXT PK, count INTEGER, reset_at TEXT)
+ * Deployed 2026-05-28T16:39 UTC by previous session. Uses reset_at expiry
+ * approach (vs calendar-hour bucketing) to avoid D1 reserved-word issues
+ * with column names like 'hour', 'window', 'date'.
+ *
+ * Used by /api/checkout (GET) and /api/checkout-intent (POST).
+ */
+async function bumpCheckoutCount(env: Bindings, ip: string): Promise<number> {
+  try {
+    const row = await env.DB.prepare(
+      `INSERT INTO checkout_rate_limits (ip, count, reset_at)
+         VALUES (?, 1, datetime('now', '+1 hour'))
+       ON CONFLICT(ip) DO UPDATE SET
+         count    = CASE WHEN reset_at <= datetime('now') THEN 1 ELSE count + 1 END,
+         reset_at = CASE WHEN reset_at <= datetime('now') THEN datetime('now', '+1 hour') ELSE reset_at END
+       RETURNING count`
+    ).bind(ip).first<{ count: number }>();
+    return row?.count ?? 1;
+  } catch {
+    // Fail open — a D1 hiccup should never block a real checkout attempt.
     return 1;
   }
 }
@@ -5591,6 +5627,16 @@ async function verifyStripeWebhook(payload: string, sig: string, secret: string)
  *   STRIPE_PRICE_DEV   — Price ID for Developer $15/mo recurring
  */
 app.get("/api/checkout", async (c) => {
+  // Per-IP hourly rate limit — blocks bot that hammers this endpoint directly
+  // (bypassing getcommit.dev proxy). Real users never retry checkout 4× in one hour.
+  // Authenticated users (API key / Stripe webhook) don't reach this path.
+  const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
+  const checkoutCount = await bumpCheckoutCount(c.env, ip);
+  if (checkoutCount > CHECKOUT_HOURLY_LIMIT) {
+    console.warn(`[checkout] rate_limit ip=${ip} count=${checkoutCount}`);
+    return c.redirect("https://getcommit.dev/pricing?error=rate_limit_exceeded", 429);
+  }
+
   const stripeKey = c.env.STRIPE_SECRET_KEY;
 
   if (!stripeKey) {
@@ -5821,6 +5867,14 @@ function applyUtmToStripeMetadata(params: URLSearchParams, utm: UtmFields): void
  * dropped at this API boundary, making CLI-driven conversions invisible.
  */
 app.post("/api/checkout-intent", async (c) => {
+  // Per-IP hourly rate limit — same bot defence as GET /api/checkout.
+  const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
+  const checkoutCount = await bumpCheckoutCount(c.env, ip);
+  if (checkoutCount > CHECKOUT_HOURLY_LIMIT) {
+    console.warn(`[checkout-intent] rate_limit ip=${ip} count=${checkoutCount}`);
+    return c.json({ error: "rate_limit_exceeded", message: "Too many checkout attempts from this IP. Please try again in an hour." }, 429);
+  }
+
   const stripeKey = c.env.STRIPE_SECRET_KEY;
 
   if (!stripeKey) {
