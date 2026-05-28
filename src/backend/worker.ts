@@ -1938,6 +1938,75 @@ app.post("/api/graph/npm", async (c) => {
     }, 400);
   }
 
+  // Per-IP daily rate limit for anonymous traffic. API key holders bypass
+  // (their tier quota in TIER_LIMITS governs total /api/* usage — the
+  // /api/* middleware already attached them via c.get("apiKey")).
+  // SSR bypass mirrors /api/audit: the Pages worker calls /api/graph to
+  // render visualizations; X-SSR-Token matching ADMIN_SECRET skips the
+  // counter so SSR traffic doesn't share a budget with real users.
+  const apiKeyCtx = c.get("apiKey");
+  const ssrToken = c.req.header("X-SSR-Token");
+  const isSSR = ssrToken != null && ssrToken.length > 0 && ssrToken === c.env.ADMIN_SECRET;
+  if (!apiKeyCtx && !isSSR) {
+    const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
+    const graphCount = await bumpGraphCount(c.env, ip);
+    if (graphCount > GRAPH_HARD_LIMIT) {
+      const now = new Date();
+      const tomorrowUtc = Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() + 1
+      );
+      const retryAfterSec = Math.max(1, Math.floor((tomorrowUtc - now.getTime()) / 1000));
+      return c.json(
+        {
+          error: "graph_rate_limit_exceeded",
+          message: `You've used ${Math.min(graphCount - 1, GRAPH_HARD_LIMIT)}/${GRAPH_HARD_LIMIT} free transitive graph queries today. Dependency-graph analysis is a Pro feature ($29/mo, 200 queries/month). Direct-only scoring at /api/audit remains free.`,
+          upgrade: {
+            url: GRAPH_UPGRADE_URL,
+            plan: "pro",
+            price: "$29/month",
+            limit: "200 graph queries/month",
+          },
+          retry_after: retryAfterSec,
+        },
+        429,
+        {
+          "Retry-After": String(retryAfterSec),
+          "X-RateLimit-Limit": String(GRAPH_HARD_LIMIT),
+          "X-RateLimit-Remaining": "0",
+          "X-RateLimit-Tier": "anonymous",
+        }
+      );
+    }
+
+    const { nodes, edges, criticalTransitivePaths } = await buildNpmDepGraph(pkg.trim(), depth);
+    const criticalCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("CRITICAL"))).length;
+    const highCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("HIGH"))).length;
+    const warnCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("WARN"))).length;
+    const worstScore = nodes.reduce((min, n) => n.score !== null ? Math.min(min, n.score) : min, 101);
+    const body = {
+      root: pkg.trim(),
+      depth,
+      nodes,
+      edges,
+      summary: {
+        totalNodes: nodes.length,
+        criticalCount,
+        highCount,
+        warnCount,
+        worstScore: worstScore === 101 ? null : worstScore,
+        criticalTransitivePaths,
+      },
+      ...(graphCount >= GRAPH_SOFT_CTA_AT ? { _cta: graphCtaText(graphCount) } : {}),
+    };
+    return c.json(body, 200, {
+      "X-RateLimit-Limit": String(GRAPH_HARD_LIMIT),
+      "X-RateLimit-Remaining": String(Math.max(0, GRAPH_HARD_LIMIT - graphCount)),
+      "X-RateLimit-Tier": "anonymous",
+    });
+  }
+
   const { nodes, edges, criticalTransitivePaths } = await buildNpmDepGraph(pkg.trim(), depth);
 
   const criticalCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("CRITICAL"))).length;
@@ -1970,6 +2039,71 @@ app.get("/api/graph/npm/*", async (c) => {
   const packageName = decodeURIComponent(c.req.path.replace("/api/graph/npm/", ""));
   if (!packageName) return c.json({ error: "package required" }, 400);
   const depth: 1 | 2 = c.req.query("depth") === "1" ? 1 : 2;
+
+  // Per-IP daily rate limit for anonymous traffic — see POST handler above
+  // for full rationale. API key holders + SSR bypass.
+  const apiKeyCtx = c.get("apiKey");
+  const ssrToken = c.req.header("X-SSR-Token");
+  const isSSR = ssrToken != null && ssrToken.length > 0 && ssrToken === c.env.ADMIN_SECRET;
+  if (!apiKeyCtx && !isSSR) {
+    const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
+    const graphCount = await bumpGraphCount(c.env, ip);
+    if (graphCount > GRAPH_HARD_LIMIT) {
+      const now = new Date();
+      const tomorrowUtc = Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() + 1
+      );
+      const retryAfterSec = Math.max(1, Math.floor((tomorrowUtc - now.getTime()) / 1000));
+      return c.json(
+        {
+          error: "graph_rate_limit_exceeded",
+          message: `You've used ${Math.min(graphCount - 1, GRAPH_HARD_LIMIT)}/${GRAPH_HARD_LIMIT} free transitive graph queries today. Dependency-graph analysis is a Pro feature ($29/mo, 200 queries/month). Direct-only scoring at /api/audit remains free.`,
+          upgrade: {
+            url: GRAPH_UPGRADE_URL,
+            plan: "pro",
+            price: "$29/month",
+            limit: "200 graph queries/month",
+          },
+          retry_after: retryAfterSec,
+        },
+        429,
+        {
+          "Retry-After": String(retryAfterSec),
+          "X-RateLimit-Limit": String(GRAPH_HARD_LIMIT),
+          "X-RateLimit-Remaining": "0",
+          "X-RateLimit-Tier": "anonymous",
+        }
+      );
+    }
+
+    const { nodes, edges, criticalTransitivePaths } = await buildNpmDepGraph(packageName, depth);
+    const criticalCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("CRITICAL"))).length;
+    const highCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("HIGH"))).length;
+    const warnCount = nodes.filter((n) => n.riskFlags.some((f) => f.startsWith("WARN"))).length;
+    const worstScore = nodes.reduce((min, n) => n.score !== null ? Math.min(min, n.score) : min, 101);
+    const body = {
+      root: packageName,
+      depth,
+      nodes,
+      edges,
+      summary: {
+        totalNodes: nodes.length,
+        criticalCount,
+        highCount,
+        warnCount,
+        worstScore: worstScore === 101 ? null : worstScore,
+        criticalTransitivePaths,
+      },
+      ...(graphCount >= GRAPH_SOFT_CTA_AT ? { _cta: graphCtaText(graphCount) } : {}),
+    };
+    return c.json(body, 200, {
+      "X-RateLimit-Limit": String(GRAPH_HARD_LIMIT),
+      "X-RateLimit-Remaining": String(Math.max(0, GRAPH_HARD_LIMIT - graphCount)),
+      "X-RateLimit-Tier": "anonymous",
+    });
+  }
 
   const { nodes, edges, criticalTransitivePaths } = await buildNpmDepGraph(packageName, depth);
 
@@ -2510,6 +2644,21 @@ const AUDIT_HARD_LIMIT = 100;
 const RATE_LIMIT_TASTE = 3;
 const AUDIT_SIGNUP_URL =
   "https://getcommit.dev/get-started?ref=audit-cli";
+
+// /api/graph per-IP daily rate-limit thresholds. Tighter than /api/audit
+// because dependency-graph analysis is the PAID feature on /pricing
+// ("Dependency graph analysis — 200 req/month" under Pro $29/mo). Pre-this,
+// the endpoint was completely unauthenticated and unlimited — the
+// highest-value insight (hidden CRITICAL transitive deps two levels deep)
+// was being given away to anonymous traffic, producing zero conversion
+// pressure from the awesome-mcp-servers funnel (87K stars, listed
+// 2026-05-27). API key holders bypass entirely; their tier quota in
+// TIER_LIMITS governs total /api/* usage. See buyer-journey audit
+// 2026-05-28 + monetization-strategy.md (Apr 19).
+const GRAPH_SOFT_CTA_AT = 3;
+const GRAPH_HARD_LIMIT = 3;
+const GRAPH_UPGRADE_URL =
+  "https://getcommit.dev/pricing?ref=graph-paywall";
 
 /**
  * MCP traffic + organic-key aggregations used by /api/keys/stats. Exported
@@ -3503,6 +3652,33 @@ function auditCtaText(count: number): string {
     return `⚠ Commit free tier — ${count}/${AUDIT_HARD_LIMIT} audits used today (${remaining} left). Lock in alerts on these packages before the wall — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`;
   }
   return `Commit free tier — ${count}/${AUDIT_HARD_LIMIT} audits used today. Get notified when any of these scores get worse — free key, no card: ${AUDIT_SIGNUP_URL}`;
+}
+
+/**
+ * Increment today's /api/graph counter for this IP. Returns the post-increment
+ * count. Atomically performed in D1 via ON CONFLICT … RETURNING count.
+ * Separate table from /api/audit so heavy graph users (the high-intent
+ * paid-tier signal) don't share a budget with single-package CLI traffic.
+ */
+async function bumpGraphCount(env: Bindings, ip: string): Promise<number> {
+  const date = todayUtcDate();
+  try {
+    const row = await env.DB.prepare(
+      `INSERT INTO graph_rate_limits (ip, date, count) VALUES (?, ?, 1)
+       ON CONFLICT(ip, date) DO UPDATE SET count = count + 1
+       RETURNING count`
+    ).bind(ip, date).first<{ count: number }>();
+    return row?.count ?? 1;
+  } catch {
+    // Defensive: never break /api/graph on bookkeeping failure.
+    // Fail open with count=1 so worst case the user gets the soft-CTA tier.
+    return 1;
+  }
+}
+
+function graphCtaText(count: number): string {
+  const remaining = Math.max(0, GRAPH_HARD_LIMIT - count);
+  return `Commit free tier — ${count}/${GRAPH_HARD_LIMIT} graph queries used today (${remaining} left). Transitive dependency analysis is a Pro feature ($29/mo) — upgrade for 200/month: ${GRAPH_UPGRADE_URL}`;
 }
 
 /**
