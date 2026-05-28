@@ -5630,7 +5630,11 @@ app.get("/api/checkout", async (c) => {
   // Per-IP hourly rate limit — blocks bot that hammers this endpoint directly
   // (bypassing getcommit.dev proxy). Real users never retry checkout 4× in one hour.
   // Authenticated users (API key / Stripe webhook) don't reach this path.
-  const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
+  //
+  // IP resolution: prefer X-Real-IP (set by getcommit.dev _worker.js proxy to preserve
+  // the original client IP — CF overwrites CF-Connecting-IP on Worker-to-Worker subrequests
+  // with the egress IP, which would make all proxied sessions share one rate-limit bucket).
+  const ip = c.req.header("X-Real-IP") || c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
   const checkoutCount = await bumpCheckoutCount(c.env, ip);
   if (checkoutCount > CHECKOUT_HOURLY_LIMIT) {
     console.warn(`[checkout] rate_limit ip=${ip} count=${checkoutCount}`);
@@ -5868,7 +5872,8 @@ function applyUtmToStripeMetadata(params: URLSearchParams, utm: UtmFields): void
  */
 app.post("/api/checkout-intent", async (c) => {
   // Per-IP hourly rate limit — same bot defence as GET /api/checkout.
-  const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
+  // X-Real-IP preferred: see comment in GET /api/checkout for explanation.
+  const ip = c.req.header("X-Real-IP") || c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
   const checkoutCount = await bumpCheckoutCount(c.env, ip);
   if (checkoutCount > CHECKOUT_HOURLY_LIMIT) {
     console.warn(`[checkout-intent] rate_limit ip=${ip} count=${checkoutCount}`);
