@@ -309,23 +309,42 @@ export async function buildPyPICommitmentProfile(
   let trend: "growing" | "stable" | "declining" | null = null;
   let avg90d = 0;
 
-  try {
+  const fetchPyPIStats = async (): Promise<PyPIStatsDay[] | null> => {
     const statsRes = await fetch(
       `${PYPISTATS_URL}/${encodedName}/overall?mirrors=false`,
       {
         headers: { Accept: "application/json" },
         // @ts-ignore CF fetch cache hint
-        cf: { cacheEverything: true, cacheTtl: 300 },
+        // Note: cacheEverything omitted intentionally — it would cache empty/error
+        // responses for 300s, causing score=0 for popular packages on transient misses.
+        cf: { cacheTtl: 60 },
       }
     );
-    if (statsRes.ok) {
-      const stats = (await statsRes.json()) as PyPIStatsResponse;
-      const analysis = analyzeDownloads(stats.data);
+    if (!statsRes.ok) return null;
+    const stats = (await statsRes.json()) as PyPIStatsResponse;
+    const withoutMirrors = stats.data?.filter((d) => d.category === "without_mirrors") ?? [];
+    if (withoutMirrors.length < 14) return null;
+    return stats.data;
+  };
+
+  try {
+    let data = await fetchPyPIStats();
+    if (data === null) {
+      // One retry — pypistats can transiently return empty data under burst CF Worker traffic
+      console.warn(`[pypi] empty stats for ${packageName}, retrying once`);
+      await new Promise((r) => setTimeout(r, 300));
+      data = await fetchPyPIStats();
+    }
+    if (data !== null) {
+      const analysis = analyzeDownloads(data);
       avg7d = analysis.avg7d;
       avg90d = analysis.avg90d;
       trend = analysis.trend;
+    } else {
+      console.warn(`[pypi] stats unavailable for ${packageName} after retry — score will reflect 0 downloads`);
     }
-  } catch {
+  } catch (err) {
+    console.warn(`[pypi] stats fetch error for ${packageName}:`, err);
     // Non-fatal
   }
 
