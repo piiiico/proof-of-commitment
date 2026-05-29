@@ -407,3 +407,26 @@ Deploy:
 ```bash
 bun run deploy          # deploys to Cloudflare Workers
 ```
+
+## Releasing
+
+Publish is triggered automatically when a tag `v*` is pushed, or manually via GitHub Actions `workflow_dispatch`.
+
+### Funnel smoke gate
+
+Before `npm publish` runs, the CI workflow executes `scripts/funnel-smoke.sh` — a local-mock pre-publish check that exercises three key funnel paths:
+
+| Path | What it tests | Bug class caught |
+|------|--------------|-----------------|
+| A | CLI audit with `COMMIT_API_KEY` set → 200 + results | v1.20.0: missing `Authorization` header → 0 paid conversions |
+| B | CLI audit anonymous, 429 → message + `instant_key_url` | 429 handling / CTA surfacing |
+| C | cursor-hook 429 → `permission: ask` + signup URL | v1.21.0: silent `allow` on 429 → security gap + 0 conversions |
+
+Any path failure blocks the release. The gate runs a local Python mock server so it's deterministic in CI and doesn't depend on production rate-limit state.
+
+**Optional CI secret:** Set `COMMIT_TEST_API_KEY` in GitHub repo secrets to use a real API key for Path A. Falls back to a mock key that the local server accepts unconditionally.
+
+**Run locally:**
+```bash
+bash scripts/funnel-smoke.sh
+```

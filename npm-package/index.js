@@ -5,7 +5,7 @@
  * Usage: npx proof-of-commitment [packages...] [options]
  */
 
-const API = 'https://poc-backend.amdal-dev.workers.dev/api/audit';
+const API = process.env.COMMIT_API_URL || 'https://poc-backend.amdal-dev.workers.dev/api/audit';
 const KEYS_API = 'https://poc-backend.amdal-dev.workers.dev/api/keys';
 const WATCHLIST_API = 'https://poc-backend.amdal-dev.workers.dev/api/watchlist';
 const WEB = 'https://getcommit.dev/audit';
@@ -1155,7 +1155,7 @@ async function cmdHook(args) {
  * CRITICAL packages are blocked. HIGH packages trigger confirmation.
  * Docs: https://getcommit.dev/docs/cursor-hook
  */
-const API = 'https://poc-backend.amdal-dev.workers.dev/api/audit';
+const API = process.env.COMMIT_API_URL || 'https://poc-backend.amdal-dev.workers.dev/api/audit';
 const fs = require('fs');
 const path = require('path');
 

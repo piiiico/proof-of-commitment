@@ -34,6 +34,20 @@ jobs:
             echo "SKIP_PUBLISH=false" >> $GITHUB_ENV
           fi
 
+      - name: Funnel smoke gate
+        # Blocks publish when any key funnel path is destination-broken.
+        # Catches the same-class bug shipped in v1.20.0 (missing auth header → 0 conversions)
+        # and v1.21.0 (silent allow on 429 → security gap + 0 conversions).
+        # Runs a local mock backend so the check is deterministic in CI.
+        # Paths tested:
+        #   A: CLI audit with API key → 200 + results (auth-header regression, v1.20.1)
+        #   B: CLI audit anonymous after RL → 429 + message + instant_key_url
+        #   C: cursor-hook after RL → permission=ask + signup URL (silent-allow regression, v1.21.1)
+        if: env.SKIP_PUBLISH == 'false'
+        env:
+          COMMIT_TEST_API_KEY: ${{ secrets.COMMIT_TEST_API_KEY }}
+        run: bash scripts/funnel-smoke.sh
+
       - name: Verify npm auth (fail-fast on bad token)
         # Confirms WHICH npm user the token authenticates as and WHICH packages
         # that user can write. Fails fast with a clear message if the token is
