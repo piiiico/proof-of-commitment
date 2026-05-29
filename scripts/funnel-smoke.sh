@@ -9,6 +9,10 @@
 #   B: CLI audit anonymous after RL → 429 + parseable message + instant_key_url
 #   C: cursor-hook stdin {command:'npm install lodash'} after RL →
 #        permission=ask + signup URL in user_message (silent-allow regression, v1.21.1)
+#   D: cursor-hook stdin in CLAUDE CODE PreToolUse format
+#        {tool_name:'Bash', tool_input:{command:'npm install lodash'}} after RL →
+#        hookSpecificOutput.permissionDecision in (ask|deny)
+#        + signup URL referencing claude-code-hook-429 (v1.22.0 dual-client regression)
 #
 # Each path is driven against a local mock server so the gate is deterministic
 # in CI and free of production rate-limit state.
@@ -263,6 +267,53 @@ except Exception as e:
     print('parse error:', e)
 " 2>/dev/null || echo "non-JSON output")
     fail "Path C: cursor-hook regression — silent allow or missing signup URL"
+    echo "   Detail: $DETAIL"
+  fi
+
+  echo ""
+  echo "── Path D: cursor-hook RL via CLAUDE CODE PreToolUse format ──────────────"
+  echo "   URL: $RL_URL"
+
+  # Claude Code PreToolUse stdin: {hook_event_name, tool_name, tool_input:{command}}
+  # Expected: stdout JSON with hookSpecificOutput.permissionDecision in (ask|deny)
+  # and permissionDecisionReason containing the claude-code-hook-429 ref.
+  CC_INPUT='{"session_id":"smoke","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm install lodash"}}'
+  CC_OUT=$(echo "$CC_INPUT" | HOME="$HOOK_HOME" COMMIT_API_URL="$RL_URL" node "$HOOK_SCRIPT" 2>&1 || true)
+  echo "   Output: $CC_OUT"
+
+  if echo "$CC_OUT" | python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    out = data.get('hookSpecificOutput', {})
+    assert out.get('hookEventName') == 'PreToolUse', f'hookEventName={out.get(\"hookEventName\")!r}'
+    decision = out.get('permissionDecision', '')
+    assert decision in ('ask', 'deny'), f'permissionDecision={decision!r}, expected ask or deny'
+    reason = out.get('permissionDecisionReason', '')
+    assert 'claude-code-hook-429' in reason or 'get-started' in reason, f'signup URL missing from permissionDecisionReason: {reason!r}'
+    # Verify Cursor format NOT used by mistake
+    assert 'permission' not in data, 'leaked Cursor-format key permission'
+    print('OK')
+except Exception as e:
+    print(f'FAIL: {e}')
+    sys.exit(1)
+" 2>/dev/null | grep -q OK; then
+    pass "Path D: cursor-hook spoke Claude Code format with claude-code-hook-429 attribution"
+  else
+    DETAIL=$(echo "$CC_OUT" | python3 -c "
+import json, sys
+raw = sys.stdin.read()
+print('raw:', repr(raw))
+try:
+    data = json.loads(raw)
+    out = data.get('hookSpecificOutput', {})
+    print('hookSpecificOutput keys:', list(out.keys()))
+    print('permissionDecision:', out.get('permissionDecision'))
+    print('ref present:', 'claude-code-hook-429' in out.get('permissionDecisionReason', ''))
+except Exception as e:
+    print('parse error:', e)
+" 2>/dev/null || echo "non-JSON output")
+    fail "Path D: Claude Code format regression — wrong shape, decision, or attribution"
     echo "   Detail: $DETAIL"
   fi
 fi
