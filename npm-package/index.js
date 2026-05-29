@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.19.0
+ * proof-of-commitment CLI v1.20.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -113,14 +113,80 @@ async function handle429(res) {
     );
   }
   console.error('');
-  console.error(clr(c.cyan + c.bold, `   → Free API key in 30 seconds (no card): ${instantKeyUrl}`));
-  if (retryAfter && retryAfter > 0) {
-    const hours = Math.floor(retryAfter / 3600);
-    const mins = Math.floor((retryAfter % 3600) / 60);
-    const resetIn = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
-    console.error(clr(c.dim, `     or wait — free-tier resets in ${resetIn} (00:00 UTC).`));
+
+  // TTY: inline signup collapses the 6-step browser flow (visit URL → enter
+  // email → copy key → switch back to terminal → export key → re-run) to a
+  // single terminal prompt. Non-TTY (CI/piped) falls through to the URL.
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    console.error(clr(c.dim, '  ─────────────────────────────────────────────'));
+    console.error(clr(c.bold, '  Get a free key and keep scanning (no card, saves to ~/.commit/config):'));
+    console.error('');
+
+    const { createInterface } = await import('readline');
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+
+    const email = await new Promise(resolve => {
+      rl.question(clr(c.dim, '  Your email (Enter to skip): '), answer => {
+        rl.close();
+        resolve(answer.trim());
+      });
+    });
+
+    if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      process.stderr.write(clr(c.dim, '  Creating key...'));
+      try {
+        const createRes = await fetch('https://poc-backend.amdal-dev.workers.dev/api/keys/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, source: 'audit-cli-429' }),
+        });
+        const keyData = await createRes.json();
+        if (keyData.key) {
+          await writeApiKey(keyData.key);
+          console.error(clr(c.green, ' ✓ Key saved to ~/.commit/config'));
+          console.error(clr(c.dim, `     Backup sent to ${email}`));
+          console.error('');
+          console.error(clr(c.bold, '  Re-run your command to continue with your new key.'));
+          console.error('');
+        } else {
+          const errMsg = keyData.error === 'rate_limit_exceeded'
+            ? 'Too many keys from this IP today — try again tomorrow.'
+            : (keyData.message || 'Could not create key. Try the web: ' + instantKeyUrl);
+          console.error(clr(c.red, ` Failed: ${errMsg}`));
+          console.error('');
+        }
+      } catch (err) {
+        console.error(clr(c.red, ` Error: ${err.message}`));
+        console.error(clr(c.dim, `  Try the web: ${instantKeyUrl}`));
+        console.error('');
+      }
+    } else if (email) {
+      console.error(clr(c.red, '  Invalid email. Skipped.'));
+      console.error(clr(c.dim, `  Try the web: ${instantKeyUrl}`));
+      console.error('');
+    } else {
+      // User pressed Enter to skip — show URL as fallback
+      console.error(clr(c.cyan + c.bold, `  → Get a free key later: ${instantKeyUrl}`));
+      if (retryAfter && retryAfter > 0) {
+        const hours = Math.floor(retryAfter / 3600);
+        const mins = Math.floor((retryAfter % 3600) / 60);
+        const resetIn = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+        console.error(clr(c.dim, `     or wait — free-tier resets in ${resetIn} (00:00 UTC).`));
+      }
+      console.error('');
+    }
+  } else {
+    // Non-TTY fallback: print URL for CI/piped contexts
+    console.error(clr(c.cyan + c.bold, `   → Free API key in 30 seconds (no card): ${instantKeyUrl}`));
+    if (retryAfter && retryAfter > 0) {
+      const hours = Math.floor(retryAfter / 3600);
+      const mins = Math.floor((retryAfter % 3600) / 60);
+      const resetIn = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+      console.error(clr(c.dim, `     or wait — free-tier resets in ${resetIn} (00:00 UTC).`));
+    }
+    console.error('');
   }
-  console.error('');
+
   process.exit(1);
 }
 
@@ -396,7 +462,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.19.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.20.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
