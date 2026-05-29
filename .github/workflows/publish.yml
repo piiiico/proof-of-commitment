@@ -125,4 +125,14 @@ jobs:
         run: mcp-publisher validate
 
       - name: Publish to MCP Registry
-        run: mcp-publisher publish
+        run: |
+          OUTPUT=$(mcp-publisher publish 2>&1)
+          EXIT_CODE=$?
+          echo "$OUTPUT"
+          if [ $EXIT_CODE -ne 0 ]; then
+            if echo "$OUTPUT" | grep -qi "duplicate version\|already published\|cannot publish duplicate"; then
+              echo "Version already published to MCP Registry — skipping (not an error)"
+              exit 0
+            fi
+            exit $EXIT_CODE
+          fi
