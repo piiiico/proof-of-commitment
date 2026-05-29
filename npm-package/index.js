@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.21.0
+ * proof-of-commitment CLI v1.21.1
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -479,7 +479,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.21.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.21.1 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -1209,11 +1209,24 @@ async function main() {
     const high = results.filter(r => (r.riskFlags || []).some(f => f.startsWith('HIGH')));
     const url = 'https://getcommit.dev/audit?packages=' + parsed.pkgs.join(',') + '&ecosystem=' + parsed.eco;
 
+    // v1.21.1: detect rate-limit hit and surface signup CTA + unscored-package warning.
+    // Without this, hook silently allowed unscored packages on 429 (false sense of security)
+    // and the conversion driver (signup URL in 429 body) never reached the user.
+    const rateLimited = res.status === 429;
+    // Force cursor-hook attribution — backend default is audit-cli-429 which misattributes.
+    const rlUrl = rateLimited ? 'https://getcommit.dev/get-started?ref=cursor-hook-429&utm_source=cli' : '';
+    const unscored = rateLimited ? Math.max(0, parsed.pkgs.length - results.length) : 0;
+    const rlNote = rateLimited
+      ? '\\n\\n\\u26A0 Commit free limit reached'
+        + (unscored > 0 ? ' \\u2014 ' + unscored + ' of ' + parsed.pkgs.length + ' package(s) NOT audited' : '')
+        + '\\n   Free key (200/day, no card): ' + rlUrl
+      : '';
+
     if (critical.length > 0) {
       const lines = critical.map(r => '  \\u{1F534} ' + r.name + ' (score ' + (r.score||'?') + ') \\u2014 ' + (r.riskFlags||[]).slice(0,1).join(', '));
       process.stdout.write(JSON.stringify({
         permission: 'deny',
-        user_message: '\\u{1F534} Commit blocked: ' + critical.map(r=>r.name).join(', ') + ' flagged CRITICAL\\n\\n' + lines.join('\\n') + '\\n\\n\\u2192 ' + url,
+        user_message: '\\u{1F534} Commit blocked: ' + critical.map(r=>r.name).join(', ') + ' flagged CRITICAL\\n\\n' + lines.join('\\n') + '\\n\\n\\u2192 ' + url + rlNote,
         agent_message: 'Package install blocked by Commit. CRITICAL = sole publisher + high downloads (attack surface of axios/node-ipc incidents). ' + critical.map(r=>r.name).join(', ') + '. Report: ' + url,
       }));
       return;
@@ -1222,7 +1235,20 @@ async function main() {
       const lines = high.map(r => '  \\u{1F7E1} ' + r.name + ' (score ' + (r.score||'?') + ') \\u2014 ' + (r.riskFlags||[]).slice(0,1).join(', '));
       process.stdout.write(JSON.stringify({
         permission: 'ask',
-        user_message: '\\u{1F7E1} Commit: ' + high.map(r=>r.name).join(', ') + ' scored HIGH risk\\n\\n' + lines.join('\\n') + '\\n\\nProceed? \\u2192 ' + url,
+        user_message: '\\u{1F7E1} Commit: ' + high.map(r=>r.name).join(', ') + ' scored HIGH risk\\n\\n' + lines.join('\\n') + '\\n\\nProceed? \\u2192 ' + url + rlNote,
+      }));
+      return;
+    }
+    // Rate-limited with no critical/high in the scored partial: still alert user.
+    // If unscored packages remain, this is a security signal (could be CRITICAL we missed).
+    // If all packages scored clean, this is a conversion signal (drive them to sign up).
+    if (rateLimited) {
+      const head = unscored > 0
+        ? '\\u26A0 Commit free limit reached \\u2014 ' + unscored + ' of ' + parsed.pkgs.length + ' package(s) NOT audited'
+        : '\\u2713 ' + parsed.pkgs.join(', ') + ' look clean (free-tier audit)';
+      process.stdout.write(JSON.stringify({
+        permission: 'ask',
+        user_message: head + '\\n\\nFree API key (200/day, no card, 30s):\\n  ' + rlUrl + '\\n\\nProceed anyway?',
       }));
       return;
     }
