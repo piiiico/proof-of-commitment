@@ -1,0 +1,13 @@
+{
+  "name": "commit",
+  "description": "Supply chain gate for Claude Code. Intercepts npm, pip, cargo, and go installs — blocks CRITICAL packages before they run. Powered by getcommit.dev.",
+  "version": "1.22.0",
+  "author": {
+    "name": "Håkon Åmdal",
+    "url": "https://getcommit.dev"
+  },
+  "homepage": "https://getcommit.dev",
+  "repository": "https://github.com/piiiico/proof-of-commitment",
+  "license": "MIT",
+  "category": "security"
+}
