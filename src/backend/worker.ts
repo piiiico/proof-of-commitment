@@ -2452,11 +2452,24 @@ app.get("/badge/*", async (c) => {
  * baseline-lock-in conversions from rate-limit-rescue (audit-cli-429)
  * and from CI-shaped CTAs (cli) measures whether the all-healthy footer
  * is the missing volume surface.
+ *
+ * 'cursor-hook-429' / 'claude-code-hook-429' / 'poc-hook' are set by
+ * the proof-of-commitment IDE hook (npm-package v1.21.0+ for Cursor,
+ * v1.22.0+ adds Claude Code). When a hook deny/ask hits the API rate
+ * limit, refTag = `${client}-hook-429`; on fresh `poc hook` install
+ * with no key configured, refTag = 'poc-hook'. Added 2026-05-29 to
+ * close the attribution leak — the hook funnel shipped 14:48-17:15 UTC
+ * but neither the landing-page REF_TO_SOURCE nor this VALID_SOURCES
+ * list knew about the three refs, so any hook-driven signup would have
+ * been silently bucketed into 'web'. With this added, source_breakdown
+ * splits hook conversions per IDE client and per entry point (install
+ * vs rate-limit recovery), feeding 7d task b9e7a4eb4c182825 and 30d
+ * task 05b4b20aa57ddd09.
  */
 app.post("/api/keys/create", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-inline", "web-pricing", "pkg-profile"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
