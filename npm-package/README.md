@@ -51,26 +51,23 @@ npx proof-of-commitment --file go.sum    # full transitive set
 
 **Web demo (no install):** [getcommit.dev/audit](https://getcommit.dev/audit) — paste your packages, see risk scores in seconds.
 
-**Account + monitoring (v1.10.0):**
+## Get notified before the next attack
+
+The CLI tells you what's risky today. A free API key unlocks **monitoring** — daily score recomputation across the packages you depend on, with alerts when one degrades (publisher drops, release stalls, score falls ≥10 points).
+
+[**Get a free API key →**](https://getcommit.dev/get-started?ref=npm-readme-monitoring&utm_source=cli) — no card, 30 seconds · 200 audits/day free · Developer $15/mo unlocks alerts + watchlist.
+
 ```bash
 # Install once, then use the `poc` alias:
 npm install -g proof-of-commitment
 
-# Get a free API key at https://getcommit.dev/get-started?utm_source=cli, then:
-poc login sk_commit_your_key_here
-# ✓ Authenticated — Tier: Free — Usage: 0/200 requests (daily)
-
-poc status                          # check tier + usage anytime
-poc logout                          # remove saved key
-
-# Monitoring (Developer $15/mo+ — daily scans + alerts):
-poc watch chalk
+# After getting your free key:
+poc login sk_commit_your_key_here   # save and validate
+poc status                          # check tier + usage
+poc watch chalk                     # start monitoring (Developer $15/mo)
 poc watch requests --ecosystem pypi
-poc watch serde --ecosystem cargo
-poc watchlist                       # view scores + risk levels
-poc unwatch chalk
-
-# Enable monitoring: https://getcommit.dev/pricing
+poc watchlist                       # view all watched packages
+poc init                            # add CI gate to this project
 ```
 
 Alerts fire on: score drop ≥10 points · package crosses CRITICAL threshold · recovery to HEALTHY.

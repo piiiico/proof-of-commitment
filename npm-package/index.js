@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.18.1
+ * proof-of-commitment CLI v1.19.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -293,15 +293,11 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
       console.log(clr(c.dim, '     Then run: ') + clr(c.cyan, 'poc login'));
     }
     // else: TTY mode — inlineSignup() will prompt interactively after printTable
-  } else if (!hasKey) {
-    // HEALTHY case + no saved key: soft watchlist CTA. The all-healthy
-    // footer previously surfaced only CI-shaped CTAs (Action, `poc init`)
-    // which both require active commitment — workflow change + repo edit.
-    // The lowest-friction conversion (email → API key → watchlist) was
-    // hidden behind the CRITICAL gate of inlineSignup(). Buyer-journey
-    // dogfood 2026-05-24 found 1472 weekly downloads → 0 organic signups;
-    // the watchlist value prop ("alert me when these degrade") is real
-    // for healthy packages too — that's exactly when monitoring matters.
+  } else if (!hasKey && (!process.stdin.isTTY || !process.stdout.isTTY)) {
+    // HEALTHY case + no saved key + non-TTY (CI/piped): static baseline CTA.
+    // In TTY mode, inlineSignup() now prompts interactively for healthy results
+    // too — the dim text below converted 0/621 weekly downloads. Keep static
+    // text only in CI/piped output where interactive prompts can't fire.
     // ref=audit-baseline distinguishes this funnel from audit-cli-429
     // (rate-limit rescue) and from the static utm_source=cli help-line.
     console.log(clr(c.dim, '\n  📊 Save this scan as your baseline. Re-run anytime with a free key:'));
@@ -311,23 +307,35 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
 }
 
 /**
- * Inline signup: after CRITICAL findings, offer one-step email→key flow.
+ * Inline signup: after any real audit, offer one-step email→key flow.
  * Collapses 6-step funnel (visit site → email → check inbox → copy key → login → watch)
  * into a single CLI prompt.
+ *
+ * v1.19: Triggers on healthy results too (≥3 packages). The dim "Save this scan
+ * as your baseline" footer line converted 0/621 weekly downloads — replacing it
+ * with an interactive prompt at the moment of audit success captures more
+ * intent. Copy adapts to context: degradation alerts (CRITICAL) vs baseline
+ * lock-in (healthy). Quick lookups (<3 packages) still skip the prompt.
  */
 async function inlineSignup(results) {
-  // Only prompt in interactive TTY when findings make monitoring relevant and no key saved
+  // Only prompt in interactive TTY when no key saved
   if (!process.stdin.isTTY || !process.stdout.isTTY) return;
   const hasKey = !!process.env.COMMIT_API_KEY || _cachedHasKey;
   if (hasKey) return;
   const critPkgs = results.filter(r => hasCritical(r.riskFlags));
   const lowScorePkgs = results.filter(r => typeof r.score === 'number' && r.score < 60);
-  // Gate: ≥1 CRITICAL, OR ≥2 packages with score<60, OR large scan (≥50 packages)
-  const shouldPrompt = critPkgs.length >= 1 || lowScorePkgs.length >= 2 || results.length >= 50;
-  if (!shouldPrompt) return;
+  // Gate: ≥3 packages scanned (real audit, not a one-off `npx poc somepkg` check)
+  if (results.length < 3) return;
+
+  const hasFindings = critPkgs.length >= 1 || lowScorePkgs.length >= 2;
+  // Copy adapts to context. Findings → degradation framing.
+  // Healthy → baseline-lock framing (still real value: alert me if any score drops).
+  const heading = hasFindings
+    ? '  🔔 Lock in this audit. Get alerted if these packages get worse.'
+    : '  🔔 Lock in this baseline. Get alerted if any of these packages degrade.';
 
   console.log(clr(c.dim, '  ─────────────────────────────────────────────'));
-  console.log(clr(c.bold, '  🔔 Lock in this audit. Get alerts if these packages get worse.'));
+  console.log(clr(c.bold, heading));
   console.log(clr(c.dim, '     Free, no card, 10 seconds. Saves to ~/.commit/config.\n'));
 
   const { createInterface } = await import('readline');
@@ -366,8 +374,12 @@ async function inlineSignup(results) {
       console.log();
       console.log(clr(c.bold, '  Next steps:'));
       console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc status') + clr(c.dim, '       — check your account'));
-      if (critPkgs.length > 0) {
-        console.log(clr(c.dim, '    • ') + clr(c.cyan, `poc watch ${critPkgs[0].name}`) + clr(c.dim, '  — start monitoring (Developer $15/mo)'));
+      // Surface a concrete watch target. CRITICAL first (highest urgency);
+      // otherwise pick the lowest-score package as the most-likely-to-degrade.
+      const watchTarget = critPkgs[0]?.name
+        || results.slice().sort((a, b) => (a.score || 100) - (b.score || 100))[0]?.name;
+      if (watchTarget) {
+        console.log(clr(c.dim, '    • ') + clr(c.cyan, `poc watch ${watchTarget}`) + clr(c.dim, '  — start monitoring (Developer $15/mo)'));
       }
       console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc init') + clr(c.dim, '          — add CI gate to this project'));
     } else if (data.message) {
@@ -384,7 +396,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.18.2 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.19.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir

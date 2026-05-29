@@ -131,24 +131,18 @@ The dedicated [`piiiico/commit-action@v1`](https://github.com/piiiico/commit-act
 
 **Web demo (no install):** [getcommit.dev/audit](https://getcommit.dev/audit) — paste your packages, see risk scores in seconds.
 
-**MCP server (zero install):**
+## Get notified before the next attack
 
-```json
-{
-  "mcpServers": {
-    "proof-of-commitment": {
-      "type": "streamable-http",
-      "url": "https://poc-backend.amdal-dev.workers.dev/mcp"
-    }
-  }
-}
+The CLI tells you what's risky today. A free API key unlocks **monitoring** — daily score recomputation across the packages you depend on, with alerts when one degrades (publisher drops, release stalls, score falls ≥10 points).
+
+[**Get a free API key →**](https://getcommit.dev/get-started?ref=readme-monitoring) (no card, 30 seconds · 200 audits/day free · Developer $15/mo unlocks alerts + watchlist)
+
+```bash
+npm install -g proof-of-commitment   # then:
+poc login sk_commit_…                # save your key
+poc watch chalk                      # alert on degradation
+poc init                             # add CI gate to this repo
 ```
-
-Add to Claude Desktop, Cursor, Windsurf, or any MCP-compatible AI tool. Then ask:
-
-> "Audit my package.json for supply chain risk"
-> "Score axios, zod, chalk, lodash — which is highest risk?"
-> "Is vercel/ai actively maintained?"
 
 ## GitHub Action
 
