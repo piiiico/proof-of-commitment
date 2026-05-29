@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.20.0
+ * proof-of-commitment CLI v1.20.1
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -21,6 +21,22 @@ const JSON_API_HEADERS = {
   'Content-Type': 'application/json',
   'Accept': 'application/json',
 };
+
+/**
+ * Build /api/audit request headers, adding Authorization: Bearer <key>
+ * when a key is present in COMMIT_API_KEY or ~/.commit/config.
+ *
+ * Without this, signed-up users hitting 429 stayed stuck: the inline-signup
+ * (v1.20.0) and URL signup flows both save the key locally, but the audit
+ * call site never read it — so "Re-run your command" still 429'd. Fixed
+ * in v1.20.1 after live dogfood confirmed the dead-end (see commit log).
+ */
+async function auditHeaders() {
+  const key = await readApiKey();
+  return key
+    ? { ...JSON_API_HEADERS, Authorization: `Bearer ${key}` }
+    : JSON_API_HEADERS;
+}
 
 // ANSI color helpers
 const c = {
@@ -462,7 +478,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.20.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.20.1 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -876,11 +892,13 @@ async function auditBatched(packages, ecosystem, { onProgress } = {}) {
 
   let completed = 0;
   let batchedCta = null;
+  // Resolve auth once so all parallel batches share the same key lookup.
+  const headers = await auditHeaders();
   const results = await Promise.all(
     batches.map(async (batch) => {
       const res = await fetch(API, {
         method: 'POST',
-        headers: JSON_API_HEADERS,
+        headers,
         body: JSON.stringify({ packages: batch, ecosystem }),
       });
       if (!res.ok) {
@@ -1479,7 +1497,7 @@ async function cmdReport(packages, ecosystem, { filePath, isLockfile, totalScann
     if (packages.length <= 20) {
       const res = await fetch(API, {
         method: 'POST',
-        headers: JSON_API_HEADERS,
+        headers: await auditHeaders(),
         body: JSON.stringify({ packages, ecosystem }),
       });
       if (!res.ok) {
@@ -1881,7 +1899,7 @@ async function main() {
     try {
       const res = await fetch(API, {
         method: 'POST',
-        headers: JSON_API_HEADERS,
+        headers: await auditHeaders(),
         body: JSON.stringify({ packages, ecosystem }),
       });
       if (!res.ok) {
