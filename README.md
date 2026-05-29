@@ -131,6 +131,42 @@ The dedicated [`piiiico/commit-action@v1`](https://github.com/piiiico/commit-act
 
 **Web demo (no install):** [getcommit.dev/audit](https://getcommit.dev/audit) — paste your packages, see risk scores in seconds.
 
+## IDE Hooks (Cursor)
+
+`poc hook` installs a Cursor [`beforeShellExecution`](https://docs.cursor.com/context/hooks) hook that intercepts package installs before they run. CRITICAL packages are blocked; HIGH packages trigger a prompt.
+
+```bash
+# Install once — works for the current project:
+poc hook
+
+# Or protect every Cursor project:
+poc hook --global
+
+# Remove:
+poc hook --uninstall
+```
+
+The hook writes `.cursor/hooks.json` (project) or `~/.cursor/hooks.json` (global). When Cursor's agent runs `npm install axios`, `pip install litellm`, `cargo add serde`, or `go get github.com/gin-gonic/gin`, the hook calls the Commit API and either blocks, warns, or allows — in under 500ms.
+
+**What gets intercepted:**
+
+| Package manager | Example command |
+|---|---|
+| npm / npx | `npm install <pkg>`, `npm add <pkg>` |
+| pnpm | `pnpm add <pkg>` |
+| yarn | `yarn add <pkg>` |
+| pip / pip3 / uv | `pip install <pkg>` |
+| cargo | `cargo add <pkg>`, `cargo install <pkg>` |
+| go | `go get <module>`, `go install <module>` |
+
+**Why this matters:** Supply chain attacks now happen in minutes. The Shai-Hulud worm (May 2026) compromised 637 packages in 39 minutes and specifically targeted AI coding assistants — planting persistence hooks in `.claude/settings.json` and `.vscode/tasks.json`. When your AI assistant installs a dependency, it bypasses the human review that used to be the last line of defense. `poc hook` puts a gate back in.
+
+**Default behavior:** CRITICAL packages (sole npm publisher + >10M downloads/week — the exact LiteLLM/axios attack profile) are blocked. HIGH packages trigger an "ask user" prompt. Set `COMMIT_HOOK_SEVERITY_BLOCK=HIGH` to block both.
+
+**With an API key:** `poc login sk_commit_…` before running `poc hook` — the key is embedded in the hook config and lifts the rate limit.
+
+---
+
 ## Get notified before the next attack
 
 The CLI tells you what's risky today. A free API key unlocks **monitoring** — daily score recomputation across the packages you depend on, with alerts when one degrades (publisher drops, release stalls, score falls ≥10 points).
