@@ -1022,6 +1022,14 @@ app.post("/api/audit", async (c) => {
     const acceptHeader = (c.req.header("Accept") || "").toLowerCase();
     const wantsJson = acceptHeader.includes("application/json");
 
+    // Source attribution: web clients (audit.astro on getcommit.dev) request
+    // application/json. CLI clients (proof-of-commitment npm package) send
+    // Accept: */*. Splitting the ref lets /api/keys/stats source_breakdown
+    // measure web rate-limit-rescue conversion separately from CLI — they're
+    // different funnel surfaces with very different UI affordances.
+    const webInstantKeyUrl = instantKeyUrl.replace("ref=audit-cli-429", "ref=audit-web-429");
+    const responseInstantKeyUrl = wantsJson ? webInstantKeyUrl : instantKeyUrl;
+
     if (!wantsJson) {
       // Plain-text for legacy CLI v1.14.0 (sends `Accept: */*`).
       // Format: partial table + CTA. The CLI wraps this inside
@@ -1064,19 +1072,22 @@ app.post("/api/audit", async (c) => {
       });
     }
 
-    // Structured JSON for v1.17.0+ CLI (sends `Accept: application/json`).
-    // The CLI's handle429() prints packages_already_scored via printTable()
-    // before showing the rescue CTA — this is the path that finally
-    // activates that forward-compatible handler.
+    // Structured JSON for v1.17.0+ CLI (sends `Accept: application/json`)
+    // AND for the web /audit page (after 2026-06-01 fix). The CLI's
+    // handle429() prints packages_already_scored via printTable() before
+    // showing the rescue CTA; the web page's renderRateLimitRescue() renders
+    // partial results then surfaces an inline email→key form anchored to
+    // source=audit-web-429 (see audit.astro). instant_key_url ref is split
+    // above so web/CLI funnel attribution stays clean.
     return c.json(
       {
         error: "rate_limit_exceeded",
         message: rescueMessage,
         shared_ip_hint: true,
-        instant_key_url: instantKeyUrl,
+        instant_key_url: responseInstantKeyUrl,
         packages_already_scored: results,
         retry_after_seconds: retryAfterSeconds,
-        upgrade_url: instantKeyUrl,
+        upgrade_url: responseInstantKeyUrl,
         limit: AUDIT_HARD_LIMIT,
         count: auditCount,
       },
@@ -2615,7 +2626,14 @@ app.get("/badge/*", async (c) => {
 app.post("/api/keys/create", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const email: string = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook"];
+  // audit-web-429 added 2026-06-01: web users hitting the audit hard-limit
+  // were previously dropped into the generic "Request failed" error because
+  // audit.astro fetched without Accept: application/json (the worker returns
+  // text/plain for CLI clients by default). Now web fetches request JSON and
+  // get a structured rescue payload with instant_key_url; this source attribues
+  // the resulting key signups to the web rate-limit moment so we can measure
+  // conversion lift separately from audit-cli-429 (CLI users in same path).
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
