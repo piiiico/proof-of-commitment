@@ -52,6 +52,95 @@ async function svgToPng(svg: string): Promise<Uint8Array> {
   return rendered.asPng();
 }
 
+// ── Known Supply Chain Attacks ───────────────────────────────────────
+// Recent compromised packages. Checked during /api/audit to surface
+// incident data alongside behavioral scoring. Entries expire naturally
+// as attacks age out (show only last 90 days).
+
+interface AttackRecord {
+  attack: string;       // short name
+  date: string;         // ISO date of incident
+  url: string;          // blog post / analysis link
+  affectedVersions?: string; // optional version range
+}
+
+const KNOWN_ATTACKS: Map<string, AttackRecord> = new Map();
+const KNOWN_ATTACK_PREFIXES: Array<{ prefix: string; eco: string; record: AttackRecord }> = [];
+
+function registerAttack(ecosystem: string, packages: string[], record: AttackRecord) {
+  for (const pkg of packages) {
+    if (pkg.endsWith("/*")) {
+      KNOWN_ATTACK_PREFIXES.push({ prefix: pkg.slice(0, -1), eco: ecosystem, record });
+    } else {
+      KNOWN_ATTACKS.set(`${ecosystem}:${pkg}`, record);
+    }
+  }
+}
+
+// Miasma — Red Hat credential theft via compromised GitHub account (Jun 1 2026)
+registerAttack("npm", [
+  "@redhat-cloud-services/*",
+], {
+  attack: "Miasma",
+  date: "2026-06-01",
+  url: "https://getcommit.dev/blog/redhat-miasma-provenance-bypass/",
+});
+
+// Mini Shai-Hulud — TanStack (May 11 2026)
+registerAttack("npm", [
+  "@tanstack/*",
+], {
+  attack: "Mini Shai-Hulud",
+  date: "2026-05-11",
+  url: "https://getcommit.dev/blog/two-attacks-one-week/",
+});
+
+// node-ipc credential harvester (May 14 2026)
+registerAttack("npm", ["node-ipc"], {
+  attack: "node-ipc credential harvester",
+  date: "2026-05-14",
+  url: "https://getcommit.dev/blog/two-attacks-one-week/",
+});
+
+// Mini Shai-Hulud — UiPath (May 11 2026)
+registerAttack("npm", ["@uipath/*"], {
+  attack: "Mini Shai-Hulud",
+  date: "2026-05-11",
+  url: "https://getcommit.dev/blog/may-2026-npm-attacks-roundup/",
+});
+
+// Mini Shai-Hulud — SAP CAP (Apr 29 2026)
+registerAttack("npm", ["@cap-js/*"], {
+  attack: "Mini Shai-Hulud",
+  date: "2026-04-29",
+  url: "https://getcommit.dev/blog/may-2026-npm-attacks-roundup/",
+});
+
+// axios credential theft (Mar 30 2026)
+registerAttack("npm", ["axios"], {
+  attack: "axios token theft",
+  date: "2026-03-30",
+  url: "https://getcommit.dev/blog/axios-attack-prediction/",
+});
+
+// LiteLLM PyPI supply chain (Mar 2026)
+registerAttack("pypi", ["litellm"], {
+  attack: "LiteLLM PyPI token theft",
+  date: "2026-03-05",
+  url: "https://getcommit.dev/blog/python-supply-chain-risk/",
+});
+
+function lookupCompromised(name: string, ecosystem: string): AttackRecord | null {
+  // Exact match first
+  const exact = KNOWN_ATTACKS.get(`${ecosystem}:${name}`);
+  if (exact) return exact;
+  // Prefix match (for scoped packages like @redhat-cloud-services/*)
+  for (const { prefix, eco, record } of KNOWN_ATTACK_PREFIXES) {
+    if (eco === ecosystem && name.startsWith(prefix)) return record;
+  }
+  return null;
+}
+
 // ── World ID JWT Verification ────────────────────────────────────────
 
 const WORLD_ID_APP_ID = "app_a2868bad17534bb7e8bc82de8df73773";
@@ -797,6 +886,7 @@ app.post("/api/audit", async (c) => {
     scorecardScore: number | null;
     hasDangerousWorkflow: boolean | null;
     riskFlags: string[];
+    compromised?: { attack: string; date: string; url: string };
     scoreBreakdown: { longevity: number; downloadMomentum: number; releaseConsistency: number; maintainerDepth: number; githubBacking: number } | null;
     error?: string;
   }> = [];
@@ -882,6 +972,15 @@ app.post("/api/audit", async (c) => {
   }
 
   results.sort((a, b) => (a.score ?? -1) - (b.score ?? -1));
+
+  // Enrich with known attack history (last 90 days)
+  const cutoff = Date.now() - 90 * 86_400_000;
+  for (const r of results) {
+    const record = lookupCompromised(r.name, r.ecosystem);
+    if (record && new Date(record.date).getTime() > cutoff) {
+      (r as any).compromised = { attack: record.attack, date: record.date, url: record.url };
+    }
+  }
 
   // --- Rate-limit taste: return 429 WITH partial results ---
   // The user sees real value (up to RATE_LIMIT_TASTE packages scored)

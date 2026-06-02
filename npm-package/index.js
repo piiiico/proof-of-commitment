@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.21.1
+ * proof-of-commitment CLI v1.22.1
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -272,9 +272,11 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
 
   let criticalInDisplay = 0;
   let provenanceCount = 0;
+  let compromisedCount = 0;
 
   for (const pkg of results) {
     const rc = riskColor(pkg.riskFlags, pkg.score);
+    if (pkg.compromised) compromisedCount++;
     const label = riskLabel(pkg.riskFlags, pkg.score);
     if (hasCritical(pkg.riskFlags)) criticalInDisplay++;
     if (pkg.hasProvenance) provenanceCount++;
@@ -310,6 +312,12 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
       console.log(clr(c.dim, `  ↳ ${ghCount} GitHub contributors — publish-access concentration risk despite active community`));
     }
 
+    // Recently compromised warning
+    if (pkg.compromised) {
+      const atk = pkg.compromised;
+      console.log(clr(c.red, `  ⚠ COMPROMISED — ${atk.attack} (${atk.date}) — ${atk.url}`));
+    }
+
     // Score breakdown if available
     if (pkg.scoreBreakdown) {
       const b = pkg.scoreBreakdown;
@@ -340,6 +348,11 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
   } else {
     const suffix = totalScanned ? ` (${totalScanned} packages scanned)` : '';
     console.log('\n' + clr(c.green, `✓  No CRITICAL packages found${suffix}.`));
+  }
+
+  if (compromisedCount > 0) {
+    console.log(clr(c.red + c.bold, `\n⚠  ${compromisedCount} package${compromisedCount > 1 ? 's' : ''} recently compromised in supply chain attacks.`));
+    console.log(clr(c.dim, '   Verify you are on clean versions. See URLs above for incident details.'));
   }
 
   // Footer with web link + CI integration CTA
