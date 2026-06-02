@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.22.1
+ * proof-of-commitment CLI v1.23.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -420,14 +420,20 @@ async function inlineSignup(results) {
   if (hasKey) return;
   const critPkgs = results.filter(r => hasCritical(r.riskFlags));
   const lowScorePkgs = results.filter(r => typeof r.score === 'number' && r.score < 60);
-  // Gate: ≥3 packages scanned (real audit, not a one-off `npx poc somepkg` check)
-  if (results.length < 3) return;
-
   const hasFindings = critPkgs.length >= 1 || lowScorePkgs.length >= 2;
+  // Gate: show prompt when there's something worth monitoring.
+  // Old gate (results.length < 3) blocked the most common entry point:
+  // `npx proof-of-commitment axios` after reading about an attack.
+  // A single CRITICAL result IS the high-intent moment — don't skip it.
+  // For healthy single-package checks with no findings, still skip.
+  if (results.length < 3 && !hasFindings) return;
+
   // Copy adapts to context. Findings → degradation framing.
   // Healthy → baseline-lock framing (still real value: alert me if any score drops).
   const heading = hasFindings
-    ? '  🔔 Lock in this audit. Get alerted if these packages get worse.'
+    ? (results.length === 1
+      ? '  🔔 Monitor this package. Get alerted if it gets worse.'
+      : '  🔔 Lock in this audit. Get alerted if these packages get worse.')
     : '  🔔 Lock in this baseline. Get alerted if any of these packages degrade.';
 
   console.log(clr(c.dim, '  ─────────────────────────────────────────────'));
@@ -492,7 +498,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.21.1 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.23.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
