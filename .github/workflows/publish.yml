@@ -135,6 +135,21 @@ jobs:
       - name: Authenticate with MCP Registry
         run: mcp-publisher login github-oidc
 
+      - name: Sync server.json version from package.json
+        run: |
+          VERSION=$(node -e "console.log(require('./npm-package/package.json').version)")
+          echo "Syncing server.json to version ${VERSION}"
+          # Update top-level version and packages[].version
+          node -e "
+            const fs = require('fs');
+            const s = JSON.parse(fs.readFileSync('server.json', 'utf8'));
+            s.version = '${VERSION}';
+            if (s.packages) s.packages.forEach(p => p.version = '${VERSION}');
+            fs.writeFileSync('server.json', JSON.stringify(s, null, 2) + '\n');
+          "
+          echo "server.json now at version ${VERSION}"
+          cat server.json | grep version
+
       - name: Validate server.json
         run: mcp-publisher validate
 
