@@ -34,6 +34,7 @@ import { buildGolangCommitmentProfile } from "./golang.ts";
 import { initWasm, Resvg } from "@resvg/resvg-wasm";
 // @ts-ignore — wrangler handles .wasm imports as pre-compiled WebAssembly.Module at deploy time
 import RESVG_WASM from "@resvg/resvg-wasm/index_bg.wasm";
+import { OG_FONT_BASE64 } from "./og-font";
 
 // Singleton init promise — CF isolate persists across requests, initWasm throws if called twice
 let resvgInitPromise: Promise<void> | null = null;
@@ -44,10 +45,31 @@ function ensureResvgInit(): Promise<void> {
   return resvgInitPromise;
 }
 
-/** Render SVG string to PNG bytes using resvg-wasm. */
+// Decode the embedded font once per isolate.
+let OG_FONT_BYTES: Uint8Array | null = null;
+function getOgFontBytes(): Uint8Array {
+  if (!OG_FONT_BYTES) {
+    const b = atob(OG_FONT_BASE64);
+    const out = new Uint8Array(b.length);
+    for (let i = 0; i < b.length; i++) out[i] = b.charCodeAt(i);
+    OG_FONT_BYTES = out;
+  }
+  return OG_FONT_BYTES;
+}
+
+/** Render SVG string to PNG bytes using resvg-wasm. Loads the embedded font so
+ *  <text> elements actually render (CF Workers has no system fonts). */
 async function svgToPng(svg: string): Promise<Uint8Array> {
   await ensureResvgInit();
-  const renderer = new Resvg(svg, { font: { loadSystemFonts: false } });
+  const renderer = new Resvg(svg, {
+    font: {
+      fontBuffers: [getOgFontBytes()],
+      defaultFontFamily: "Liberation Sans",
+      sansSerifFamily: "Liberation Sans",
+      monospaceFamily: "Liberation Sans",
+      serifFamily: "Liberation Sans",
+    },
+  });
   const rendered = renderer.render();
   return rendered.asPng();
 }
@@ -1656,7 +1678,7 @@ function generatePackageOgSvg(opts: {
   maintainerCount?: number | null;
   weeklyDownloads?: number | null;
 }): string {
-  const { pkg, ecosystem, score, isCritical } = opts;
+  const { pkg, ecosystem, score, isCritical, maintainerCount, weeklyDownloads } = opts;
 
   // Score color
   let scoreColor = "#9f9f9f";
@@ -1680,11 +1702,15 @@ function generatePackageOgSvg(opts: {
     }
   }
 
-  // Truncate long package names
-  const displayPkg = pkg.length > 40 ? pkg.slice(0, 38) + "…" : pkg;
+  // Truncate long package names. Use "..." (ASCII) not "…" (ellipsis U+2026) —
+  // Liberation Sans Bold doesn't include the ellipsis glyph and resvg would
+  // render a missing-glyph rectangle.
+  const displayPkg = pkg.length > 40 ? pkg.slice(0, 37) + "..." : pkg;
   const ecoLabel = ecosystem === "golang" ? "go" : ecosystem;
 
-  const scoreTxt = score !== null ? String(score) : "—";
+  // Use "?" not em-dash for null score — em-dash isn't in Liberation Sans Bold,
+  // resvg renders the missing-glyph rectangle which looks broken.
+  const scoreTxt = score !== null ? String(score) : "?";
 
   // Layout constants
   const W = 1200;
@@ -1699,6 +1725,25 @@ function generatePackageOgSvg(opts: {
     golang: "#00ADD8",
   };
   const ecoColor = ecoBg[ecosystem] ?? "#666";
+
+  // Context line: "1 publisher · 99M downloads/wk" — only render when we have data.
+  function fmtDownloads(n: number): string {
+    if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1) + "B";
+    if (n >= 1_000_000) return Math.round(n / 1_000_000) + "M";
+    if (n >= 1_000) return Math.round(n / 1_000) + "K";
+    return String(n);
+  }
+  const contextParts: string[] = [];
+  if (maintainerCount !== null && maintainerCount !== undefined) {
+    contextParts.push(`${maintainerCount} publisher${maintainerCount === 1 ? "" : "s"}`);
+  }
+  if (weeklyDownloads !== null && weeklyDownloads !== undefined && weeklyDownloads > 0) {
+    contextParts.push(`${fmtDownloads(weeklyDownloads)} downloads/wk`);
+  }
+  const contextLine = contextParts.join(" · ");
+
+  // Position label after the score digits — rough estimate, ~62px per digit at 120pt.
+  const scoreLabelX = score !== null ? 80 + scoreTxt.length * 62 : 200;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
   <defs>
@@ -1722,27 +1767,29 @@ function generatePackageOgSvg(opts: {
   <rect x="0" y="0" width="${W}" height="${H}" fill="url(#accent)"/>
 
   <!-- Branding -->
-  <text x="64" y="76" font-family="ui-monospace, 'Courier New', monospace" font-size="22" fill="#ffffff" opacity="0.6" letter-spacing="4">COMMIT</text>
+  <text x="64" y="76" font-family="sans-serif" font-size="22" fill="#ffffff" opacity="0.6" letter-spacing="4">COMMIT</text>
 
   <!-- Ecosystem badge -->
   <rect x="64" y="110" width="${ecoLabel.length * 14 + 28}" height="36" rx="6" fill="${ecoColor}"/>
-  <text x="${64 + ecoLabel.length * 7 + 14}" y="134" font-family="ui-monospace, 'Courier New', monospace" font-size="18" fill="#ffffff" text-anchor="middle" font-weight="bold">${escSvg(ecoLabel)}</text>
+  <text x="${64 + (ecoLabel.length * 14 + 28) / 2}" y="135" font-family="sans-serif" font-size="18" fill="#ffffff" text-anchor="middle" font-weight="bold">${escSvg(ecoLabel)}</text>
 
   <!-- Package name -->
-  <text x="64" y="260" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="${displayPkg.length > 28 ? 52 : 64}" fill="#ffffff" font-weight="700" letter-spacing="-1">${escSvg(displayPkg)}</text>
+  <text x="64" y="260" font-family="sans-serif" font-size="${displayPkg.length > 28 ? 52 : 64}" fill="#ffffff" font-weight="700" letter-spacing="-1">${escSvg(displayPkg)}</text>
 
   <!-- Divider -->
   <line x1="64" y1="300" x2="${W - 64}" y2="300" stroke="#ffffff" stroke-opacity="0.1" stroke-width="1"/>
 
+  ${contextLine ? `<!-- Context line --><text x="64" y="356" font-family="sans-serif" font-size="24" fill="#ffffff" opacity="0.6" font-weight="500">${escSvg(contextLine)}</text>` : ""}
+
   <!-- Score section -->
-  <text x="64" y="420" font-family="ui-monospace, 'Courier New', monospace" font-size="18" fill="#ffffff" opacity="0.5" letter-spacing="2">COMMIT SCORE</text>
-  <text x="64" y="530" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="120" fill="${scoreColor}" font-weight="800" letter-spacing="-4">${escSvg(scoreTxt)}</text>
+  <text x="64" y="420" font-family="sans-serif" font-size="18" fill="#ffffff" opacity="0.5" letter-spacing="2">COMMIT SCORE</text>
+  <text x="64" y="530" font-family="sans-serif" font-size="120" fill="${scoreColor}" font-weight="800" letter-spacing="-4">${escSvg(scoreTxt)}</text>
 
   <!-- Score label -->
-  <text x="${score !== null ? (scoreTxt.length * 68 + 80) : 164}" y="530" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="36" fill="${scoreColor}" font-weight="600" opacity="0.85">${escSvg(scoreLabel)}</text>
+  <text x="${scoreLabelX}" y="530" font-family="sans-serif" font-size="36" fill="${scoreColor}" font-weight="600" opacity="0.85">${escSvg(scoreLabel)}</text>
 
   <!-- Domain watermark -->
-  <text x="${W - 64}" y="${H - 40}" font-family="ui-monospace, 'Courier New', monospace" font-size="20" fill="#ffffff" opacity="0.35" text-anchor="end">getcommit.dev</text>
+  <text x="${W - 64}" y="${H - 40}" font-family="sans-serif" font-size="20" fill="#ffffff" opacity="0.35" text-anchor="end">getcommit.dev</text>
 </svg>`;
 }
 
@@ -1765,9 +1812,9 @@ function generateBlogOgSvg(opts: { title: string; date?: string }): string {
     }
   }
   if (current) lines.push(current);
-  // Max 3 lines; truncate rest
+  // Max 3 lines; truncate rest. Use "..." not "…" — see generatePackageOgSvg note.
   const displayLines = lines.slice(0, 3);
-  if (lines.length > 3) displayLines[2] = displayLines[2].slice(0, 38) + "…";
+  if (lines.length > 3) displayLines[2] = displayLines[2].slice(0, 37) + "...";
 
   const fontSize = displayLines.length === 1 ? 72 : displayLines.length === 2 ? 64 : 52;
   const lineH = fontSize * 1.2;
@@ -1780,7 +1827,7 @@ function generateBlogOgSvg(opts: { title: string; date?: string }): string {
   const textLines = displayLines
     .map(
       (l, i) =>
-        `<text x="80" y="${startY + i * lineH}" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="${fontSize}" fill="#ffffff" font-weight="700" letter-spacing="-1">${escSvg(l)}</text>`
+        `<text x="80" y="${startY + i * lineH}" font-family="sans-serif" font-size="${fontSize}" fill="#ffffff" font-weight="700" letter-spacing="-1">${escSvg(l)}</text>`
     )
     .join("\n  ");
 
@@ -1799,16 +1846,16 @@ function generateBlogOgSvg(opts: { title: string; date?: string }): string {
   <rect x="0" y="0" width="${W}" height="6" fill="#D14D41"/>
 
   <!-- Branding -->
-  <text x="80" y="72" font-family="ui-monospace, 'Courier New', monospace" font-size="20" fill="#ffffff" opacity="0.5" letter-spacing="4">COMMIT · WRITING</text>
+  <text x="80" y="72" font-family="sans-serif" font-size="20" fill="#ffffff" opacity="0.5" letter-spacing="4">COMMIT · WRITING</text>
 
   <!-- Title -->
   ${textLines}
 
   <!-- Date -->
-  ${date ? `<text x="80" y="${H - 50}" font-family="ui-monospace, 'Courier New', monospace" font-size="20" fill="#ffffff" opacity="0.4">${escSvg(date)}</text>` : ""}
+  ${date ? `<text x="80" y="${H - 50}" font-family="sans-serif" font-size="20" fill="#ffffff" opacity="0.4">${escSvg(date)}</text>` : ""}
 
   <!-- Domain -->
-  <text x="${W - 80}" y="${H - 50}" font-family="ui-monospace, 'Courier New', monospace" font-size="20" fill="#ffffff" opacity="0.35" text-anchor="end">getcommit.dev</text>
+  <text x="${W - 80}" y="${H - 50}" font-family="sans-serif" font-size="20" fill="#ffffff" opacity="0.35" text-anchor="end">getcommit.dev</text>
 </svg>`;
 }
 
