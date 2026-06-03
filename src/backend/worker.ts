@@ -340,13 +340,35 @@ function timeUntil(isoTimestamp: string): string {
 }
 
 /**
+ * Routes that should NOT increment the authenticated key's
+ * requests_this_period counter. These are metadata/self-inspection endpoints —
+ * calling them to check your own usage should not BURN usage. Pre-2026-06-03,
+ * `/api/keys/usage` ran through the increment path, so a dashboard refresh or
+ * a CLI `poc status` call cost the user 1 of their daily quota. Confirmed live
+ * via dogfood signup 2026-06-03: 1 audit + 2 usage checks → counter showed 3.
+ *
+ * Keep this list tight: only true metadata routes (no scoring work, no upstream
+ * cost). The audit/graph/github-audit/MCP paths must continue to count.
+ */
+export const READ_ONLY_KEY_PATHS = new Set<string>([
+  "/api/keys/usage",
+]);
+
+/**
  * Resolve API key from Authorization: Bearer header.
  * Returns null if no header present (anonymous request).
  * Returns ApiKeyContext if valid, throws on invalid/revoked/over-limit.
+ *
+ * `countAsRequest=false` skips the requests_this_period increment AND the
+ * over-limit gate — the caller is doing metadata (self-inspection of usage)
+ * which should never burn quota or 429 a user trying to find out WHY they're
+ * 429'd elsewhere. last_used_at is also NOT bumped so "last activity" stays
+ * meaningful as a real-API-use signal.
  */
-async function resolveApiKey(
+export async function resolveApiKey(
   db: D1Database,
-  authHeader: string | undefined
+  authHeader: string | undefined,
+  countAsRequest: boolean = true
 ): Promise<{ key: ApiKeyContext | null; error?: { status: number; body: unknown } }> {
   if (!authHeader?.startsWith("Bearer sk_commit_")) {
     return { key: null }; // anonymous — fall through to IP rate limiting
@@ -415,6 +437,14 @@ async function resolveApiKey(
     requests_this_period: requestsThisPeriod,
     period_reset_at: periodResetAt,
   };
+
+  // Read-only metadata path: skip both the over-limit gate AND the increment.
+  // A user checking /api/keys/usage to see WHY their /api/audit just 429'd
+  // should never be 429'd themselves on the metadata call — and asking for
+  // usage should not consume usage.
+  if (!countAsRequest) {
+    return { key: keyCtx };
+  }
 
   // Check usage limits
   if (tier !== "enterprise" && requestsThisPeriod >= tierConfig.limit) {
@@ -569,7 +599,10 @@ app.use("/api/*", async (c, next) => {
 
   // Only intercept if it looks like a Commit API key
   if (authHeader?.startsWith("Bearer sk_commit_")) {
-    const { key, error } = await resolveApiKey(c.env.DB, authHeader);
+    // Metadata routes (self-inspection) must not burn quota or 429 the user.
+    // See READ_ONLY_KEY_PATHS docblock above resolveApiKey.
+    const countAsRequest = !READ_ONLY_KEY_PATHS.has(c.req.path);
+    const { key, error } = await resolveApiKey(c.env.DB, authHeader, countAsRequest);
     if (error) {
       const resp = c.json(error.body, error.status as 401 | 429);
       // Always add rate limit headers even on error

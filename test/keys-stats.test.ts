@@ -25,6 +25,8 @@ import {
   parseEmailPatterns,
   isInternalTestEmail,
   DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS,
+  READ_ONLY_KEY_PATHS,
+  resolveApiKey,
 } from "../src/backend/worker.ts";
 
 // ── Minimal D1 shim over bun:sqlite ──────────────────────────────────────
@@ -54,6 +56,10 @@ function d1Shim(sqlite: Database): unknown {
       async all<T = unknown>(): Promise<{ results: T[] }> {
         const rows = lazyStmt().all(...(boundArgs as never[])) as T[];
         return { results: rows };
+      },
+      async run(): Promise<{ success: boolean }> {
+        lazyStmt().run(...(boundArgs as never[]));
+        return { success: true };
       },
     };
     return api;
@@ -420,5 +426,127 @@ describe("buildOrganicMcpKeyStats", () => {
     expect(stats.total_with_source_mcp).toBe(0);
     expect(stats.organic).toBe(0);
     expect(stats.internal_test).toBe(0);
+  });
+});
+
+// ── resolveApiKey countAsRequest / READ_ONLY_KEY_PATHS ──────────────────
+//
+// 2026-06-03: Metadata routes (/api/keys/usage) must NOT burn a user's daily
+// quota or 429 them on a self-inspection call. Pre-fix dogfood reproduced the
+// bug live (1 audit + 2 usage checks → counter showed 3). Lock the contract:
+// (a) read-only paths are declared on a single source of truth,
+// (b) resolveApiKey with countAsRequest=false skips both increment + 429 gate,
+// (c) regular paths still count.
+
+describe("READ_ONLY_KEY_PATHS", () => {
+  test("/api/keys/usage is exempt", () => {
+    expect(READ_ONLY_KEY_PATHS.has("/api/keys/usage")).toBe(true);
+  });
+  test("/api/audit is NOT exempt — audit must count", () => {
+    expect(READ_ONLY_KEY_PATHS.has("/api/audit")).toBe(false);
+  });
+  test("/api/keys/create is NOT exempt — create is unauthenticated anyway", () => {
+    // Belt-and-suspenders: create runs as POST without Bearer, so the
+    // middleware path never reaches resolveApiKey. The set should still not
+    // accidentally exempt it (would be a foot-gun if create ever became authed).
+    expect(READ_ONLY_KEY_PATHS.has("/api/keys/create")).toBe(false);
+  });
+});
+
+function setupApiKeysSchemaForResolve(db: Database) {
+  // Mirrors the production schema for the columns resolveApiKey reads/writes.
+  db.exec(`
+    CREATE TABLE api_keys (
+      id TEXT PRIMARY KEY,
+      key_hash TEXT NOT NULL,
+      key_prefix TEXT,
+      email TEXT,
+      tier TEXT,
+      requests_this_period INTEGER NOT NULL DEFAULT 0,
+      period_reset_at TEXT,
+      source TEXT NOT NULL DEFAULT 'web',
+      revoked_at TEXT,
+      created_at TEXT,
+      last_used_at TEXT
+    );
+  `);
+}
+
+// SHA-256 hex (Node + bun:sqlite path — production worker uses crypto.subtle).
+// Mirrored here so test fixtures can pre-seed key_hash without touching the worker.
+import { createHash } from "node:crypto";
+function sha256Hex(s: string): string {
+  return createHash("sha256").update(s).digest("hex");
+}
+
+describe("resolveApiKey countAsRequest", () => {
+  const key = "sk_commit_test_metadata_path_0123456789abcdef";
+  const keyHash = sha256Hex(key);
+  const futureReset = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+  test("countAsRequest=false: does NOT increment requests_this_period", async () => {
+    const sqlite = new Database(":memory:");
+    setupApiKeysSchemaForResolve(sqlite);
+    sqlite.query(
+      `INSERT INTO api_keys (id, key_hash, key_prefix, email, tier, requests_this_period, period_reset_at, created_at)
+       VALUES ('k1', ?, 'sk_commit_test', 'u@x.co', 'free', 42, ?, datetime('now'))`
+    ).run(keyHash, futureReset);
+    const db = d1Shim(sqlite) as Parameters<typeof resolveApiKey>[0];
+
+    await resolveApiKey(db, `Bearer ${key}`, false);
+
+    const row = sqlite
+      .query(`SELECT requests_this_period, last_used_at FROM api_keys WHERE id='k1'`)
+      .get() as { requests_this_period: number; last_used_at: string | null };
+    expect(row.requests_this_period).toBe(42); // unchanged
+    expect(row.last_used_at).toBeNull(); // unchanged — metadata calls don't bump activity
+  });
+
+  test("countAsRequest=true (default): DOES increment requests_this_period", async () => {
+    const sqlite = new Database(":memory:");
+    setupApiKeysSchemaForResolve(sqlite);
+    sqlite.query(
+      `INSERT INTO api_keys (id, key_hash, key_prefix, email, tier, requests_this_period, period_reset_at, created_at)
+       VALUES ('k2', ?, 'sk_commit_test', 'u@x.co', 'free', 42, ?, datetime('now'))`
+    ).run(keyHash, futureReset);
+    const db = d1Shim(sqlite) as Parameters<typeof resolveApiKey>[0];
+
+    await resolveApiKey(db, `Bearer ${key}`);
+
+    const row = sqlite
+      .query(`SELECT requests_this_period FROM api_keys WHERE id='k2'`)
+      .get() as { requests_this_period: number };
+    expect(row.requests_this_period).toBe(43); // +1
+  });
+
+  test("countAsRequest=false: bypasses 429 over-limit gate", async () => {
+    // A user who's at the limit should still be able to check /api/keys/usage
+    // to see why they're 429'd. If the metadata call itself 429s, the dashboard
+    // breaks at exactly the moment the user needs it most.
+    const sqlite = new Database(":memory:");
+    setupApiKeysSchemaForResolve(sqlite);
+    sqlite.query(
+      `INSERT INTO api_keys (id, key_hash, key_prefix, email, tier, requests_this_period, period_reset_at, created_at)
+       VALUES ('k3', ?, 'sk_commit_test', 'u@x.co', 'free', 200, ?, datetime('now'))`
+    ).run(keyHash, futureReset);
+    const db = d1Shim(sqlite) as Parameters<typeof resolveApiKey>[0];
+
+    const result = await resolveApiKey(db, `Bearer ${key}`, false);
+    expect(result.error).toBeUndefined();
+    expect(result.key?.requests_this_period).toBe(200);
+  });
+
+  test("countAsRequest=true at-limit: returns 429 (regression guard)", async () => {
+    // Sanity check the gate still triggers for normal (counting) paths.
+    const sqlite = new Database(":memory:");
+    setupApiKeysSchemaForResolve(sqlite);
+    sqlite.query(
+      `INSERT INTO api_keys (id, key_hash, key_prefix, email, tier, requests_this_period, period_reset_at, created_at)
+       VALUES ('k4', ?, 'sk_commit_test', 'u@x.co', 'free', 200, ?, datetime('now'))`
+    ).run(keyHash, futureReset);
+    const db = d1Shim(sqlite) as Parameters<typeof resolveApiKey>[0];
+
+    const result = await resolveApiKey(db, `Bearer ${key}`);
+    expect(result.error?.status).toBe(429);
   });
 });
