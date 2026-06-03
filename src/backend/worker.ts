@@ -2950,11 +2950,20 @@ const GITHUB_AUDIT_UPGRADE_URL =
   "https://getcommit.dev/pricing?ref=github-audit-paywall";
 
 // /api/checkout + /api/checkout-intent per-IP hourly rate limit.
-// Bot analysis 2026-05-28: ~100 fake sessions/day hitting the backend
-// directly (bypassing getcommit.dev proxy). 3/hr/IP caps each burst
-// without blocking legitimate users (real humans rarely retry 4× in one hour).
-// Window resets at the top of each UTC hour.
-const CHECKOUT_HOURLY_LIMIT = 3;
+// Bot analysis 2026-05-28: ~100 fake sessions/day hit the backend directly
+// (bypassing getcommit.dev proxy). Original cap of 3/hr/IP turned out to
+// false-positive in 2026-06-03 buyer-journey probe: when X-Real-IP is absent
+// (direct backend hits), all traffic collapses to one Cloudflare egress IP
+// and shares a single bucket. Probe consumes 2 hits/day (developer + pro);
+// any concurrent bot activity from the same egress pushes the probe over the
+// limit (pro tier 429'd while developer passed). Real users on corporate NAT
+// hit the same trap. Raised to 30/hr — still catches sustained spam (~10×
+// the documented bot avg), but tolerates shared-IP noise. Stripe doesn't
+// charge for unused sessions, so the cost asymmetry strongly favours
+// permissiveness over the (so far zero) revenue lost to false-positives.
+// Window resets 1 hour after the first request in the window (per-IP, not
+// calendar-aligned — see bumpCheckoutCount).
+const CHECKOUT_HOURLY_LIMIT = 30;
 
 /**
  * MCP traffic + organic-key aggregations used by /api/keys/stats. Exported
