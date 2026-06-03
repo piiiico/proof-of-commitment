@@ -355,6 +355,27 @@ export const READ_ONLY_KEY_PATHS = new Set<string>([
 ]);
 
 /**
+ * Decide whether an incoming Origin header represents the getcommit.dev web
+ * surface (browser fetch from audit.astro) or anything else (CLI npm package,
+ * MCP server, external API caller, missing Origin).
+ *
+ * Used by the /api/audit 429-taste branch to attribute funnel source. After
+ * v1.17.0 the CLI started sending `Accept: application/json` to opt into the
+ * structured 429 body, which broke the previous Accept-header heuristic and
+ * mis-tagged every CLI 429 as `audit-web-429`. Origin is the reliable signal:
+ * browsers always send it on cross-origin fetch (CORS); Node fetch does not.
+ *
+ * Matches: `https://getcommit.dev`, `https://www.getcommit.dev`, `https://staging.getcommit.dev`,
+ *          `http://localhost`, `http://localhost:4321`.
+ * Rejects: `""`, `"null"`, `https://getcommit.dev.evil.com`,
+ *          `chrome-extension://...`, any unrelated host.
+ */
+export function isGetcommitWebOrigin(origin: string | null | undefined): boolean {
+  if (!origin) return false;
+  return /^https?:\/\/(?:[^/]*\.)?(?:getcommit\.dev|localhost(?::\d+)?)$/i.test(origin);
+}
+
+/**
  * Resolve API key from Authorization: Bearer header.
  * Returns null if no header present (anonymous request).
  * Returns ApiKeyContext if valid, throws on invalid/revoked/over-limit.
@@ -1055,13 +1076,22 @@ app.post("/api/audit", async (c) => {
     const acceptHeader = (c.req.header("Accept") || "").toLowerCase();
     const wantsJson = acceptHeader.includes("application/json");
 
-    // Source attribution: web clients (audit.astro on getcommit.dev) request
-    // application/json. CLI clients (proof-of-commitment npm package) send
-    // Accept: */*. Splitting the ref lets /api/keys/stats source_breakdown
-    // measure web rate-limit-rescue conversion separately from CLI — they're
-    // different funnel surfaces with very different UI affordances.
+    // Source attribution (web vs CLI): the original Accept-header heuristic
+    // broke when the CLI was upgraded to Accept: application/json (v1.17.0+)
+    // so it could parse the structured 429 body. After that, every JSON
+    // response was tagged `audit-web-429` regardless of caller — CLI users
+    // landed on the wrong /get-started variant and the source_breakdown stats
+    // lost CLI-rescue attribution.
+    //
+    // Fix: use the Origin header. Browser fetch from audit.astro sets
+    // `Origin: https://getcommit.dev` automatically (CORS). Node fetch in
+    // the npm CLI does not set Origin. That gives us a reliable web-vs-CLI
+    // signal independent of Accept negotiation. The legacy plain-text branch
+    // below still wins for v1.14.0 CLI on Accept: */* — Origin only re-routes
+    // attribution inside the JSON branch where both web and CLI coexist.
+    const isWebOrigin = isGetcommitWebOrigin(c.req.header("Origin"));
     const webInstantKeyUrl = instantKeyUrl.replace("ref=audit-cli-429", "ref=audit-web-429");
-    const responseInstantKeyUrl = wantsJson ? webInstantKeyUrl : instantKeyUrl;
+    const responseInstantKeyUrl = wantsJson && isWebOrigin ? webInstantKeyUrl : instantKeyUrl;
 
     if (!wantsJson) {
       // Plain-text for legacy CLI v1.14.0 (sends `Accept: */*`).
