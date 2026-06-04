@@ -570,7 +570,14 @@ export async function buildNpmCommitmentProfile(
       if (avg7d === 0) {
         try {
           const pointUrl = `${NPM_DOWNLOADS_POINT}/last-week/${encodedName}`;
-          const pointRes = await fetch(pointUrl, { headers: { Accept: "application/json" } });
+          const pointRes = await fetch(pointUrl, {
+              headers: { Accept: "application/json" },
+              // @ts-ignore CF fetch type — bypass colo cache; npm sends Cache-Control:
+              // public,max-age=300 which CF caches automatically. If CF holds a stale
+              // all-zero response, this fallback branch (triggered by avg7d===0) would
+              // never recover. Bypass matches the bulk-fetch strategy above.
+              cf: { cacheTtl: 0, cacheEverything: false },
+            });
           if (pointRes.ok) {
             const pointData = (await pointRes.json()) as { downloads: number };
             if (typeof pointData.downloads === "number" && pointData.downloads > 0) {
