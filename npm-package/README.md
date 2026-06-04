@@ -6,7 +6,7 @@
 
 An MCP server and web tool that scores npm packages, PyPI packages, Rust crates, Go modules, and GitHub repos on **behavioral commitment** — signals that are harder to fake than stars, READMEs, or download counts.
 
-## The supply chain problem
+## The supply chain security problem
 
 26 of the 91 npm packages with >10M weekly downloads have a **single npm publisher**. Together they account for over 3 billion downloads per week. `npm audit` doesn't surface this. Stars don't either.
 
@@ -93,7 +93,7 @@ Add to Claude Desktop, Cursor, Windsurf, or any MCP-compatible AI tool. Then ask
 
 ## GitHub Action
 
-Add supply chain auditing to any CI pipeline in 30 seconds — auto-detects packages from `package.json` or `requirements.txt`, **posts results as a PR comment**, writes to GitHub Step Summary, and optionally fails on CRITICAL packages.
+Add supply chain security auditing to any CI pipeline in 30 seconds — auto-detects packages from `package.json` or `requirements.txt`, **posts results as a PR comment**, writes to GitHub Step Summary, and optionally fails on CRITICAL packages.
 
 Use the dedicated action at [piiiico/commit-action](https://github.com/piiiico/commit-action):
 

@@ -2,7 +2,7 @@
   "name": "proof-of-commitment",
   "version": "1.23.0",
   "mcpName": "io.github.piiiico/proof-of-commitment",
-  "description": "Supply chain risk scorer for npm, PyPI, Cargo, and Go packages — behavioral signals that can't be faked",
+  "description": "Supply chain security risk scorer for npm, PyPI, Cargo, and Go packages — behavioral signals that can't be faked",
   "type": "module",
   "bin": {
     "proof-of-commitment": "./index.js",
@@ -16,7 +16,9 @@
   ],
   "keywords": [
     "supply-chain",
+    "supply-chain-security",
     "security",
+    "scanner",
     "npm",
     "pypi",
     "cargo",
