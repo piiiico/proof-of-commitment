@@ -1070,8 +1070,21 @@ app.post("/api/audit", async (c) => {
       "Retry-After": String(retryAfterSeconds),
     };
 
-    const rescueMessage =
+    // Volume-aware rescue (added 2026-06-04). Discovered via 2026-06-02/03
+    // spike investigation: when an IP retries past the wall to count >=
+    // AUDIT_OVERSHOOT_AT, the free-key 200/day pitch is the wrong tier — a
+    // user that aggressive would burn through it in minutes. Surface
+    // Developer ($15/mo, 1000/day, batch API) directly. Free-tier still
+    // remains accessible from /pricing; we just stop leading with it. Bot
+    // traffic that ignores the body is unaffected (still 429); the change
+    // only matters for clients that actually read the rescue copy.
+    const isOvershoot = auditCount >= AUDIT_OVERSHOOT_AT;
+
+    const baseRescueMessage =
       `Scored ${results.length} of ${totalRequested} packages — free-tier daily limit reached on this IP (likely shared via corporate NAT, CI runner, or dev container). Get a free API key in 30 seconds — no credit card — to lift the limit to 200/day.`;
+    const overshootRescueMessage =
+      `Scored ${results.length} of ${totalRequested} packages — you've hit ${auditCount} audits today, well past the free-tier limit. A free key gives 200/day but you'd burn through it in minutes. Developer ($15/mo) gives 1,000/day + batch API up to 5 packages; 30-day money-back.`;
+    const rescueMessage = isOvershoot ? overshootRescueMessage : baseRescueMessage;
 
     const acceptHeader = (c.req.header("Accept") || "").toLowerCase();
     const wantsJson = acceptHeader.includes("application/json");
@@ -1091,7 +1104,15 @@ app.post("/api/audit", async (c) => {
     // attribution inside the JSON branch where both web and CLI coexist.
     const isWebOrigin = isGetcommitWebOrigin(c.req.header("Origin"));
     const webInstantKeyUrl = instantKeyUrl.replace("ref=audit-cli-429", "ref=audit-web-429");
-    const responseInstantKeyUrl = wantsJson && isWebOrigin ? webInstantKeyUrl : instantKeyUrl;
+    // Overshoot pivot: instant_key_url AND upgrade_url both point at
+    // /pricing (utm-tagged audit-overshoot). For 16-59 (normal wall hit) we
+    // keep the historical free-tier deep-link. Tags: instant_key_url is
+    // what /audit page renders as inline-form action; upgrade_url is what
+    // the CLI rescue copy prints. Splitting them lets free-tier still be
+    // reachable from /pricing without us leading with it.
+    const responseInstantKeyUrl = isOvershoot
+      ? AUDIT_OVERSHOOT_PRICING_URL
+      : (wantsJson && isWebOrigin ? webInstantKeyUrl : instantKeyUrl);
 
     if (!wantsJson) {
       // Plain-text for legacy CLI v1.14.0 (sends `Accept: */*`).
@@ -1115,18 +1136,31 @@ app.post("/api/audit", async (c) => {
         return `  ${r.name.padEnd(20)} ${score}  ${risk.padEnd(14)} ${r.maintainers ?? "?"}p  ${dl}`;
       });
 
+      const ctaBlock = isOvershoot
+        ? [
+            `⚠  ${auditCount} audits today — past free tier and past the free-key tier.`,
+            "   Developer plan removes the wall and adds batch API:",
+            "",
+            `   → Developer $15/mo · 1,000 audits/day · batch up to 5: ${AUDIT_OVERSHOOT_PRICING_URL}`,
+            "     30-day money-back guarantee · cancel anytime.",
+            "",
+            `     (Free key 200/day still available from /pricing if you prefer.)`,
+          ]
+        : [
+            "⚠  Free-tier daily limit reached on this network IP",
+            "   (likely shared via corporate NAT, CI runner, or dev container).",
+            "",
+            `   → Free API key in 30 seconds (no card): ${instantKeyUrl}`,
+            `     Unlocks all ${totalRequested} packages + 200 audits/day.`,
+            "     Resets at 00:00 UTC.",
+          ];
       const textBody = [
         "",
         "",
         `  Scored ${results.length} of ${totalRequested} packages:`,
         ...tasteLines,
         "",
-        "⚠  Free-tier daily limit reached on this network IP",
-        "   (likely shared via corporate NAT, CI runner, or dev container).",
-        "",
-        `   → Free API key in 30 seconds (no card): ${instantKeyUrl}`,
-        `     Unlocks all ${totalRequested} packages + 200 audits/day.`,
-        "     Resets at 00:00 UTC.",
+        ...ctaBlock,
         "",
       ].join("\n");
       return c.text(textBody, 429, {
@@ -1142,6 +1176,11 @@ app.post("/api/audit", async (c) => {
     // partial results then surfaces an inline email→key form anchored to
     // source=audit-web-429 (see audit.astro). instant_key_url ref is split
     // above so web/CLI funnel attribution stays clean.
+    //
+    // tier_suggestion (added 2026-06-04): explicit signal to web/CLI
+    // renderers so the inline form can adapt copy + utm without parsing
+    // the URL. "free" = current 200/day path; "developer" = overshoot
+    // pivot to $15/mo. Older clients ignore unknown fields.
     return c.json(
       {
         error: "rate_limit_exceeded",
@@ -1153,6 +1192,8 @@ app.post("/api/audit", async (c) => {
         upgrade_url: responseInstantKeyUrl,
         limit: AUDIT_HARD_LIMIT,
         count: auditCount,
+        tier_suggestion: isOvershoot ? "developer" : "free",
+        overshoot: isOvershoot,
       },
       429,
       rateLimitHeaders
@@ -2696,7 +2737,14 @@ app.post("/api/keys/create", async (c) => {
   // get a structured rescue payload with instant_key_url; this source attribues
   // the resulting key signups to the web rate-limit moment so we can measure
   // conversion lift separately from audit-cli-429 (CLI users in same path).
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook"];
+  // 'audit-overshoot' added 2026-06-04: when an anonymous IP keeps retrying
+  // past the wall to count ≥ AUDIT_OVERSHOOT_AT (4× HARD_LIMIT), the 429
+  // rescue pivots from "free key 200/day" to Developer ($15/mo, 1000/day).
+  // Most clicks should land on /pricing rather than /get-started, but if a
+  // user still chooses the free flow from that pivot we want to tag it
+  // separately so source_breakdown can measure overshoot-attributed
+  // free-tier signups (gateway behavior) vs paid checkout-intent.
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook", "audit-overshoot"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
@@ -2941,6 +2989,20 @@ const MCP_SIGNUP_URL =
 const AUDIT_SOFT_CTA_AT = 5;
 const AUDIT_STRONG_CTA_AT = 10;
 const AUDIT_HARD_LIMIT = 15;    // was 100 — tightened to drive free-key signups (free key = 200/day)
+/** Volume-aware rescue threshold. When a single IP keeps retrying past the
+ *  wall to count ≥ AUDIT_OVERSHOOT_AT, the free-key offer (200/day) is the
+ *  wrong tier — they'd burn through it in minutes. Pivot the 429 rescue
+ *  copy to Developer ($15/mo, 1,000/day, batch API) and route the
+ *  instant_key_url at /pricing instead of /get-started. 60 = 4× HARD_LIMIT,
+ *  picked because:
+ *    - 16-59 might be a one-off "I just hit the wall, didn't realize" user;
+ *      free 200/day is still the right next step.
+ *    - 60+ is sustained programmatic usage (every retry past the wall =
+ *      conscious choice or unattended script); free tier wouldn't fix it,
+ *      Developer would.
+ *  Bots that ignore the response still bounce at the wall; this only
+ *  changes copy for clients that actually read it. */
+const AUDIT_OVERSHOOT_AT = AUDIT_HARD_LIMIT * 4;
 /** On 429, score this many packages as a free "taste" so the user sees
  *  real value before the signup CTA. The CLI already handles the
  *  `packages_already_scored` field — it just never fires because the
@@ -2949,6 +3011,12 @@ const AUDIT_HARD_LIMIT = 15;    // was 100 — tightened to drive free-key signu
 const RATE_LIMIT_TASTE = 3;
 const AUDIT_SIGNUP_URL =
   "https://getcommit.dev/get-started?ref=audit-cli";
+/** Pricing-page CTA target for volume-aware rescue (see AUDIT_OVERSHOOT_AT).
+ *  utm-tagged so /pricing checkout-intent rows attribute back to the
+ *  overshoot rescue path, distinguishing this funnel from audit-skip-form
+ *  (high-intent web visitors) and critical-cta (post-email Developer CTA). */
+const AUDIT_OVERSHOOT_PRICING_URL =
+  "https://getcommit.dev/pricing?utm_source=audit&utm_medium=overshoot-rescue&utm_campaign=audit-overshoot";
 
 // /api/graph per-IP daily rate-limit thresholds. Tighter than /api/audit
 // because dependency-graph analysis is the PAID feature on /pricing
