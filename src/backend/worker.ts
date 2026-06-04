@@ -1028,7 +1028,26 @@ app.post("/api/audit", async (c) => {
             if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
             return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: null, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags, scoreBreakdown: profile.scoreBreakdown };
           } else {
-            const preloadedWeekly = pkg.startsWith("@") ? undefined : bulkWeekly.get(pkg);
+            // Why this branch picks `undefined` over `null`:
+            //   - `undefined` → buildNpmCommitmentProfile takes the SLOW path
+            //     (range API + caches.default + retries) which is robust against
+            //     CF colo-cache poisoning of the bulk endpoint.
+            //   - a number      → FAST path (already have data, no fetch).
+            //   - `null`        → FAST path with a single point-API rescue,
+            //     which still hits the same poisoned CF cache that broke bulk.
+            //
+            // 2026-06-04 observed: bulk endpoint sometimes returns 200 OK with
+            // all-null entries from specific colos for ~5 min (npm cache-control
+            // max-age=300). Per-package point retries within the FAST path keep
+            // failing because they hit the same colo cache. Slow-path range API
+            // uses a DIFFERENT npm endpoint (api.npmjs.org/downloads/range/...)
+            // plus a manual caches.default layer that only stores validated
+            // non-empty responses — i.e., the bypass we actually need when bulk
+            // silently degrades. Latency cost vs FAST: ~150-300 ms (one extra
+            // RTT + tiny parse), only paid on bulk misses. Trend data ALSO comes
+            // back for these packages, which the FAST path can never produce.
+            const bulkValue = pkg.startsWith("@") ? undefined : bulkWeekly.get(pkg);
+            const preloadedWeekly = (bulkValue != null && bulkValue > 0) ? bulkValue : undefined;
             const profile = await buildNpmCommitmentProfile(pkg, preloadedWeekly);
             if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
             const riskFlags: string[] = [];

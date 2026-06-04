@@ -65,6 +65,15 @@ function hasValidDownloads(candidate: DownloadRange): boolean {
  * Scoped packages (@scope/name) are NOT supported by the npm bulk API.
  *
  * Returns a Map from package name → weekly download count (null = not found/error).
+ *
+ * Resilience (added 2026-06-04, root-caused via repro stress test):
+ *   The bulk endpoint sometimes returns 200 OK with empty / null entries when
+ *   the worker's outbound IP gets de-prioritised by npm (observed: 4 of 5
+ *   /api/audit batch calls returned weeklyDownloads=0 for ALL packages, while
+ *   direct curl from elsewhere works fine). When that happens, missing entries
+ *   are filled in via per-package point API calls in parallel. This keeps the
+ *   1-RTT happy path AND prevents the 429-overshoot conversion moment from
+ *   showing misleadingly mediocre scores (axios=66 instead of axios=88, etc.).
  */
 export async function bulkFetchNpmWeeklyDownloads(
   packageNames: string[]
@@ -82,7 +91,21 @@ export async function bulkFetchNpmWeeklyDownloads(
     batches.map(async (batch) => {
       const bulkUrl = `${NPM_DOWNLOADS_POINT}/last-week/${batch.join(",")}`;
       try {
-        const res = await fetch(bulkUrl, { headers: { Accept: "application/json" } });
+        // cf.cacheTtl: 0 disables CF's automatic edge cache for this fetch.
+        // Without it, the FIRST response a colo gets (which can be a stale or
+        // empty npm response from npm's own CF cache) is locked in for 5 min
+        // because npm sets Cache-Control: public, max-age=300. Result: that
+        // colo silently returns weeklyDownloads=0 for every audit batch hit
+        // until the npm cache entry expires. We rely on application-level
+        // caching (caches.default in buildNpmCommitmentProfile for the range
+        // API + npm's own CDN for cold misses) — bypassing fetch's built-in
+        // cache layer is the only way to detect and recover from npm-side
+        // partial responses.
+        const res = await fetch(bulkUrl, {
+          headers: { Accept: "application/json" },
+          // @ts-ignore CF fetch type
+          cf: { cacheTtl: 0, cacheEverything: false },
+        });
         if (res.ok) {
           const data = await res.json();
           // npm returns two different response formats:
@@ -110,6 +133,43 @@ export async function bulkFetchNpmWeeklyDownloads(
       }
     })
   );
+
+  // Per-package rescue pass: any package the bulk endpoint returned null for
+  // (either missing from response, error response, or count<=0) gets a single
+  // per-package point API call. This is the same endpoint as bulk, just
+  // narrower scope — when bulk silently degrades, per-package usually still
+  // works because npm's per-package cache is hot. Runs in parallel; capped at
+  // 8 concurrent to avoid stampeding npm on large batches.
+  const missing = packageNames.filter((n) => {
+    const v = result.get(n);
+    return v == null;
+  });
+  if (missing.length > 0) {
+    const RESCUE_CONCURRENCY = 8;
+    for (let i = 0; i < missing.length; i += RESCUE_CONCURRENCY) {
+      const slice = missing.slice(i, i + RESCUE_CONCURRENCY);
+      await Promise.all(
+        slice.map(async (name) => {
+          try {
+            const pointUrl = `${NPM_DOWNLOADS_POINT}/last-week/${encodeURIComponent(name)}`;
+            const r = await fetch(pointUrl, {
+              headers: { Accept: "application/json" },
+              // @ts-ignore CF fetch type — bypass colo cache; see note above.
+              cf: { cacheTtl: 0, cacheEverything: false },
+            });
+            if (!r.ok) return;
+            const data = (await r.json()) as { downloads?: number };
+            if (typeof data.downloads === "number" && data.downloads > 0) {
+              result.set(name, data.downloads);
+            }
+          } catch {
+            // Non-fatal — package stays null, buildNpmCommitmentProfile will
+            // attempt its own retry-with-backoff below.
+          }
+        })
+      );
+    }
+  }
 
   return result;
 }
@@ -390,18 +450,30 @@ export async function buildNpmCommitmentProfile(
     }
     // If preloadedWeekly === null, the bulk fetch had no data for this package.
     // Fall back to point API to ensure we never return 0 due to a bulk-fetch miss.
+    // Retry once with backoff: in 2026-06-04 stress test, the bulk endpoint
+    // intermittently degraded for the worker's outbound IP and a single
+    // immediate retry was insufficient — a brief delay helps. Two-attempt
+    // budget keeps p99 worst-case latency bounded (~600ms add).
     if (avg7d === 0) {
-      try {
-        const pointUrl = `${NPM_DOWNLOADS_POINT}/last-week/${encodedName}`;
-        const pointRes = await fetch(pointUrl, { headers: { Accept: "application/json" } });
-        if (pointRes.ok) {
-          const pointData = (await pointRes.json()) as { downloads: number };
-          if (typeof pointData.downloads === "number" && pointData.downloads > 0) {
-            avg7d = Math.round(pointData.downloads / 7);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 250));
+        try {
+          const pointUrl = `${NPM_DOWNLOADS_POINT}/last-week/${encodedName}`;
+          const pointRes = await fetch(pointUrl, {
+            headers: { Accept: "application/json" },
+            // @ts-ignore CF fetch type — bypass colo cache (npm sets max-age=300).
+            cf: { cacheTtl: 0, cacheEverything: false },
+          });
+          if (pointRes.ok) {
+            const pointData = (await pointRes.json()) as { downloads: number };
+            if (typeof pointData.downloads === "number" && pointData.downloads > 0) {
+              avg7d = Math.round(pointData.downloads / 7);
+              break;
+            }
           }
+        } catch {
+          // Non-fatal fallback
         }
-      } catch {
-        // Non-fatal fallback
       }
     }
   } else {
@@ -409,9 +481,21 @@ export async function buildNpmCommitmentProfile(
     // Download data changes slowly — cache for 1 hour, but ONLY cache valid non-empty responses.
     try {
       const dlUrl = `${NPM_DOWNLOADS}/${startDate}:${endDate}/${encodedName}`;
-      // Plain fetch options — no cf.cacheEverything so CF does NOT auto-cache responses.
-      // We manage caching manually via caches.default to ensure only valid data is cached.
-      const fetchOpts = { headers: { Accept: "application/json" } };
+      // cf.cacheTtl: 0 disables CF's automatic edge cache.
+      //
+      // The original comment here claimed "no cf.cacheEverything = no caching",
+      // but CF Workers fetch() caches GET responses with Cache-Control headers
+      // by default (npm returns Cache-Control: public, max-age=300). Without
+      // explicit bypass, a colo that once received an empty/degraded npm
+      // response holds it for 5 min and validates-then-rejects on every retry
+      // — making the manual caches.default layer (which guards against
+      // all-zero responses) unable to ever recover until npm's cache expires.
+      // We manage caching manually via caches.default; bypass the built-in.
+      const fetchOpts = {
+        headers: { Accept: "application/json" },
+        // @ts-ignore CF fetch type
+        cf: { cacheTtl: 0, cacheEverything: false },
+      };
 
       let dlData: DownloadRange | null = null;
 
