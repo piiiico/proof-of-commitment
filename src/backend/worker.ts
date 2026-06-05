@@ -904,7 +904,11 @@ app.post("/api/audit", async (c) => {
   const ssrToken = c.req.header("X-SSR-Token");
   const isSSR = ssrToken != null && ssrToken.length > 0 && ssrToken === c.env.ADMIN_SECRET;
   let auditCount = 0;
-  let auditCta: string | null = null;
+  // showAuditCta is set at SOFT_CTA threshold; the actual `_cta` string is
+  // computed AFTER results are built so it can personalize to the worst-risk
+  // package in the user's scan (pickWorstAuditPackage + auditCtaText).
+  // Old code computed the generic string here; the move was deliberate.
+  let showAuditCta = false;
   let rateLimitTaste: {
     retryAfterSeconds: number;
     instantKeyUrl: string;
@@ -944,7 +948,7 @@ app.post("/api/audit", async (c) => {
     }
 
     if (auditCount >= AUDIT_SOFT_CTA_AT) {
-      auditCta = auditCtaText(auditCount);
+      showAuditCta = true;
     }
   }
 
@@ -1221,6 +1225,11 @@ app.post("/api/audit", async (c) => {
 
   // _cta is a future-CLI-readable hint (current v1.14.0 ignores unknown
   // fields). The advisory headers tell scripts the budget remaining.
+  // Personalize from the just-scored results — see auditCtaText(L4071) +
+  // pickWorstAuditPackage. The CLI prints this dim+cyan after the table
+  // (npm-package/index.js L2337/L2369), so naming the worst package converts
+  // "free tier — 5/15 used" into "axios you just scored CRITICAL — get alerts".
+  const auditCta = showAuditCta ? auditCtaText(auditCount, results) : null;
   const headers: Record<string, string> = {};
   if (!apiKeyCtx) {
     headers["X-RateLimit-Limit"] = String(AUDIT_HARD_LIMIT);
@@ -4068,8 +4077,79 @@ async function bumpAuditCount(env: Bindings, ip: string): Promise<number> {
   }
 }
 
-function auditCtaText(count: number): string {
+/**
+ * Type for the per-package result objects assembled by /api/audit, narrowed to
+ * just the fields auditCtaText needs to personalize. Defined locally here (not
+ * exported) because the route assembles its results inline rather than via a
+ * shared type — keeping this tied to call-site shape would create a fragile
+ * coupling. Optional `compromised`/`score`/`riskFlags` mirror the inline type
+ * at the audit handler (worker.ts L951-967).
+ */
+type AuditResultForCta = {
+  name: string;
+  score?: number | null;
+  riskFlags?: string[];
+  compromised?: { attack: string; date: string; url: string };
+  error?: string;
+};
+
+/**
+ * Pick the package most worth calling out in the CTA. Priority:
+ *   1. compromised (known historical incident — strongest fear signal)
+ *   2. CRITICAL riskFlag
+ *   3. HIGH riskFlag
+ *   4. lowest score < 70
+ * Returns null when nothing's worth surfacing (healthy scan or all errors).
+ */
+function pickWorstAuditPackage(results: AuditResultForCta[]): AuditResultForCta | null {
+  if (!results || results.length === 0) return null;
+  const scored = results.filter((r) => !r.error);
+  if (scored.length === 0) return null;
+  const compromised = scored.find((r) => r.compromised);
+  if (compromised) return compromised;
+  const critical = scored.find((r) => r.riskFlags?.some((f) => f.startsWith("CRITICAL")));
+  if (critical) return critical;
+  const high = scored.find((r) => r.riskFlags?.some((f) => f.startsWith("HIGH")));
+  if (high) return high;
+  const withScore = scored.filter((r) => typeof r.score === "number" && (r.score as number) < 70);
+  if (withScore.length === 0) return null;
+  withScore.sort((a, b) => (a.score as number) - (b.score as number));
+  return withScore[0];
+}
+
+/**
+ * CTA text injected as the `_cta` field on /api/audit JSON responses when the
+ * anonymous IP has crossed AUDIT_SOFT_CTA_AT for today. The CLI prints this
+ * dim+cyan after the results table (npm-package/index.js L2337/L2369). When
+ * `results` is supplied, the message personalizes to the worst-risk package
+ * from the current scan — converting a generic free-tier nudge into a specific
+ * "this package you just looked at is risky, get alerts on it" hook anchored
+ * to the user's actual workload. Original generic text retained as fallback
+ * for healthy scans and the no-results path.
+ */
+function auditCtaText(count: number, results?: AuditResultForCta[]): string {
   const remaining = Math.max(0, AUDIT_HARD_LIMIT - count);
+  const worst = results ? pickWorstAuditPackage(results) : null;
+
+  if (worst) {
+    if (worst.compromised) {
+      return `⚠ ${worst.name} was compromised (${worst.compromised.attack}, ${worst.compromised.date}). Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get alerted the next time a package you scan flips — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`;
+    }
+    const criticalFlag = worst.riskFlags?.find((f) => f.startsWith("CRITICAL"));
+    if (criticalFlag) {
+      const reason = criticalFlag.replace(/^CRITICAL:\s*/, "").trim();
+      return `⚠ ${worst.name} scored CRITICAL — ${reason}. Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get alerted when ${worst.name}'s score worsens — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`;
+    }
+    const highFlag = worst.riskFlags?.find((f) => f.startsWith("HIGH"));
+    if (highFlag) {
+      const reason = highFlag.replace(/^HIGH:\s*/, "").trim();
+      return `${worst.name} flagged HIGH — ${reason}. Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get alerted when ${worst.name}'s score worsens — free key, no card: ${AUDIT_SIGNUP_URL}`;
+    }
+    if (typeof worst.score === "number") {
+      return `${worst.name} scored ${worst.score}/100 — lowest in this scan. Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get notified when scores worsen — free key, no card: ${AUDIT_SIGNUP_URL}`;
+    }
+  }
+
   if (count >= AUDIT_STRONG_CTA_AT) {
     return `⚠ Commit free tier — ${count}/${AUDIT_HARD_LIMIT} audits used today (${remaining} left). Lock in alerts on these packages before the wall — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`;
   }
