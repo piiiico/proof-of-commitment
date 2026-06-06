@@ -99,12 +99,53 @@ function registerAttack(ecosystem: string, packages: string[], record: AttackRec
   }
 }
 
+// TrapDoor — cross-ecosystem credential theft + AI assistant poisoning (May 22 2026)
+registerAttack("npm", [
+  "async-pipeline-builder", "build-scripts-utils", "chain-key-validator",
+  "crypto-credential-scanner", "defi-env-auditor", "defi-threat-scanner",
+  "deployment-key-auditor", "dev-env-bootstrapper", "eth-wallet-sentinel",
+  "llm-context-compressor", "mnemonic-safety-check", "model-switch-router",
+  "node-setup-helpers", "project-init-tools", "prompt-engineering-toolkit",
+  "solidity-deploy-guard", "token-usage-tracker", "wallet-backup-verifier",
+  "wallet-security-checker", "web3-secrets-detector", "workspace-config-loader",
+], {
+  attack: "TrapDoor",
+  date: "2026-05-22",
+  url: "https://getcommit.dev/blog/trapdoor-ai-assistant-poisoning/",
+});
+registerAttack("pypi", [
+  "cryptowallet-safety", "data-pipeline-check", "defi-risk-scanner",
+  "env-loader-cli", "eth-security-auditor", "git-config-sync", "solidity-build-guard",
+], {
+  attack: "TrapDoor",
+  date: "2026-05-22",
+  url: "https://getcommit.dev/blog/trapdoor-ai-assistant-poisoning/",
+});
+registerAttack("cargo", [
+  "move-analyzer-build", "move-compiler-tools", "move-project-builder",
+  "sui-framework-helpers", "sui-move-build-helper", "sui-sdk-build-utils",
+], {
+  attack: "TrapDoor",
+  date: "2026-05-22",
+  url: "https://getcommit.dev/blog/trapdoor-ai-assistant-poisoning/",
+});
+
 // Miasma — Red Hat credential theft via compromised GitHub account (Jun 1 2026)
 registerAttack("npm", [
   "@redhat-cloud-services/*",
 ], {
   attack: "Miasma",
   date: "2026-06-01",
+  url: "https://getcommit.dev/blog/redhat-miasma-provenance-bypass/",
+});
+
+// Miasma — Vapi + jagreehal ecosystem via Phantom Gyp (Jun 3 2026)
+// Plants .claude/setup.mjs, .cursor/rules/setup.mdc, .gemini/settings.json
+registerAttack("npm", [
+  "@vapi-ai/*",
+], {
+  attack: "Miasma",
+  date: "2026-06-03",
   url: "https://getcommit.dev/blog/redhat-miasma-provenance-bypass/",
 });
 
