@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.23.0
+ * proof-of-commitment CLI v1.24.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -101,6 +101,14 @@ async function handle429(res) {
   const retryAfter = Number.isFinite(data.retry_after_seconds)
     ? data.retry_after_seconds
     : null;
+  // Backend signals "you've blown past the free wall, Developer $15/mo is the
+  // right fix" via overshoot=true / tier_suggestion="developer" (added
+  // backend-side 2026-06-04). When set, backend routes instantKeyUrl to
+  // /pricing — so the CLI must NOT promise "Free API key in 30 seconds" or
+  // prompt for email (a 200/day key won't help someone scanning 260+/day).
+  // Mismatched CTA text + destination kills trust and conversion. This branch
+  // aligns label + URL + skips the inline email prompt. (Dogfood, 2026-06-06.)
+  const overshoot = data.overshoot === true || data.tier_suggestion === 'developer';
 
   // Forward-compat: if backend ever returns partial scoring on 429,
   // print what we have BEFORE the rescue message. Falls back to JSON
@@ -129,6 +137,28 @@ async function handle429(res) {
     );
   }
   console.error('');
+
+  // Overshoot path: free key is the wrong tool. Surface a URL aligned with
+  // the backend's Developer recommendation, skip the email prompt, exit.
+  // Without this branch, the CLI would say "Free API key in 30 seconds (no
+  // card)" while the URL goes to /pricing — bait-and-switch that erodes
+  // trust at the highest-intent moment we get with a user.
+  if (overshoot) {
+    console.error(
+      clr(
+        c.cyan + c.bold,
+        `   → Compare plans (Developer $15/mo · 1,000/day · batch API): ${instantKeyUrl}`
+      )
+    );
+    if (retryAfter && retryAfter > 0) {
+      const hours = Math.floor(retryAfter / 3600);
+      const mins = Math.floor((retryAfter % 3600) / 60);
+      const resetIn = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+      console.error(clr(c.dim, `     or wait — free-tier resets in ${resetIn} (00:00 UTC).`));
+    }
+    console.error('');
+    process.exit(1);
+  }
 
   // TTY: inline signup collapses the 6-step browser flow (visit URL → enter
   // email → copy key → switch back to terminal → export key → re-run) to a
@@ -498,7 +528,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.23.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.24.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
