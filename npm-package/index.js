@@ -413,10 +413,11 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
       console.log(clr(c.dim, `\n  📊 Monitor ${effectiveCritical === 1 ? 'this package' : 'these packages'}: `) +
         clr(c.cyan, `poc watch ${results.find(r => hasCritical(r.riskFlags))?.name || results[0]?.name}`));
     } else if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      // Non-TTY (CI, piped): show static URL since interactive prompt won't work
+      // Non-TTY (CI, piped): show one-step watch command since interactive prompt won't work
+      const watchPkg = results.find(r => hasCritical(r.riskFlags))?.name || results[0]?.name;
       console.log(clr(c.dim, `\n  📊 Monitor ${effectiveCritical === 1 ? 'this' : 'these ' + effectiveCritical} CRITICAL ${effectiveCritical === 1 ? 'package' : 'packages'} — get alerted when scores change.`));
-      console.log(clr(c.dim, '     Get a free API key: ') + clr(c.cyan, 'https://getcommit.dev/get-started?utm_source=cli'));
-      console.log(clr(c.dim, '     Then run: ') + clr(c.cyan, 'poc login'));
+      console.log(clr(c.dim, '     One step: ') + clr(c.cyan, `poc watch ${watchPkg} --email you@company.com`));
+      console.log(clr(c.dim, '     Free: 3 packages, weekly digest. Developer $15/mo: 15 packages, daily scans.'));
     }
     // else: TTY mode — inlineSignup() will prompt interactively after printTable
   } else if (!hasKey && (!process.stdin.isTTY || !process.stdout.isTTY)) {
@@ -426,8 +427,8 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
     // text only in CI/piped output where interactive prompts can't fire.
     // ref=audit-baseline distinguishes this funnel from audit-cli-429
     // (rate-limit rescue) and from the static utm_source=cli help-line.
-    console.log(clr(c.dim, '\n  📊 Save this scan as your baseline. Re-run anytime with a free key:'));
-    console.log(clr(c.dim, '     ') + clr(c.cyan, 'https://getcommit.dev/get-started?ref=audit-baseline&utm_source=cli') + clr(c.dim, '  (200/day free; push alerts on Developer $15/mo)'));
+    console.log(clr(c.dim, '\n  📊 Get alerted if any package degrades:'));
+    console.log(clr(c.dim, '     ') + clr(c.cyan, `poc watch ${results[0]?.name || '<package>'} --email you@company.com`) + clr(c.dim, '  (free: 3 packages, weekly digest)'));
   }
   console.log();
 }
@@ -505,15 +506,15 @@ async function inlineSignup(results) {
       console.log(clr(c.dim, `     Backup sent to ${email}`));
       console.log();
       console.log(clr(c.bold, '  Next steps:'));
-      console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc status') + clr(c.dim, '       — check your account'));
       // Surface a concrete watch target. CRITICAL first (highest urgency);
       // otherwise pick the lowest-score package as the most-likely-to-degrade.
       const watchTarget = critPkgs[0]?.name
         || results.slice().sort((a, b) => (a.score || 100) - (b.score || 100))[0]?.name;
       if (watchTarget) {
-        console.log(clr(c.dim, '    • ') + clr(c.cyan, `poc watch ${watchTarget}`) + clr(c.dim, '  — start monitoring (Developer $15/mo)'));
+        console.log(clr(c.dim, '    • ') + clr(c.cyan, `poc watch ${watchTarget}`) + clr(c.dim, '  — monitor this package (free: 3 packages, weekly)'));
       }
       console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc init') + clr(c.dim, '          — add CI gate to this project'));
+      console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc status') + clr(c.dim, '       — check your account'));
     } else if (data.message) {
       console.log(clr(c.green, ` ✓ ${data.message}`));
     } else {
@@ -566,9 +567,9 @@ ${clr(c.bold, 'Account:')}
   poc status          Show current tier, usage, and limits
   poc logout          Remove saved API key
 
-${clr(c.bold, 'Monitoring (Developer $15/mo+):')}
-  poc watch <package> [--ecosystem npm|pypi|cargo|golang]
-                      Add a package to daily monitoring
+${clr(c.bold, 'Monitoring (free: 3 packages weekly · Developer $15/mo: 15 daily):')}
+  poc watch <package> [--email you@co.com] [--ecosystem npm|pypi|cargo|golang]
+                      Add a package to monitoring. --email creates a free key in one step.
   poc watchlist       List monitored packages with current scores + risk
   poc unwatch <pkg>   Remove a package from monitoring
 
@@ -1555,15 +1556,53 @@ async function printUpgradeRequired(res, campaign = 'watchlist-402') {
 /**
  * poc watch <package> [--ecosystem npm|pypi|cargo|golang]
  */
-async function cmdWatch(pkg, ecosystem) {
-  const key = await readApiKey();
+async function cmdWatch(pkg, ecosystem, emailArg) {
+  let key = await readApiKey();
+
+  // --email flag: create a free key inline if none exists, collapsing the
+  // visit-site → enter-email → copy-key → poc-login → poc-watch flow to one step.
+  if (!key && emailArg) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailArg)) {
+      console.error(clr(c.red, 'Invalid email. Usage: poc watch <pkg> --email you@co.com'));
+      process.exit(1);
+    }
+    process.stdout.write(clr(c.dim, '  Creating free API key...'));
+    try {
+      const createRes = await fetch('https://poc-backend.amdal-dev.workers.dev/api/keys/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: emailArg, source: 'cli-watch' }),
+      });
+      const keyData = await createRes.json();
+      if (keyData.key) {
+        await writeApiKey(keyData.key);
+        key = keyData.key;
+        console.log(clr(c.green, ' ✓'));
+        console.log(clr(c.dim, `     Key saved to ~/.commit/config. Backup sent to ${emailArg}.`));
+      } else {
+        const errMsg = keyData.error === 'rate_limit_exceeded'
+          ? 'Too many keys from this IP today.'
+          : (keyData.message || 'Could not create key.');
+        console.error(clr(c.red, ` ${errMsg}`));
+        process.exit(1);
+      }
+    } catch (err) {
+      console.error(clr(c.red, ` Error: ${err.message}`));
+      process.exit(1);
+    }
+  }
+
   if (!key) {
-    console.error(clr(c.red, 'No API key found. Set COMMIT_API_KEY or add api_key=<key> to ~/.commit/config'));
-    console.error(clr(c.dim, 'Get a key at https://getcommit.dev/pricing?utm_source=cli'));
+    console.error(clr(c.red, 'No API key found.'));
+    console.error('');
+    console.error(clr(c.bold, '  One-step setup — creates key + starts monitoring:'));
+    console.error(clr(c.cyan, `    poc watch ${pkg} --email you@company.com`));
+    console.error('');
+    console.error(clr(c.dim, '  Or set COMMIT_API_KEY / add api_key=<key> to ~/.commit/config'));
     process.exit(1);
   }
 
-  process.stdout.write(clr(c.dim, `Adding ${pkg} (${ecosystem}) to watchlist...`));
+  process.stdout.write(clr(c.dim, `  Adding ${pkg} (${ecosystem}) to watchlist...`));
   const res = await fetch(WATCHLIST_API, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
@@ -1571,6 +1610,16 @@ async function cmdWatch(pkg, ecosystem) {
   });
 
   if (res.status === 402) { process.stdout.write('\n'); await printUpgradeRequired(res, 'watch-cmd'); process.exit(1); }
+  if (res.status === 422) {
+    const errData = await res.json().catch(() => ({}));
+    process.stdout.write('\n');
+    console.log(clr(c.yellow, `  ⚠ ${errData.message || 'Package limit reached.'}`));
+    if (errData.upgrade) {
+      console.log(clr(c.dim, `     ${errData.upgrade.message || `Upgrade to ${errData.upgrade.plan} for more:`}`));
+      console.log(clr(c.cyan, `     ${errData.upgrade.url}`));
+    }
+    process.exit(1);
+  }
 
   const data = await res.json();
   if (!res.ok) {
@@ -1582,7 +1631,7 @@ async function cmdWatch(pkg, ecosystem) {
   process.stdout.write('\n');
   if (isNew) {
     console.log(clr(c.green, `  ✓ Now watching ${pkg}`));
-    console.log(clr(c.dim, '    Daily scan runs at 06:00 UTC. Alerts on score drop ≥10 or CRITICAL threshold.'));
+    console.log(clr(c.dim, '    Weekly digest (Mondays). Upgrade to Developer ($15/mo) for daily scans + Slack alerts.'));
   } else {
     console.log(clr(c.dim, `  ↩ ${pkg} is already in your watchlist`));
   }
@@ -2177,15 +2226,17 @@ async function main() {
 
   if (subcmd === 'watch') {
     const pkg = args[1];
-    if (!pkg) { console.error('Usage: poc watch <package> [--ecosystem npm|pypi|cargo|golang]'); process.exit(1); }
+    if (!pkg) { console.error('Usage: poc watch <package> [--email you@co.com] [--ecosystem npm|pypi|cargo|golang]'); process.exit(1); }
     let ecosystem = 'npm';
+    let email = null;
     for (let i = 2; i < args.length; i++) {
       if (args[i] === '--ecosystem' || args[i] === '-e') ecosystem = args[++i] || 'npm';
+      else if (args[i] === '--email') email = args[++i] || null;
       else if (args[i] === '--pypi') ecosystem = 'pypi';
       else if (args[i] === '--cargo') ecosystem = 'cargo';
       else if (args[i] === '--golang' || args[i] === '--go') ecosystem = 'golang';
     }
-    await cmdWatch(pkg, ecosystem);
+    await cmdWatch(pkg, ecosystem, email);
     process.exit(0);
   }
 

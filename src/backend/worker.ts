@@ -2833,7 +2833,7 @@ app.post("/api/keys/create", async (c) => {
   // user still chooses the free flow from that pivot we want to tag it
   // separately so source_breakdown can measure overshoot-attributed
   // free-tier signups (gateway behavior) vs paid checkout-intent.
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook", "audit-overshoot"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook", "audit-overshoot", "cli-watch"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
@@ -3793,9 +3793,9 @@ app.get("/api/subscribe/stats", async (c) => {
 //   pro       (10 projects) → 50 packages (5/project)
 //   enterprise (unlimited)  → 500 packages (hard cap, soft-sell to higher)
 const PACKAGE_LIMITS = {
-  free: 0,           // free tier cannot use monitoring
-  developer: 15,     // $15/mo: 3 projects × ~5 packages
-  pro: 50,           // $29/mo: 10 projects × ~5 packages
+  free: 3,           // free tier: taste monitoring with 3 packages (weekly digest)
+  developer: 15,     // $15/mo: 3 projects × ~5 packages (daily scan)
+  pro: 50,           // $29/mo: 10 projects × ~5 packages (daily scan)
   enterprise: 500,
 } as const;
 
@@ -3841,6 +3841,22 @@ function buildUpgradeUrl(email: string | undefined): string {
   return `${base}?email=${encodeURIComponent(email)}`;
 }
 
+/** Require any valid API key (free, developer, pro, enterprise).
+ *  Used for watchlist endpoints where free-tier users get a taste (3 packages, weekly digest).
+ */
+function requireAnyKey(
+  c: { get: (k: string) => ApiKeyContext | null; json: (b: unknown, s?: number) => Response }
+): ApiKeyContext | Response {
+  const key = c.get("apiKey");
+  if (!key) {
+    return c.json({
+      error: "unauthorized",
+      message: "Provide an API key via Authorization: Bearer sk_commit_...",
+    }, 401);
+  }
+  return key;
+}
+
 function requireProKey(
   c: { get: (k: string) => ApiKeyContext | null; json: (b: unknown, s?: number) => Response }
 ): ApiKeyContext | Response {
@@ -3870,7 +3886,7 @@ function requireProKey(
  * Adds packages to the API key's default monitoring project.
  */
 app.post("/api/watchlist", async (c) => {
-  const keyOrErr = requireProKey(c);
+  const keyOrErr = requireAnyKey(c);
   if (keyOrErr instanceof Response) return keyOrErr;
   const key = keyOrErr;
 
@@ -3915,11 +3931,13 @@ app.post("/api/watchlist", async (c) => {
       message: `Your ${key.tier} tier allows ${cap} monitored packages. Currently watching ${existingCount}.`,
       current: existingCount,
       limit: cap,
-      upgrade: key.tier === "developer"
-        ? { url: buildUpgradeUrl(key.email), plan: "pro", price: "$29/month" }
-        : key.tier === "pro"
-          ? { url: buildUpgradeUrl(key.email), plan: "enterprise" }
-          : undefined,
+      upgrade: key.tier === "free"
+        ? { url: buildUpgradeUrl(key.email), plan: "developer", price: "$15/month", message: "Upgrade to Developer for 15 monitored packages + daily scans" }
+        : key.tier === "developer"
+          ? { url: buildUpgradeUrl(key.email), plan: "pro", price: "$29/month" }
+          : key.tier === "pro"
+            ? { url: buildUpgradeUrl(key.email), plan: "enterprise" }
+            : undefined,
     }, 422);
   }
 
@@ -3958,7 +3976,7 @@ app.post("/api/watchlist", async (c) => {
  * Returns the API key's monitored packages with current scores + last_scanned_at.
  */
 app.get("/api/watchlist", async (c) => {
-  const keyOrErr = requireProKey(c);
+  const keyOrErr = requireAnyKey(c);
   if (keyOrErr instanceof Response) return keyOrErr;
   const key = keyOrErr;
 
@@ -4008,7 +4026,7 @@ app.get("/api/watchlist", async (c) => {
  * Body: { all: true } — removes all packages (keeps the project row).
  */
 app.delete("/api/watchlist", async (c) => {
-  const keyOrErr = requireProKey(c);
+  const keyOrErr = requireAnyKey(c);
   if (keyOrErr instanceof Response) return keyOrErr;
   const key = keyOrErr;
 
