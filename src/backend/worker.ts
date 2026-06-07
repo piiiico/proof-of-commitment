@@ -6113,11 +6113,33 @@ app.get("/api/checkout", async (c) => {
     return c.redirect("https://getcommit.dev/pricing?error=tier_unavailable", 302);
   }
 
-  // Optional email pre-fill — captured by the pricing page modal before redirect.
-  // Strips whitespace; silently ignored if invalid (Stripe will ask anyway).
+  // Email pre-fill — captured by the pricing page modal (line 763 in pricing.astro)
+  // OR by the get-started form (line 477 mutates upgrade-btn href after free-key
+  // creation). Strips whitespace; rejected if invalid.
   const rawEmail = (c.req.query("email") ?? "").trim().toLowerCase();
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail);
   const prefillEmail = emailValid ? rawEmail : null;
+
+  // Funnel-pollution gate: require a valid email param. Without it, crawlers that
+  // index get-started.astro's static <a href="/api/checkout?tier=...&utm_source=
+  // get-started"> anchors create empty-customer-email Stripe sessions on every
+  // crawl, polluting funnel reports. Observed 2026-06-07 ~05Z: 2 USD-currency
+  // empty-email sessions in 2h (cs_live_b1uwL6LARBy2... tier=pro $29 and
+  // cs_live_b1IQgN606KGz... tier=developer $15) — same crawler-induced pattern
+  // just fixed at synlig-worker (form-only-slug gate, dd15e10). Legitimate
+  // flows always supply email:
+  //   /pricing.astro modal: lines 959/963 only redirect AFTER email captured
+  //   /get-started.astro: lines 477-491 mutate href to include &email= after
+  //                       form submission (free-key creation flow)
+  // A real user who somehow lands here without email lands on /pricing#waitlist
+  // and runs the modal. utm_source=get-started/utm_campaign=upgrade-from-free-key
+  // are crawler-fingerprint at this point — only crawlers reach the URL without
+  // email pre-fill on those parameters. Logging surfaces unexpected legitimate
+  // flows post-deploy.
+  if (!prefillEmail) {
+    console.warn(`[checkout] no_email_gate ip=${ip} tier=${tier} utm_source=${c.req.query("utm_source") ?? ""} utm_campaign=${c.req.query("utm_campaign") ?? ""}`);
+    return c.redirect("https://getcommit.dev/pricing#waitlist", 302);
+  }
 
   const params = new URLSearchParams({
     mode: "subscription",
@@ -6138,9 +6160,8 @@ app.get("/api/checkout", async (c) => {
 
   // Pre-fill customer email in Stripe so the checkout form starts filled.
   // Stripe will verify it via OTP anyway — this just saves a step.
-  if (prefillEmail) {
-    params.set("customer_email", prefillEmail);
-  }
+  // prefillEmail is guaranteed non-null by the funnel-pollution gate above.
+  params.set("customer_email", prefillEmail);
 
   // GET-checkout is the fallback path used by pricing.astro when the POST
   // checkout-intent flow errors. Forward UTM query params into Stripe metadata
