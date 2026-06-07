@@ -139,6 +139,26 @@ registerAttack("npm", [
   url: "https://getcommit.dev/blog/redhat-miasma-provenance-bypass/",
 });
 
+// IronWorm — Rust-based infostealer via asteroiddao account (Jun 4 2026)
+// eBPF rootkit + Tor C2 + npm Trusted Publishing self-propagation
+// Commits authored as "claude@users.noreply.github.com" with forged timestamps
+registerAttack("npm", [
+  "weavedb-lite", "weavedb-sdk-base", "test-weavedb-sdk",
+  "weavedb-warp-contracts-plugin-deploy", "arnext-arkb", "weavedb-console",
+  "arnext", "roidjs", "weavedb-exm-sdk", "create-arnext-app",
+  "weavedb-tools", "wdb-core", "cwao-tools", "test-ajs", "monade",
+  "weavedb-exm-sdk-web", "testnpmnmp", "warp-contracts-plugin-deploy-test",
+  "wdb-cli", "ai3", "cwao-units", "atomic-notes", "cwao",
+  "weavedb-client", "wdb-sdk", "weavedb-offchain", "fpjson-lang",
+  "weavedb-contracts", "weavedb-node-client", "arjson", "hbsig",
+  "zkjson", "aonote", "weavedb-base", "weavedb-sdk-node", "wao",
+  "weavedb-sdk",
+], {
+  attack: "IronWorm",
+  date: "2026-06-04",
+  url: "https://getcommit.dev/blog/ironworm-rust-malware-targets-ai-credentials/",
+});
+
 // Miasma — Vapi + jagreehal ecosystem via Phantom Gyp (Jun 3 2026)
 // Plants .claude/setup.mjs, .cursor/rules/setup.mdc, .gemini/settings.json
 registerAttack("npm", [
