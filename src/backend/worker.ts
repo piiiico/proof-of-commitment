@@ -5589,7 +5589,10 @@ async function runWeeklyDigest(env: Bindings): Promise<{ sent: number; skipped: 
   ).all<{ id: string; email: string; packages: string }>();
 
   const rows = subscribers.results ?? [];
-  if (rows.length === 0) return { sent: 0, skipped: 0 };
+  // NOTE: do not early-return when rows.length === 0 — free-tier api_key
+  // monitored_packages (added via `poc watch --email`) are processed later
+  // in this function. An empty watchlist_subscriptions table does not mean
+  // no digests to send.
 
   const dateStr = new Date().toLocaleDateString("en-US", {
     month: "long", day: "numeric", year: "numeric",
@@ -5774,19 +5777,201 @@ Unsubscribe: ${unsubLink}`;
     }
   }
 
+  // ── Free-tier monitored_packages digest ────────────────────────────────
+  //
+  // Free users who added packages via `poc watch --email` (v1.25.0, 2026-06-07)
+  // live in monitored_packages (api_key-linked), NOT watchlist_subscriptions
+  // (email-only homepage form). The CLI prompt and /pricing both promise
+  // "free: 3 packages, weekly digest"; this loop delivers that.
+  //
+  // Sends one digest per free-tier email containing the union of their
+  // monitored_packages (npm only — other ecosystems are excluded from the
+  // digest until per-ecosystem scoring is unified). Each digest closes with
+  // a Developer upgrade CTA so the free taste has a paid exit.
+  //
+  // Scope: npm only (matches existing digest scope). Other ecosystems read
+  // monitored_packages but won't appear in the weekly digest until they're
+  // wired into the scoring path above.
+  const freeRowsRes = await env.DB.prepare(
+    `SELECT ak.id AS api_key_id, ak.email, GROUP_CONCAT(mp.package_name, '||') AS packages
+     FROM api_keys ak
+     JOIN monitored_projects mpr ON mpr.api_key_id = ak.id
+     JOIN monitored_packages mp ON mp.project_id = mpr.id
+     WHERE ak.tier = 'free'
+       AND ak.revoked_at IS NULL
+       AND mpr.paused_at IS NULL
+       AND mp.ecosystem = 'npm'
+     GROUP BY ak.email, ak.id`
+  ).all<{ api_key_id: string; email: string; packages: string }>();
+
+  const freeRows = freeRowsRes.results ?? [];
+
+  // Collect packages from free-tier rows that aren't already in scoreCache
+  const newFreePackages = new Set<string>();
+  for (const row of freeRows) {
+    const pkgs = (row.packages ?? "").split("||").filter(Boolean);
+    for (const p of pkgs) if (!scoreCache.has(p)) newFreePackages.add(p);
+  }
+
+  // Score new packages (same MAX_CONCURRENT pattern as above)
+  const newFreePkgList = [...newFreePackages];
+  for (let i = 0; i < newFreePkgList.length; i += MAX_CONCURRENT) {
+    const batch = newFreePkgList.slice(i, i + MAX_CONCURRENT);
+    await Promise.all(batch.map(async (pkg) => {
+      try {
+        const profile = await buildNpmCommitmentProfile(pkg);
+        if (!profile) {
+          scoreCache.set(pkg, { score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] });
+          return;
+        }
+        const wdl = profile.recentWeeklyDownloads ?? 0;
+        const riskFlags: string[] = [];
+        if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+        else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
+        else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+        scoreCache.set(pkg, {
+          score: profile.commitmentScore,
+          maintainers: profile.maintainerCount,
+          weeklyDownloads: wdl,
+          riskFlags,
+        });
+      } catch {
+        scoreCache.set(pkg, { score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] });
+      }
+    }));
+  }
+
+  // Load prev scores for new packages (read package_score_history before insert)
+  for (const pkg of newFreePkgList) {
+    if (prevScores.has(pkg)) continue;
+    const row = await env.DB.prepare(
+      `SELECT score FROM package_score_history
+       WHERE package_name = ? AND ecosystem = 'npm'
+       ORDER BY recorded_at DESC LIMIT 1`
+    ).bind(pkg).first<{ score: number | null }>();
+    prevScores.set(pkg, row?.score ?? null);
+  }
+
+  // Insert current scores for new packages
+  for (const pkg of newFreePkgList) {
+    const cur = scoreCache.get(pkg)!;
+    if (cur.score !== null) {
+      await env.DB.prepare(
+        `INSERT INTO package_score_history
+         (package_name, ecosystem, score, maintainers, weekly_downloads, risk_flags, recorded_at)
+         VALUES (?, 'npm', ?, ?, ?, ?, datetime('now'))`
+      ).bind(pkg, cur.score, cur.maintainers, cur.weeklyDownloads, JSON.stringify(cur.riskFlags)).run();
+    }
+  }
+
+  // Send one digest per free-tier email
+  for (const row of freeRows) {
+    const packages = (row.packages ?? "").split("||").filter(Boolean);
+    if (packages.length === 0) { skipped++; continue; }
+
+    const results = packages
+      .map((pkg) => {
+        const cur = scoreCache.get(pkg) ?? { score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] };
+        return { name: pkg, ...cur, prevScore: prevScores.get(pkg) ?? null };
+      })
+      .filter((r) => r.score !== null);
+
+    if (results.length === 0) { skipped++; continue; }
+
+    results.sort((a, b) => {
+      const aRank = a.riskFlags.includes("CRITICAL") ? 2 : a.riskFlags.includes("HIGH") ? 1 : 0;
+      const bRank = b.riskFlags.includes("CRITICAL") ? 2 : b.riskFlags.includes("HIGH") ? 1 : 0;
+      if (aRank !== bRank) return bRank - aRank;
+      return (b.weeklyDownloads ?? 0) - (a.weeklyDownloads ?? 0);
+    });
+
+    const critical = results.filter((r) => r.riskFlags.includes("CRITICAL"));
+    const pkgLines = results
+      .map((r) => {
+        const flag = r.riskFlags.includes("CRITICAL") ? "⚑ CRITICAL"
+          : r.riskFlags.includes("HIGH") ? "⚠ HIGH"
+          : r.riskFlags.includes("WARN") ? "↓ WARN"
+          : "✓ OK";
+        const change = fmtChange(r.score, r.prevScore);
+        const scoreStr = `${r.score}/100${change}`;
+        return `  ${r.name.padEnd(22)} ${scoreStr.padEnd(12)}  ${r.maintainers ?? "?"}p  ${fmtDL(r.weeklyDownloads)}/wk  ${flag}`;
+      })
+      .join("\n");
+
+    const upgradeUrl = `https://getcommit.dev/pricing?email=${encodeURIComponent(row.email)}&utm_source=weekly-digest&utm_campaign=free-watch-cmd`;
+    const auditLink = `https://getcommit.dev/audit?packages=${encodeURIComponent(packages.join(","))}`;
+
+    const subject = critical.length > 0
+      ? `⚑ ${critical.length} CRITICAL package${critical.length > 1 ? "s" : ""} in your Commit watchlist`
+      : "Your Commit Watchlist — Weekly Report";
+
+    const body = `Supply Chain Risk Report — ${dateStr}
+
+${critical.length > 0
+  ? `${critical.length} CRITICAL package${critical.length > 1 ? "s" : ""} detected in your watchlist:`
+  : "Your watched packages look healthy this week."}
+
+${pkgLines}
+
+CRITICAL = sole npm publisher + 10M+ weekly downloads.
+This structural profile is what made the April 1st axios supply chain attack possible.
+
+Full audit: ${auditLink}
+
+You're on the free tier (weekly digest, up to 3 packages). Developer ($15/mo) adds:
+  • Daily scans (vs weekly)
+  • Up to 15 packages (5× more)
+  • Instant email alerts when any score drops a tier
+
+Upgrade: ${upgradeUrl}
+
+—
+Commit · getcommit.dev
+Manage watchlist: run \`poc watchlist\` in your terminal, or \`poc unwatch <package>\` to remove`;
+
+    try {
+      const emailResp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: "Commit <noreply@getcommit.dev>",
+          to: [row.email],
+          subject,
+          text: body,
+        }),
+      });
+      if (emailResp.ok) {
+        sent++;
+      } else {
+        skipped++;
+      }
+    } catch {
+      skipped++;
+    }
+  }
+
   return { sent, skipped };
 }
 
-// ── Commit Pro daily monitoring scan ─────────────────────────────────
+// ── Commit daily monitoring scan ─────────────────────────────────────
 //
 // Cron: daily at 06:00 UTC ("0 6 * * *")
-// For each Pro/Enterprise api_key with a non-paused default project:
+// For each Developer/Pro/Enterprise api_key with a non-paused default project:
 //   1. Score every package in monitored_packages
 //   2. Update current_score / previous_score / risk_level / last_scanned_at
 //   3. Append to score_history
 //   4. Detect alerts (score_drop ≥10, critical_threshold crossed, recovery)
 //   5. Send one email per project to the project's alert_email (falls back to api_keys.email)
 //   6. Log every alert into alert_log (sent/failed/suppressed)
+//
+// Free tier is excluded from daily scans by design — they get a weekly digest
+// instead (runWeeklyDigest below). Developer tier was added 2026-06-07 after
+// /pricing started promising "daily scans" for $15/mo; pre-fix the SQL filter
+// silently excluded developer, meaning paying customers got the same scan
+// frequency as free (zero). See worker.ts:runProMonitoringScan.
 
 interface ProScanResult {
   scanned_packages: number;
@@ -5853,7 +6038,7 @@ async function runProMonitoringScan(env: Bindings): Promise<ProScanResult> {
      JOIN api_keys ak ON ak.id = mp.api_key_id
      WHERE mp.paused_at IS NULL
        AND ak.revoked_at IS NULL
-       AND ak.tier IN ('pro', 'enterprise')`
+       AND ak.tier IN ('developer', 'pro', 'enterprise')`
   ).all<{
     project_id: string;
     api_key_id: string;
