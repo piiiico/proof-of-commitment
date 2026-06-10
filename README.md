@@ -200,15 +200,18 @@ The hook writes `.cursor/hooks.json` and `.claude/settings.json` (project) or th
 
 ## Get notified before the next attack
 
-The CLI tells you what's risky today. A free API key unlocks **monitoring** — daily score recomputation across the packages you depend on, with alerts when one degrades (publisher drops, release stalls, score falls ≥10 points).
+The CLI tells you what's risky today. A free API key unlocks **monitoring** — score recomputation across the packages you depend on, with alerts when one degrades (publisher drops, release stalls, score falls ≥10 points).
 
-[**Get a free API key →**](https://getcommit.dev/get-started?ref=readme-monitoring) (no card, 30 seconds · 200 audits/day free · Developer $15/mo unlocks alerts + watchlist)
+- **Open (free):** Watch 3 packages · weekly digest every Monday
+- **Developer ($15/mo):** Watch 15 packages · daily scans · instant email alerts
+
+[**Get a free API key →**](https://getcommit.dev/get-started?ref=readme-monitoring) (no card, 30 seconds · 200 audits/day included)
 
 ```bash
 npm install -g proof-of-commitment   # then:
-poc login sk_commit_…                # save your key
-poc watch chalk                      # alert on degradation
-poc init                             # add CI gate to this repo
+poc watch axios --email you@company.com  # free key + monitoring in one step
+poc watch chalk                          # add more packages (3 free)
+poc init                                 # add CI gate to this repo
 ```
 
 ## GitHub Action
