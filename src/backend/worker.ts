@@ -159,14 +159,40 @@ registerAttack("npm", [
   url: "https://getcommit.dev/blog/ironworm-rust-malware-targets-ai-credentials/",
 });
 
-// Miasma — Vapi + jagreehal ecosystem via Phantom Gyp (Jun 3 2026)
+// Miasma — Phantom Gyp wave: @vapi-ai + jagreehal ecosystem (Jun 3 2026)
+// Uses binding.gyp instead of lifecycle scripts to bypass install-script monitors.
 // Plants .claude/setup.mjs, .cursor/rules/setup.mdc, .gemini/settings.json
+// 57 packages across 286+ malicious versions in under 2 hours.
+// Sources: snyk.io/blog/node-gyp-supply-chain-compromise, stepsecurity.io
 registerAttack("npm", [
   "@vapi-ai/*",
+  "@jagreehal/*",
+  "@evolvconsulting/evolv-coder-lite",
+  "ai-sdk-ollama",
+  "autotel", "autotel-adapters", "autotel-audit", "autotel-aws",
+  "autotel-backends", "autotel-cli", "autotel-cloudflare", "autotel-devtools",
+  "autotel-drizzle", "autotel-edge", "autotel-eventcatalog", "autotel-hono",
+  "autotel-mcp", "autotel-mcp-instrumentation", "autotel-mongoose", "autotel-pact",
+  "autotel-playwright", "autotel-plugins", "autotel-sentry", "autotel-subscribers",
+  "autotel-tanstack", "autotel-terminal", "autotel-vitest", "autotel-web",
+  "awaitly", "awaitly-analyze", "awaitly-libsql", "awaitly-mongo",
+  "awaitly-postgres", "awaitly-visualizer",
+  "effect-analyzer",
+  "eslint-plugin-awaitly",
+  "eslint-plugin-executable-stories-jest", "eslint-plugin-executable-stories-playwright",
+  "eslint-plugin-executable-stories-vitest",
+  "executable-stories-cypress", "executable-stories-demo", "executable-stories-formatters",
+  "executable-stories-init", "executable-stories-jest", "executable-stories-mcp",
+  "executable-stories-playwright", "executable-stories-react", "executable-stories-vitest",
+  "http-uploader-dev",
+  "mountly", "mountly-tailwind",
+  "node-env-resolver", "node-env-resolver-aws", "node-env-resolver-dotenvx",
+  "node-env-resolver-nextjs", "node-env-resolver-vite",
+  "wrangler-deploy",
 ], {
-  attack: "Miasma",
+  attack: "Miasma (Phantom Gyp)",
   date: "2026-06-03",
-  url: "https://getcommit.dev/blog/redhat-miasma-provenance-bypass/",
+  url: "https://getcommit.dev/blog/phantom-gyp-binding-gyp-bypass/",
 });
 
 // Mini Shai-Hulud — TanStack (May 11 2026)
