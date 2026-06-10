@@ -3593,7 +3593,19 @@ app.get("/api/keys/stats", async (c) => {
 app.post("/api/v1/visit", async (c) => {
   // Allowlist of accepted hosts — anything else is dropped to prevent the
   // endpoint from becoming a graffiti board for spoofed origin/referer values.
-  const VALID_HOSTS = new Set(["getcommit.dev", "www.getcommit.dev"]);
+  //
+  // CF Web Analytics break (2026-05-24..2026-06-10) hit the whole CF account.
+  // The 09:18Z replacement initially covered getcommit.dev only; synligdigital.no
+  // was named as a co-victim in the incident note but was never wired up — leaving
+  // the outreach machine (30+ E2/E3/E4 sends/day) blind on landing-page traffic.
+  // 2026-06-10 13:00Z: added synligdigital.no to close the gap before the
+  // pricing-friction-v1 30d measurement (task 05b4b20aa57ddd09) is due 2026-06-20.
+  const VALID_HOSTS = new Set([
+    "getcommit.dev",
+    "www.getcommit.dev",
+    "synligdigital.no",
+    "www.synligdigital.no",
+  ]);
 
   try {
     // Parse body as text first, then JSON.parse — supports sendBeacon Blobs
@@ -3741,7 +3753,12 @@ app.get("/api/v1/visits/stats", async (c) => {
 
   // Note: ip_hash rotates daily, so unique-visitor counts beyond 1 day are
   // approximate — a single user shows up once per day in unique_within_window.
-  const [todayRow, yesterdayRow, windowRow, uniqueTodayRow, byPathRows, byCampaignRows, byReferrerRows, dailyRows] = await Promise.all([
+  //
+  // by_host is required (not optional): the allowlist now spans two properties
+  // (getcommit.dev + synligdigital.no) and reporting that blends them is the
+  // exact "operator can't diagnose what they can't see" failure the migration
+  // was supposed to end. Per-host break-down is canonical, not a nice-to-have.
+  const [todayRow, yesterdayRow, windowRow, uniqueTodayRow, byPathRows, byCampaignRows, byReferrerRows, byHostRows, dailyRows] = await Promise.all([
     c.env.DB.prepare(
       `SELECT COUNT(*) AS visits FROM pageviews WHERE date(created_at) = date('now')`
     ).first<{ visits: number }>(),
@@ -3771,6 +3788,11 @@ app.get("/api/v1/visits/stats", async (c) => {
        GROUP BY referrer_host ORDER BY visits DESC LIMIT 20`
     ).bind(days).all<{ referrer_host: string; visits: number }>(),
     c.env.DB.prepare(
+      `SELECT host, COUNT(*) AS visits FROM pageviews
+       WHERE created_at >= datetime('now', '-' || ? || ' days')
+       GROUP BY host ORDER BY visits DESC`
+    ).bind(days).all<{ host: string; visits: number }>(),
+    c.env.DB.prepare(
       `SELECT date(created_at) AS day, COUNT(*) AS visits FROM pageviews
        WHERE created_at >= datetime('now', '-' || ? || ' days')
        GROUP BY day ORDER BY day ASC`
@@ -3786,6 +3808,7 @@ app.get("/api/v1/visits/stats", async (c) => {
     top_paths: byPathRows?.results ?? [],
     by_campaign: byCampaignRows?.results ?? [],
     by_referrer: byReferrerRows?.results ?? [],
+    by_host: byHostRows?.results ?? [],
     daily: dailyRows?.results ?? [],
   });
 });
