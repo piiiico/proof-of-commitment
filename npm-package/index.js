@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.24.0
+ * proof-of-commitment CLI v1.25.1
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -98,9 +98,14 @@ async function handle429(res) {
   const partial = Array.isArray(data.packages_already_scored)
     ? data.packages_already_scored
     : [];
+  // Authenticated keys: retry_after (seconds, used by worker auth-middleware quota path).
+  // Anonymous IPs: retry_after_seconds (legacy / overshoot rescue path).
+  // Read both so both paths surface a reset-time hint.
   const retryAfter = Number.isFinite(data.retry_after_seconds)
     ? data.retry_after_seconds
-    : null;
+    : Number.isFinite(data.retry_after)
+      ? data.retry_after
+      : null;
   // Backend signals "you've blown past the free wall, Developer $15/mo is the
   // right fix" via overshoot=true / tier_suggestion="developer" (added
   // backend-side 2026-06-04). When set, backend routes instantKeyUrl to
@@ -109,6 +114,25 @@ async function handle429(res) {
   // Mismatched CTA text + destination kills trust and conversion. This branch
   // aligns label + URL + skips the inline email prompt. (Dogfood, 2026-06-06.)
   const overshoot = data.overshoot === true || data.tier_suggestion === 'developer';
+  // Authenticated-key quota path (added 2026-06-10): when the user already
+  // owns an API key and burns through their daily allowance, the backend
+  // auth-middleware (worker.ts resolveApiKey) returns a NESTED upgrade object:
+  //   { error, message, tier, upgrade: { url, plan, price, limit, message }, retry_after }
+  // The legacy handle429() shape only knew the FLAT anonymous-IP shape
+  // (instant_key_url, upgrade_url, overshoot, tier_suggestion). On a free-tier
+  // key quota hit, all those flat fields were undefined → handler fell back
+  // to "Get a free key" + inline email prompt → user (who already has a key)
+  // got bait-and-switched at their highest-intent moment: invested in setup,
+  // used the key all day, ready to upgrade — and we offered them to create
+  // ANOTHER free key. Detect via `data.upgrade?.url && data.upgrade?.plan` +
+  // a non-anonymous `data.tier`, route to dedicated upgrade UX. Aligns CLI
+  // CTA + URL + skips email prompt symmetric to the overshoot branch.
+  const keyUpgrade =
+    data.upgrade &&
+    typeof data.upgrade.url === 'string' &&
+    typeof data.upgrade.plan === 'string' &&
+    typeof data.tier === 'string' &&
+    data.tier !== 'anonymous';
 
   // Forward-compat: if backend ever returns partial scoring on 429,
   // print what we have BEFORE the rescue message. Falls back to JSON
@@ -137,6 +161,36 @@ async function handle429(res) {
     );
   }
   console.error('');
+
+  // Authenticated-key quota path: user already has a key, hit their daily
+  // allowance. Free-key inline prompt is the wrong tool — surface upgrade.
+  // (Diagnosis: 2026-06-10 idle-mode dogfood — see comment block above.)
+  if (keyUpgrade) {
+    const planLabel = data.upgrade.plan.charAt(0).toUpperCase() + data.upgrade.plan.slice(1);
+    const price = data.upgrade.price || '';
+    const limit = data.upgrade.limit || '';
+    const pitch = data.upgrade.message || `Upgrade to ${planLabel}.`;
+    // URL already carries utm_campaign=key-upgrade + utm_source=key +
+    // utm_medium=quota from backend buildUpgradeUrl — no rewrite needed,
+    // /pricing key-upgrade banner reads these and pre-selects the tier.
+    console.error(
+      clr(
+        c.cyan + c.bold,
+        `   → ${planLabel} (${price}${limit ? ' · ' + limit : ''}): ${data.upgrade.url}`
+      )
+    );
+    if (pitch) {
+      console.error(clr(c.dim, `     ${pitch}`));
+    }
+    if (retryAfter && retryAfter > 0) {
+      const hours = Math.floor(retryAfter / 3600);
+      const mins = Math.floor((retryAfter % 3600) / 60);
+      const resetIn = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+      console.error(clr(c.dim, `     or wait — your free-tier quota resets in ${resetIn}.`));
+    }
+    console.error('');
+    process.exit(1);
+  }
 
   // Overshoot path: free key is the wrong tool. Surface a URL aligned with
   // the backend's Developer recommendation, skip the email prompt, exit.
