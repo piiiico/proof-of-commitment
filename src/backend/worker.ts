@@ -3565,6 +3565,232 @@ app.get("/api/keys/stats", async (c) => {
 });
 
 /**
+ * POST /api/v1/visit
+ *
+ * First-party pageview beacon — replaces Cloudflare Web Analytics, which has
+ * been silently producing zero data account-wide since at least 2026-05-24
+ * (confirmed via GraphQL: rumPageloadEventsAdaptiveGroups returned 0 visits
+ * for getcommit.dev across 30 days; POST /cdn-cgi/rum returns 404 from a real
+ * Chrome browser, leading the browser to flag a misleading CORS error and the
+ * daily commit-report to show "0 visits" while reality was unknown).
+ *
+ * Body (all fields optional except path):
+ *   { path: string, referrer?: string, utm_source?: string, utm_medium?: string,
+ *     utm_campaign?: string, utm_content?: string, utm_term?: string }
+ *
+ * Server-side enrichment from CF request context:
+ *   host        ← Origin or Referer hostname (anti-spoof check vs allowlist)
+ *   ua_browser  ← coarse bucket from User-Agent
+ *   ua_device   ← desktop/mobile/tablet/bot
+ *   country     ← cf.country (2-letter ISO)
+ *   ip_hash     ← SHA-256(ip || YYYY-MM-DD-salt) — rotates daily
+ *
+ * No cookies. No fingerprinting. No PII stored.
+ *
+ * Returns 204 No Content. Failures return 204 too — analytics must never block
+ * a page render or surface errors to the user.
+ */
+app.post("/api/v1/visit", async (c) => {
+  // Allowlist of accepted hosts — anything else is dropped to prevent the
+  // endpoint from becoming a graffiti board for spoofed origin/referer values.
+  const VALID_HOSTS = new Set(["getcommit.dev", "www.getcommit.dev"]);
+
+  try {
+    // Parse body as text first, then JSON.parse — supports sendBeacon Blobs
+    // sent with type:text/plain (CORS-safelisted, no preflight required) as
+    // well as standard application/json. Avoiding preflight avoids a class of
+    // headless-chromium preflight failures (cors-error 11) observed during
+    // dogfooding 2026-06-10.
+    const rawText = await c.req.text().catch(() => "");
+    let body: Record<string, unknown> = {};
+    try { body = JSON.parse(rawText) as Record<string, unknown>; } catch { /* {} */ }
+
+    const path = typeof body.path === "string" ? body.path.slice(0, 256) : "";
+    if (!path || !path.startsWith("/")) return c.body(null, 204);
+
+    // Derive host from Origin (preferred) then Referer; reject if not in allowlist.
+    const originHeader = c.req.header("Origin") || "";
+    const refererHeader = c.req.header("Referer") || "";
+    let host = "";
+    try {
+      if (originHeader) host = new URL(originHeader).hostname;
+      else if (refererHeader) host = new URL(refererHeader).hostname;
+    } catch { /* fall through */ }
+    if (!VALID_HOSTS.has(host)) return c.body(null, 204);
+
+    // Parse referrer hostname (if any) from request body — captures the previous
+    // page in the user's journey, distinct from the page that fired the beacon.
+    const referrerInput = typeof body.referrer === "string" ? body.referrer : "";
+    let referrer_host: string | null = null;
+    if (referrerInput) {
+      try {
+        const refHost = new URL(referrerInput).hostname;
+        // Drop same-host referrers (internal navigation) to keep this dimension
+        // useful as "where did they come from" rather than noise.
+        if (refHost && !VALID_HOSTS.has(refHost)) referrer_host = refHost;
+      } catch { /* ignore malformed */ }
+    }
+
+    const utm_source = typeof body.utm_source === "string" ? body.utm_source.slice(0, 64) : null;
+    const utm_medium = typeof body.utm_medium === "string" ? body.utm_medium.slice(0, 64) : null;
+    const utm_campaign = typeof body.utm_campaign === "string" ? body.utm_campaign.slice(0, 64) : null;
+    const utm_content = typeof body.utm_content === "string" ? body.utm_content.slice(0, 128) : null;
+    const utm_term = typeof body.utm_term === "string" ? body.utm_term.slice(0, 128) : null;
+
+    // Validate UTM values look like attribution slugs (prevents arbitrary
+    // string-stuffing). Same regex as VALID_SOURCES coercion at line 2858.
+    const utmRe = /^[a-z0-9_-]{1,64}$/i;
+    const safeUtm = (v: string | null): string | null =>
+      v && utmRe.test(v) ? v.toLowerCase() : null;
+
+    // User-Agent coarse bucketing — high-cardinality strings waste storage and
+    // expose fingerprinting risk. Five buckets is enough for traffic-source split.
+    const ua = c.req.header("User-Agent") || "";
+    const uaLc = ua.toLowerCase();
+    const ua_device = /bot|crawl|spider|headless|node-fetch|curl|wget/.test(uaLc)
+      ? "bot"
+      : /mobile|android|iphone/.test(uaLc)
+        ? "mobile"
+        : /ipad|tablet/.test(uaLc)
+          ? "tablet"
+          : "desktop";
+    const ua_browser = uaLc.includes("edg/")
+      ? "edge"
+      : uaLc.includes("firefox")
+        ? "firefox"
+        : uaLc.includes("chrome") || uaLc.includes("chromium")
+          ? "chrome"
+          : uaLc.includes("safari")
+            ? "safari"
+            : "other";
+
+    // Drop bot traffic — keeps the data signal-dense for conversion analysis.
+    // Real users matter; npm bot fetches do not. (Could log separately later.)
+    if (ua_device === "bot") return c.body(null, 204);
+
+    // CF request properties — country is two-letter ISO; null for unknown.
+    const cf = (c.req.raw as unknown as { cf?: { country?: string } }).cf;
+    const country = cf?.country ? String(cf.country).slice(0, 2) : null;
+
+    // IP-hash with daily salt rotation: SHA-256(ip || YYYY-MM-DD || ADMIN_SECRET).
+    // Daily rotation means hashes from yesterday's logs can't be joined to today's,
+    // preventing across-day re-identification while still supporting same-day
+    // unique-visitor counts. ADMIN_SECRET adds a server-side pepper so a leaked
+    // table dump can't be brute-forced against the IPv4 space.
+    const ip = c.req.header("CF-Connecting-IP")
+      || c.req.header("X-Forwarded-For")
+      || "unknown";
+    const today = new Date().toISOString().slice(0, 10);
+    const ipSaltSource = `${ip}|${today}|${c.env.ADMIN_SECRET || "no-salt"}`;
+    const ipBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ipSaltSource));
+    const ip_hash = Array.from(new Uint8Array(ipBuf))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+      .slice(0, 32); // 128 bits of hash is plenty for collision-resistance at our volume
+
+    // Generate row id.
+    const idBytes = new Uint8Array(8);
+    crypto.getRandomValues(idBytes);
+    const id = Array.from(idBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+    await c.env.DB.prepare(
+      `INSERT INTO pageviews (id, host, path, referrer_host, utm_source, utm_campaign,
+                              utm_medium, utm_content, utm_term, ua_browser, ua_device,
+                              country, ip_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id, host, path, referrer_host,
+      safeUtm(utm_source), safeUtm(utm_campaign), safeUtm(utm_medium),
+      utm_content, utm_term,  // _content and _term may have richer values, no slug validation
+      ua_browser, ua_device, country, ip_hash
+    ).run();
+
+    return c.body(null, 204);
+  } catch (err) {
+    // Never surface errors to the page — log and return 204 so the beacon
+    // call is a no-op from the page's perspective.
+    console.error("[visit-beacon] write failed:", (err as Error)?.message);
+    return c.body(null, 204);
+  }
+});
+
+/**
+ * GET /api/v1/visits/stats
+ *
+ * Admin-only summary of pageview data — replaces the CF Analytics dashboard
+ * for daily reporting purposes. Returns:
+ *   - visits_today / visits_yesterday / visits_7d
+ *   - unique_today / unique_7d (from ip_hash dedup within window)
+ *   - top paths
+ *   - utm_campaign breakdown
+ *   - referrer breakdown
+ *
+ * Query params:
+ *   ?days=N    — window for trend (default 7)
+ *
+ * Auth: X-Admin-Secret header must match ADMIN_SECRET.
+ */
+app.get("/api/v1/visits/stats", async (c) => {
+  const adminSecret = c.env.ADMIN_SECRET;
+  if (!adminSecret || c.req.header("X-Admin-Secret") !== adminSecret) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const daysParam = parseInt(c.req.query("days") || "7", 10);
+  const days = Number.isFinite(daysParam) && daysParam > 0 && daysParam <= 90 ? daysParam : 7;
+
+  // Note: ip_hash rotates daily, so unique-visitor counts beyond 1 day are
+  // approximate — a single user shows up once per day in unique_within_window.
+  const [todayRow, yesterdayRow, windowRow, uniqueTodayRow, byPathRows, byCampaignRows, byReferrerRows, dailyRows] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT COUNT(*) AS visits FROM pageviews WHERE date(created_at) = date('now')`
+    ).first<{ visits: number }>(),
+    c.env.DB.prepare(
+      `SELECT COUNT(*) AS visits FROM pageviews WHERE date(created_at) = date('now','-1 day')`
+    ).first<{ visits: number }>(),
+    c.env.DB.prepare(
+      `SELECT COUNT(*) AS visits FROM pageviews WHERE created_at >= datetime('now', '-' || ? || ' days')`
+    ).bind(days).first<{ visits: number }>(),
+    c.env.DB.prepare(
+      `SELECT COUNT(DISTINCT ip_hash) AS uniques FROM pageviews
+       WHERE date(created_at) = date('now') AND ip_hash IS NOT NULL`
+    ).first<{ uniques: number }>(),
+    c.env.DB.prepare(
+      `SELECT path, COUNT(*) AS visits FROM pageviews
+       WHERE created_at >= datetime('now', '-' || ? || ' days')
+       GROUP BY path ORDER BY visits DESC LIMIT 20`
+    ).bind(days).all<{ path: string; visits: number }>(),
+    c.env.DB.prepare(
+      `SELECT COALESCE(utm_campaign, '(none)') AS utm_campaign, COUNT(*) AS visits FROM pageviews
+       WHERE created_at >= datetime('now', '-' || ? || ' days')
+       GROUP BY utm_campaign ORDER BY visits DESC LIMIT 20`
+    ).bind(days).all<{ utm_campaign: string; visits: number }>(),
+    c.env.DB.prepare(
+      `SELECT COALESCE(referrer_host, '(direct)') AS referrer_host, COUNT(*) AS visits FROM pageviews
+       WHERE created_at >= datetime('now', '-' || ? || ' days')
+       GROUP BY referrer_host ORDER BY visits DESC LIMIT 20`
+    ).bind(days).all<{ referrer_host: string; visits: number }>(),
+    c.env.DB.prepare(
+      `SELECT date(created_at) AS day, COUNT(*) AS visits FROM pageviews
+       WHERE created_at >= datetime('now', '-' || ? || ' days')
+       GROUP BY day ORDER BY day ASC`
+    ).bind(days).all<{ day: string; visits: number }>(),
+  ]);
+
+  return c.json({
+    window_days: days,
+    visits_today: todayRow?.visits ?? 0,
+    visits_yesterday: yesterdayRow?.visits ?? 0,
+    visits_window: windowRow?.visits ?? 0,
+    unique_today: uniqueTodayRow?.uniques ?? 0,
+    top_paths: byPathRows?.results ?? [],
+    by_campaign: byCampaignRows?.results ?? [],
+    by_referrer: byReferrerRows?.results ?? [],
+    daily: dailyRows?.results ?? [],
+  });
+});
+
+/**
  * POST /api/admin/seed-endorsements
  * Admin endpoint — requires X-Admin-Secret header.
  * Seeds demo endorsements for a list of repos.
