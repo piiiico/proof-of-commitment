@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.25.1
+ * proof-of-commitment CLI v1.26.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -2611,7 +2611,7 @@ async function main() {
     if (!structuredOutput) process.stdout.write(clr(c.dim, ` done in ${elapsed}s\n`));
 
     if (sarifOutput) {
-      const sarif = formatSarif(allResults, { filePath, ecosystem, version: '1.25.1' });
+      const sarif = formatSarif(allResults, { filePath, ecosystem, version: '1.26.0' });
       console.log(JSON.stringify(sarif, null, 2));
       process.exit(shouldFail(allResults, failOn) ? 1 : 0);
     }
@@ -2645,7 +2645,7 @@ async function main() {
 
   if (!allResults || allResults.length === 0) {
     if (sarifOutput) {
-      const sarif = formatSarif([], { filePath, ecosystem, version: '1.25.1' });
+      const sarif = formatSarif([], { filePath, ecosystem, version: '1.26.0' });
       console.log(JSON.stringify(sarif, null, 2));
     } else if (jsonOutput) {
       console.log(JSON.stringify({ totalScanned: 0, criticalCount: 0, provenanceCount: 0, failOn, results: [] }, null, 2));
@@ -2656,7 +2656,7 @@ async function main() {
   }
 
   if (sarifOutput) {
-    const sarif = formatSarif(allResults, { filePath, ecosystem, version: '1.25.1' });
+    const sarif = formatSarif(allResults, { filePath, ecosystem, version: '1.26.0' });
     console.log(JSON.stringify(sarif, null, 2));
     process.exit(shouldFail(allResults, failOn) ? 1 : 0);
   }
