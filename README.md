@@ -328,11 +328,13 @@ curl https://poc-backend.amdal-dev.workers.dev/api/audit \
 }
 ```
 
-## 9 MCP tools
+## 11 MCP tools
 
 | Tool | Description |
 |------|-------------|
 | `audit_dependencies` | Batch risk audit for up to 20 npm/PyPI/Cargo/Go packages |
+| `audit_github_repo` | Fetch a repo's package.json/requirements.txt and audit every dep |
+| `audit_dependency_tree` | Map an npm package's full dependency tree (incl. transitive CRITICAL deps) |
 | `lookup_npm_package` | Single npm package behavioral profile |
 | `lookup_pypi_package` | Single PyPI package behavioral profile |
 | `lookup_cargo_crate` | Single Rust crate behavioral profile (crates.io) |
@@ -341,6 +343,8 @@ curl https://poc-backend.amdal-dev.workers.dev/api/audit \
 | `lookup_business` | Norwegian business register — operating years, employees, financials |
 | `lookup_business_by_org` | Same, by org number |
 | `query_commitment` | Browser extension behavioral data (unique verified visitors, repeat rate) |
+
+Anonymous: 15 requests/IP/UTC day across both `/mcp` and `/api/audit`. Free key (no card, 30s signup at https://getcommit.dev/get-started): 200/day. Higher tiers at https://getcommit.dev/pricing.
 
 ## What the score measures
 

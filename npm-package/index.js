@@ -846,7 +846,7 @@ ${clr(c.bold, 'Score dimensions (npm/PyPI/Cargo):')} longevity · download momen
 ${clr(c.bold, 'Score dimensions (Go):')} longevity · release consistency · maintainer depth · GitHub backing · stars
 
 ${clr(c.bold, 'MCP:')} https://poc-backend.amdal-dev.workers.dev/mcp — connect from Claude Desktop / Cursor / Cline.
-       Free tier: 100 queries/IP/UTC day. Power users: API key for 200/day. ${clr(c.dim, '(Authorization: Bearer sk_commit_…)')}
+       Anonymous: 15 queries/IP/UTC day. Free API key (instant, no card): 200/day. ${clr(c.dim, '(Authorization: Bearer sk_commit_…)')}
 
 ${clr(c.bold, 'Web:')}  ${WEB}
   `);
