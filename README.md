@@ -129,7 +129,7 @@ Defaults: `critical` in CI (when `CI=true` is set, which every major CI runner d
 
 The dedicated [`piiiico/commit-action@v1`](https://github.com/piiiico/commit-action) is still the right choice when you want PR comments and step summaries; `--fail-on` is for minimal pipelines that just need a yes/no answer.
 
-### SARIF output for GitHub Code Scanning (v1.25.1+)
+### SARIF output for GitHub Code Scanning (v1.26.0+)
 
 `--sarif` outputs [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) — the standard format for static analysis results. Upload it to GitHub Code Scanning and Commit findings appear in the Security tab alongside CodeQL and Snyk.
 
