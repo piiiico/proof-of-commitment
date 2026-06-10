@@ -11,15 +11,15 @@ An MCP server and web tool that scores npm packages, PyPI packages, Rust crates,
 26 of the 91 npm packages with >10M weekly downloads have a **single npm publisher**. Together they account for over 3 billion downloads per week. `npm audit` doesn't surface this. Stars don't either.
 
 Four packages in a typical Node.js project are CRITICAL right now:
-- **chalk** — 413M downloads/week, **1 npm publisher**
-- **zod** — 163M downloads/week, **1 npm publisher** (30+ GitHub contributors)
-- **lodash** — 145M downloads/week, **1 npm publisher**
-- **axios** — 99M downloads/week, **1 npm publisher** (attacked March 30, 2026)
+- **chalk** — 432M downloads/week, **1 npm publisher**
+- **zod** — 185M downloads/week, **1 npm publisher** (30+ GitHub contributors)
+- **lodash** — 156M downloads/week, **1 npm publisher**
+- **axios** — 113M downloads/week, **1 npm publisher** (attacked March 30, 2026)
 
 They won't appear in your `package.json` either — but these are in almost every project:
-- **minimatch** — 562M downloads/week, **1 npm publisher**
-- **glob** — 333M downloads/week, **1 npm publisher**
-- **cross-spawn** — 190M downloads/week, **1 npm publisher**
+- **minimatch** — 625M downloads/week, **1 npm publisher**
+- **glob** — 366M downloads/week, **1 npm publisher**
+- **cross-spawn** — 215M downloads/week, **1 npm publisher**
 
 Behavioral signals surface this. Stars and READMEs don't.
 

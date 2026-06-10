@@ -13,15 +13,15 @@ An MCP server and web tool that scores npm packages, PyPI packages, Rust crates,
 26 of the 91 npm packages with >10M weekly downloads have a **single npm publisher**. Together they account for over 3 billion downloads per week. `npm audit` doesn't surface this. Stars don't either.
 
 Four packages in a typical Node.js project are CRITICAL right now:
-- **chalk** — 413M downloads/week, **1 npm publisher**
-- **zod** — 163M downloads/week, **1 npm publisher** (30+ GitHub contributors)
-- **lodash** — 145M downloads/week, **1 npm publisher**
-- **axios** — 99M downloads/week, **1 npm publisher** (attacked March 30, 2026)
+- **chalk** — 432M downloads/week, **1 npm publisher**
+- **zod** — 185M downloads/week, **1 npm publisher** (30+ GitHub contributors)
+- **lodash** — 156M downloads/week, **1 npm publisher**
+- **axios** — 113M downloads/week, **1 npm publisher** (attacked March 30, 2026)
 
 They won't appear in your `package.json` either — but these are in almost every project:
-- **minimatch** — 562M downloads/week, **1 npm publisher**
-- **glob** — 333M downloads/week, **1 npm publisher**
-- **cross-spawn** — 190M downloads/week, **1 npm publisher**
+- **minimatch** — 625M downloads/week, **1 npm publisher**
+- **glob** — 366M downloads/week, **1 npm publisher**
+- **cross-spawn** — 215M downloads/week, **1 npm publisher**
 
 Behavioral signals surface this. Stars and READMEs don't.
 
@@ -336,16 +336,16 @@ Each package is scored 0–100 across:
 
 ```
 # packages you know about:
-chalk       — score 75, 1 publisher, 413M/week  ⚑ CRITICAL
-zod         — score 86, 1 publisher, 163M/week  ⚑ CRITICAL  (30+ GitHub contributors)
-lodash      — score 81, 1 publisher, 145M/week  ⚑ CRITICAL
-axios       — score 86, 1 publisher,  99M/week  ⚑ CRITICAL  (attacked Mar 30 2026)
+chalk       — score 75, 1 publisher, 432M/week  ⚑ CRITICAL
+zod         — score 83, 1 publisher, 185M/week  ⚑ CRITICAL  (30+ GitHub contributors)
+lodash      — score 81, 1 publisher, 156M/week  ⚑ CRITICAL
+axios       — score 88, 1 publisher, 113M/week  ⚑ CRITICAL  (attacked Mar 30 2026)
 express     — score 90, 5 publishers, 95M/week
 
 # packages probably not in your package.json, definitely in your lock file:
-minimatch   — score 78, 1 publisher, 562M/week  ⚑ CRITICAL
-glob        — score 80, 1 publisher, 333M/week  ⚑ CRITICAL
-cross-spawn — score 72, 1 publisher, 190M/week  ⚑ CRITICAL
+minimatch   — score 78, 1 publisher, 625M/week  ⚑ CRITICAL
+glob        — score 80, 1 publisher, 366M/week  ⚑ CRITICAL
+cross-spawn — score 72, 1 publisher, 215M/week  ⚑ CRITICAL
 
 # post-attack:
 litellm     — score 74, 1 publisher            ⚑ CRITICAL  (supply chain attack Mar 2026)

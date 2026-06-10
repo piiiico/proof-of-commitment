@@ -34,7 +34,15 @@
     "maintainer",
     "publisher",
     "provenance",
-    "trusted-publishing"
+    "trusted-publishing",
+    "mcp",
+    "mcp-server",
+    "vulnerability",
+    "sca",
+    "dependency-audit",
+    "lockfile",
+    "devsecops",
+    "ci"
   ],
   "author": "piiiico",
   "license": "MIT",
