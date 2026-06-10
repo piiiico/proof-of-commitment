@@ -6922,7 +6922,12 @@ app.post("/api/stripe/webhook", async (c) => {
       customer_email?: string;
       customer?: string;
       subscription?: string;
-      metadata?: { tier?: string };
+      metadata?: {
+        tier?: string;
+        utm_source?: string;
+        utm_campaign?: string;
+        utm_medium?: string;
+      };
     };
 
     const email = (session.customer_details?.email ?? session.customer_email ?? "").toLowerCase().trim();
@@ -6930,6 +6935,30 @@ app.post("/api/stripe/webhook", async (c) => {
     const stripeCustomerId = session.customer as string | undefined;
     const subscriptionId = session.subscription as string | undefined;
     const stripeSessionId = session.id as string | undefined;
+
+    // Funnel attribution for PAID keys. The free-key endpoint (/api/keys/create)
+    // sets api_keys.source from VALID_SOURCES (line ~2836); without the parallel
+    // write here, every paid signup silently coerced to schema-default 'web' —
+    // hiding audit-overshoot / audit-compromised-key / upgrade-from-free-key
+    // conversion volume from source_breakdown despite the metadata already
+    // riding in Stripe session.metadata[utm_campaign] since 2026-05-29
+    // (appendCommonCheckoutParams line 6428). Prefer utm_campaign because it
+    // names the specific surface; fall back to utm_source for breadth, then
+    // 'web' to match free-key default. Paid vs free split remains recoverable
+    // via the tier column. 3rd occurrence of the funnel-surface-gap pattern
+    // closed today (2026-06-10 04:55Z free-key hero+REF_TO_SOURCE+VALID_SOURCES,
+    // 05:25Z pricing CONTEXT_BY_CAMPAIGN, now paid-key webhook source).
+    // Allow alphanumeric + hyphen + underscore, max 64 chars — matches the
+    // shape of every existing source value and rejects pathological metadata.
+    const VALID_PAID_SOURCE_RE = /^[a-z0-9_-]{1,64}$/;
+    const rawUtmCampaign = typeof session.metadata?.utm_campaign === "string" ? session.metadata.utm_campaign.trim().toLowerCase() : "";
+    const rawUtmSource = typeof session.metadata?.utm_source === "string" ? session.metadata.utm_source.trim().toLowerCase() : "";
+    let source = "web";
+    if (rawUtmCampaign && VALID_PAID_SOURCE_RE.test(rawUtmCampaign)) {
+      source = rawUtmCampaign;
+    } else if (rawUtmSource && VALID_PAID_SOURCE_RE.test(rawUtmSource)) {
+      source = rawUtmSource;
+    }
 
     if (!email) {
       console.error("Stripe webhook: no email in checkout session");
@@ -6959,9 +6988,11 @@ app.post("/api/stripe/webhook", async (c) => {
     await c.env.DB.prepare(
       `INSERT INTO api_keys
          (id, key_hash, key_prefix, email, tier, requests_this_period, period_reset_at,
-          stripe_customer_id, stripe_subscription_id, created_at)
-       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, datetime('now'))`
-    ).bind(id, keyHash, keyPrefix, email, tier, periodResetAt, stripeCustomerId ?? null, subscriptionId ?? null).run();
+          stripe_customer_id, stripe_subscription_id, source, created_at)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, datetime('now'))`
+    ).bind(id, keyHash, keyPrefix, email, tier, periodResetAt, stripeCustomerId ?? null, subscriptionId ?? null, source).run();
+
+    console.log(`[stripe] checkout.session.completed id=${stripeSessionId ?? "?"} tier=${tier} source=${source} email=${email}`);
 
     // Park the raw key briefly so the /checkout/success page can reveal it
     // inline (mirrors the inline-key pattern shipped on /pricing/ and
