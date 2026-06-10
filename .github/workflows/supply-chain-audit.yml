@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
+      security-events: write
     steps:
       - uses: actions/checkout@v4
 
@@ -28,3 +29,14 @@ jobs:
           max-packages: '20'
           comment-on-pr: true
           include-dev-dependencies: false
+
+      - name: Generate SARIF report
+        if: always()
+        run: npx -y proof-of-commitment --file package.json --sarif --fail-on=none > commit-results.sarif
+
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: commit-results.sarif
+          category: commit-supply-chain

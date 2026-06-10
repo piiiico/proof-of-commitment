@@ -129,6 +129,33 @@ Defaults: `critical` in CI (when `CI=true` is set, which every major CI runner d
 
 The dedicated [`piiiico/commit-action@v1`](https://github.com/piiiico/commit-action) is still the right choice when you want PR comments and step summaries; `--fail-on` is for minimal pipelines that just need a yes/no answer.
 
+### SARIF output for GitHub Code Scanning (v1.25.1+)
+
+`--sarif` outputs [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) — the standard format for static analysis results. Upload it to GitHub Code Scanning and Commit findings appear in the Security tab alongside CodeQL and Snyk.
+
+```yaml
+# .github/workflows/supply-chain.yml
+name: Supply Chain
+on: [pull_request]
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npx -y proof-of-commitment --file package-lock.json --sarif --fail-on=none > results.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
+          category: commit-supply-chain
+```
+
+CRITICAL and HIGH packages show as alerts in the repo's Security tab. Compromised packages (in the Commit incident registry) get a separate alert. `--fail-on` still controls the exit code independently — use `--fail-on=critical` to also block the PR.
+
 **Web demo (no install):** [getcommit.dev/audit](https://getcommit.dev/audit) — paste your packages, see risk scores in seconds.
 
 ## IDE Hooks (Cursor + Claude Code)

@@ -310,6 +310,157 @@ function riskLabel(flags, score) {
   return '🟢 HEALTHY';
 }
 
+/**
+ * Format audit results as SARIF 2.1.0 for GitHub Code Scanning / security dashboards.
+ *
+ * Maps risk levels: CRITICAL → error, HIGH (score<40) → warning,
+ * MODERATE (score<60) → note. Each package produces one result entry.
+ * Compromised packages get a separate "compromised" rule.
+ *
+ * When --file was used, locations point to that file at line 1.
+ * Otherwise, a logical package-name location is used.
+ */
+function formatSarif(results, { filePath, ecosystem, version } = {}) {
+  const rules = [];
+  const ruleIndex = {};
+
+  function ensureRule(id, shortDescription, fullDescription, level) {
+    if (ruleIndex[id] != null) return ruleIndex[id];
+    const idx = rules.length;
+    ruleIndex[id] = idx;
+    rules.push({
+      id,
+      shortDescription: { text: shortDescription },
+      fullDescription: { text: fullDescription },
+      defaultConfiguration: { level },
+      helpUri: 'https://getcommit.dev/docs/',
+    });
+    return idx;
+  }
+
+  // Pre-define rules
+  ensureRule(
+    'commit/critical',
+    'CRITICAL: sole publisher with high download volume',
+    'Package has a single npm/registry publisher controlling millions of weekly downloads — the exact attack surface exploited in the axios and LiteLLM supply chain compromises.',
+    'error'
+  );
+  ensureRule(
+    'commit/high',
+    'HIGH: behavioral risk score below 40',
+    'Package scores below 40 on behavioral commitment signals, indicating elevated supply chain risk from low maintenance activity, publisher concentration, or rapid adoption without established track record.',
+    'warning'
+  );
+  ensureRule(
+    'commit/moderate',
+    'MODERATE: behavioral risk score below 60',
+    'Package scores below 60 on behavioral commitment signals. Not immediately dangerous but worth monitoring.',
+    'note'
+  );
+  ensureRule(
+    'commit/compromised',
+    'COMPROMISED: confirmed supply chain attack',
+    'Package was involved in a confirmed supply chain attack. Verify you are on a clean version.',
+    'error'
+  );
+
+  const sarifResults = [];
+
+  for (const pkg of results) {
+    const isCritical = hasCritical(pkg.riskFlags);
+    const score = typeof pkg.score === 'number' ? pkg.score : null;
+
+    // Determine primary rule
+    let ruleId, level;
+    if (isCritical) {
+      ruleId = 'commit/critical';
+      level = 'error';
+    } else if (score !== null && score < 40) {
+      ruleId = 'commit/high';
+      level = 'warning';
+    } else if (score !== null && score < 60) {
+      ruleId = 'commit/moderate';
+      level = 'note';
+    } else {
+      // Healthy — skip unless compromised
+      if (!pkg.compromised) continue;
+      ruleId = 'commit/compromised';
+      level = 'error';
+    }
+
+    const dlStr = pkg.weeklyDownloads
+      ? ` (${fmtDl(pkg.weeklyDownloads)} downloads/week)`
+      : '';
+    const pubStr = pkg.maintainers
+      ? `, ${pkg.maintainers} publisher${pkg.maintainers > 1 ? 's' : ''}`
+      : '';
+    const scoreStr = score !== null ? `Score: ${score}/100` : '';
+
+    const messageText = `${pkg.name}: ${scoreStr}${pubStr}${dlStr}. ` +
+      `${isCritical ? 'Sole publisher with high download volume — publish-access concentration risk.' : ''} ` +
+      `https://getcommit.dev/${pkg.ecosystem || ecosystem || 'npm'}/${encodeURIComponent(pkg.name)}`;
+
+    const location = filePath
+      ? { physicalLocation: { artifactLocation: { uri: filePath }, region: { startLine: 1 } } }
+      : { logicalLocations: [{ name: pkg.name, kind: 'module' }] };
+
+    sarifResults.push({
+      ruleId,
+      ruleIndex: ruleIndex[ruleId],
+      level,
+      message: { text: messageText.trim() },
+      locations: [location],
+      properties: {
+        ecosystem: pkg.ecosystem || ecosystem || 'npm',
+        score: pkg.score,
+        maintainers: pkg.maintainers,
+        weeklyDownloads: pkg.weeklyDownloads,
+        ageYears: pkg.ageYears,
+        hasProvenance: pkg.hasProvenance || false,
+        riskFlags: pkg.riskFlags || [],
+      },
+    });
+
+    // Separate result for compromised packages
+    if (pkg.compromised && ruleId !== 'commit/compromised') {
+      const atk = pkg.compromised;
+      sarifResults.push({
+        ruleId: 'commit/compromised',
+        ruleIndex: ruleIndex['commit/compromised'],
+        level: 'error',
+        message: {
+          text: `${pkg.name}: confirmed supply chain attack — ${atk.attack || 'unknown'} (${atk.date || '?'}). ${atk.url || ''}`,
+        },
+        locations: [location],
+      });
+    }
+  }
+
+  return {
+    $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
+    version: '2.1.0',
+    runs: [{
+      tool: {
+        driver: {
+          name: 'Commit',
+          semanticVersion: version || '1.25.0',
+          informationUri: 'https://getcommit.dev',
+          rules,
+        },
+      },
+      results: sarifResults,
+    }],
+  };
+}
+
+// Short download formatter for SARIF messages (no /wk suffix)
+function fmtDl(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+  return String(n);
+}
+
 function fmtDownloads(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B/wk';
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M/wk';
@@ -632,6 +783,7 @@ ${clr(c.bold, 'Monitoring (free: 3 packages weekly · Developer $15/mo: 15 daily
 
 ${clr(c.bold, 'Options:')}
   --json              Output results as JSON
+  --sarif             Output results as SARIF 2.1.0 (for GitHub Code Scanning)
   --fail-on=<level>   Exit 1 when findings meet the threshold. Levels:
                         critical  any CRITICAL package (publish-access concentration)
                         risky     any CRITICAL or HIGH (score < 40) package
@@ -661,6 +813,7 @@ ${clr(c.bold, 'Examples:')}
   npx proof-of-commitment --file package-lock.json     # scans ALL transitive deps
   npx proof-of-commitment --file go.sum                # scans full Go module graph
   npx proof-of-commitment axios chalk --json | jq '.criticalCount'
+  npx proof-of-commitment --sarif > results.sarif       # GitHub Code Scanning format
   npx proof-of-commitment --fail-on=critical           # CI-friendly hard gate
 
 ${clr(c.bold, 'CI integration (GitHub Actions):')}
@@ -2319,8 +2472,11 @@ async function main() {
   let isLockfile = false;
   let totalInFile = 0;
   let jsonOutput = false;
+  let sarifOutput = false;
   // null means "default later" — depends on output mode and CI env.
   let failOn = null;
+  // Set after arg-parse: true when JSON or SARIF suppresses interactive output.
+  let structuredOutput = false;
 
   let i = 0;
   while (i < args.length) {
@@ -2330,6 +2486,7 @@ async function main() {
     else if (a === '--cargo') { ecosystem = 'cargo'; i++; }
     else if (a === '--golang' || a === '--go') { ecosystem = 'golang'; i++; }
     else if (a === '--json') { jsonOutput = true; i++; }
+    else if (a === '--sarif') { sarifOutput = true; i++; }
     else if (a.startsWith('--fail-on=')) {
       try { failOn = parseFailOn(a.slice('--fail-on='.length)); }
       catch (err) { console.error(err.message); process.exit(2); }
@@ -2351,12 +2508,14 @@ async function main() {
     else { packages.push(a); i++; }
   }
 
+  structuredOutput = jsonOutput || sarifOutput;
+
   // Zero-arg auto-detect: if no positional packages and no --file, look for a manifest in cwd.
   if (!filePath && packages.length === 0) {
     const detected = await autodetectManifest(process.cwd());
     if (detected) {
       filePath = detected;
-      if (!jsonOutput) console.log(clr(c.dim, `Auto-detected manifest: ${detected}`));
+      if (!structuredOutput) console.log(clr(c.dim, `Auto-detected manifest: ${detected}`));
     } else {
       // No positional packages, no --file, and no manifest in cwd → print help.
       // This preserves the prior "bare invocation" UX rather than failing silently.
@@ -2372,7 +2531,7 @@ async function main() {
       ecosystem = result.ecosystem;
       isLockfile = result.lockfile || false;
       totalInFile = result.totalInFile || packages.length;
-      if (!jsonOutput) console.log(clr(c.dim, `Detected ${totalInFile} packages from ${filePath} (${ecosystem})`));
+      if (!structuredOutput) console.log(clr(c.dim, `Detected ${totalInFile} packages from ${filePath} (${ecosystem})`));
     } catch (err) {
       console.error(`Error reading ${filePath}: ${err.message}`);
       process.exit(1);
@@ -2387,12 +2546,12 @@ async function main() {
   // Resolve fail-on default.
   //   - User passed --fail-on=X       → use X (already set).
   //   - CI env (CI=true or =1)        → 'critical' (hard gate by default in CI).
-  //   - --json output (no CI)         → 'critical' (preserves v1.7.x behavior).
+  //   - --json/--sarif output (no CI) → 'critical' (machine-readable = CI-like).
   //   - interactive table output      → 'none' (backward-compatible for casual users).
   if (failOn === null) {
     const ciEnv = process.env.CI;
     const inCI = ciEnv === 'true' || ciEnv === '1';
-    if (inCI || jsonOutput) failOn = 'critical';
+    if (inCI || structuredOutput) failOn = 'critical';
     else failOn = 'none';
   }
 
@@ -2402,7 +2561,7 @@ async function main() {
   let apiCta = null;
 
   if (packages.length <= 20) {
-    if (!jsonOutput) process.stdout.write(clr(c.dim, `Scoring ${packages.length} ${ecosystem} package${packages.length > 1 ? 's' : ''}...`));
+    if (!structuredOutput) process.stdout.write(clr(c.dim, `Scoring ${packages.length} ${ecosystem} package${packages.length > 1 ? 's' : ''}...`));
 
     try {
       const res = await fetch(API, {
@@ -2424,11 +2583,11 @@ async function main() {
     }
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    if (!jsonOutput) process.stdout.write(clr(c.dim, ` done in ${elapsed}s\n`));
+    if (!structuredOutput) process.stdout.write(clr(c.dim, ` done in ${elapsed}s\n`));
 
   } else {
     const batches = Math.ceil(packages.length / 20);
-    if (!jsonOutput) process.stdout.write(clr(c.dim, `Scanning ${packages.length} packages (${batches} batches in parallel)...`));
+    if (!structuredOutput) process.stdout.write(clr(c.dim, `Scanning ${packages.length} packages (${batches} batches in parallel)...`));
 
     let lastPct = 0;
     try {
@@ -2449,7 +2608,13 @@ async function main() {
     }
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    if (!jsonOutput) process.stdout.write(clr(c.dim, ` done in ${elapsed}s\n`));
+    if (!structuredOutput) process.stdout.write(clr(c.dim, ` done in ${elapsed}s\n`));
+
+    if (sarifOutput) {
+      const sarif = formatSarif(allResults, { filePath, ecosystem, version: '1.25.1' });
+      console.log(JSON.stringify(sarif, null, 2));
+      process.exit(shouldFail(allResults, failOn) ? 1 : 0);
+    }
 
     if (jsonOutput) {
       const criticalCount = allResults.filter(r => hasCritical(r.riskFlags)).length;
@@ -2479,12 +2644,21 @@ async function main() {
   }
 
   if (!allResults || allResults.length === 0) {
-    if (jsonOutput) {
+    if (sarifOutput) {
+      const sarif = formatSarif([], { filePath, ecosystem, version: '1.25.1' });
+      console.log(JSON.stringify(sarif, null, 2));
+    } else if (jsonOutput) {
       console.log(JSON.stringify({ totalScanned: 0, criticalCount: 0, provenanceCount: 0, failOn, results: [] }, null, 2));
     } else {
       console.log('No results returned. Check package names and try again.');
     }
     process.exit(0);
+  }
+
+  if (sarifOutput) {
+    const sarif = formatSarif(allResults, { filePath, ecosystem, version: '1.25.1' });
+    console.log(JSON.stringify(sarif, null, 2));
+    process.exit(shouldFail(allResults, failOn) ? 1 : 0);
   }
 
   if (jsonOutput) {

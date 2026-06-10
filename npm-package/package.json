@@ -42,7 +42,9 @@
     "dependency-audit",
     "lockfile",
     "devsecops",
-    "ci"
+    "ci",
+    "sarif",
+    "code-scanning"
   ],
   "author": "piiiico",
   "license": "MIT",
