@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.26.0
+ * proof-of-commitment CLI v1.28.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -649,7 +649,7 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
  * intent. Copy adapts to context: degradation alerts (CRITICAL) vs baseline
  * lock-in (healthy). Quick lookups (<3 packages) still skip the prompt.
  */
-async function inlineSignup(results) {
+async function inlineSignup(results, opts = {}) {
   // Only prompt in interactive TTY when no key saved
   if (!process.stdin.isTTY || !process.stdout.isTTY) return;
   const hasKey = !!process.env.COMMIT_API_KEY || _cachedHasKey;
@@ -657,20 +657,36 @@ async function inlineSignup(results) {
   const critPkgs = results.filter(r => hasCritical(r.riskFlags));
   const lowScorePkgs = results.filter(r => typeof r.score === 'number' && r.score < 60);
   const hasFindings = critPkgs.length >= 1 || lowScorePkgs.length >= 2;
-  // Gate: show prompt when there's something worth monitoring.
+  // engagementSignal: true when the backend returned an `_cta` field, which
+  // means this IP has scored ≥ AUDIT_SOFT_CTA_AT (5) packages today.
+  // That's a server-confirmed engagement signal independent of local result
+  // shape — the user is approaching the daily wall (15) and will hit it
+  // soon. Pre-this fix, single-package healthy scans at counts 5–14 saw
+  // only a dim URL: the strongest in-terminal conversion moment dropped to
+  // a copy-paste task. With engagementSignal=true we bypass the findings
+  // gate so the inline email→key prompt fires at the moment of warmest
+  // engagement. Closes the leak found 2026-06-10 dogfooding /api/keys/stats:
+  // 4 IPs hit AUDIT_SOFT_CTA_AT in 7d, 0 organic signups.
+  const engagementSignal = !!opts.engagementSignal;
+  // Gate: show prompt when there's something worth monitoring OR the user
+  // has demonstrated repeat-use engagement today (server _cta signal).
   // Old gate (results.length < 3) blocked the most common entry point:
   // `npx proof-of-commitment axios` after reading about an attack.
   // A single CRITICAL result IS the high-intent moment — don't skip it.
-  // For healthy single-package checks with no findings, still skip.
-  if (results.length < 3 && !hasFindings) return;
+  // For healthy single-package checks with no findings AND no engagement
+  // signal, still skip.
+  if (results.length < 3 && !hasFindings && !engagementSignal) return;
 
   // Copy adapts to context. Findings → degradation framing.
   // Healthy → baseline-lock framing (still real value: alert me if any score drops).
+  // engagementSignal without findings → soft-CTA wall-approach framing.
   const heading = hasFindings
     ? (results.length === 1
       ? '  🔔 Monitor this package. Get alerted if it gets worse.'
       : '  🔔 Lock in this audit. Get alerted if these packages get worse.')
-    : '  🔔 Lock in this baseline. Get alerted if any of these packages degrade.';
+    : engagementSignal
+      ? '  🔔 Past the free anonymous quota on this network — lift it to 200/day.'
+      : '  🔔 Lock in this baseline. Get alerted if any of these packages degrade.';
 
   console.log(clr(c.dim, '  ─────────────────────────────────────────────'));
   console.log(clr(c.bold, heading));
@@ -696,10 +712,17 @@ async function inlineSignup(results) {
   process.stdout.write(clr(c.dim, '  Creating key...'));
 
   try {
+    // Funnel attribution: 'cli-soft-cta' for engagement-signal path,
+    // 'cli' for findings-driven inline prompts. Lets api_keys.source
+    // measure 2026-06-10 engagementSignal gate-bypass lift separately
+    // from baseline inline-CLI signups. Backend VALID_SOURCES gains
+    // 'cli-soft-cta' in this same commit; older worker versions drop
+    // unknown sources to 'web' (safe degradation, no error).
+    const source = engagementSignal && !hasFindings ? 'cli-soft-cta' : 'cli';
     const res = await fetch('https://poc-backend.amdal-dev.workers.dev/api/keys/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, source: 'cli' }),
+      body: JSON.stringify({ email, source }),
     });
 
     const data = await res.json();
@@ -734,7 +757,7 @@ async function inlineSignup(results) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.24.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.28.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -2635,7 +2658,7 @@ async function main() {
     const criticalTotal = allResults.filter(r => hasCritical(r.riskFlags)).length;
     printTable(displayed, { totalScanned: allResults.length, totalCritical: criticalTotal, lockfile: true });
     if (apiCta) console.log(clr(c.dim + c.cyan, `\n  ${apiCta}`));
-    await inlineSignup(displayed);
+    await inlineSignup(displayed, { engagementSignal: !!apiCta });
     if (shouldFail(allResults, failOn)) {
       console.error(clr(c.red + c.bold, `\n✗ --fail-on=${failOn} threshold met. Exit 1.`));
       process.exit(1);
@@ -2676,7 +2699,7 @@ async function main() {
 
   printTable(allResults);
   if (apiCta) console.log(clr(c.dim + c.cyan, `\n  ${apiCta}`));
-  await inlineSignup(allResults);
+  await inlineSignup(allResults, { engagementSignal: !!apiCta });
   if (shouldFail(allResults, failOn)) {
     console.error(clr(c.red + c.bold, `✗ --fail-on=${failOn} threshold met. Exit 1.`));
     process.exit(1);

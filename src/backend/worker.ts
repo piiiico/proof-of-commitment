@@ -2855,7 +2855,17 @@ app.post("/api/keys/create", async (c) => {
   // 05:25Z, this: authenticated-key upgrade prompts). Sub-medium detail
   // (quota/pro-feature/pkg-cap/dashboard) is carried in utm_medium for
   // analytics replay but does not affect attribution.
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade"];
+  // 'cli-soft-cta' added 2026-06-10: distinguishes CLI inline-prompt
+  // signups that fired BECAUSE the backend returned _cta (engagement
+  // signal: this IP scored ≥AUDIT_SOFT_CTA_AT today) from the baseline
+  // findings-driven 'cli' inline prompt. Before this entry, the
+  // engagementSignal gate-bypass shipped in npm-package@1.28.0 dropped
+  // to 'web' source on older workers; tagging here lets api_keys.source
+  // measure conversion lift from healthy single-package scans where
+  // the user hit the soft-CTA threshold but local result had no
+  // findings (the previously-silent leak — 4 IPs hit soft-CTA in 7d,
+  // 0 organic signups).
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade", "cli-soft-cta"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
