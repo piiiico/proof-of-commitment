@@ -534,8 +534,9 @@ export async function resolveApiKey(
     // Upgrade target = next tier up. Free → Developer (cheaper first step), Developer → Pro.
     // upgrade.url carries the authenticated user's email so /pricing pre-fills
     // the modal — closes one re-type step at the exact moment a rate-limited
-    // user is most motivated to upgrade. See buildUpgradeUrl docstring.
-    const upgradeUrl = buildUpgradeUrl(row.email);
+    // user is most motivated to upgrade. medium=quota tags this as a rate-limit
+    // surface in analytics; campaign+source set in buildUpgradeUrl.
+    const upgradeUrl = buildUpgradeUrl(row.email, { medium: "quota" });
     const upgrade = tier === "free"
       ? {
           url: upgradeUrl,
@@ -2844,7 +2845,17 @@ app.post("/api/keys/create", async (c) => {
   // (audit.astro compromisedCount branch). Same funnel-wide enforcement
   // pattern as audit-web-critical / audit-web-healthy: every layer that
   // observes the ref needs its own gate against the canonical source list.
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook", "audit-overshoot", "cli-watch"];
+  // 'key-upgrade' added 2026-06-10: backend buildUpgradeUrl writes this as
+  // utm_campaign on every authenticated-key upgrade prompt (429 quota, 402
+  // pro-feature, 422 pkg-cap, dashboard signed-in check). Closes the
+  // direct-API + dashboard funnel-attribution gap left over from the
+  // audit-overshoot work earlier today — 4th occurrence of the funnel-
+  // surface-gap pattern (1st: audit-web-critical/healthy 2026-05-23, 2nd:
+  // audit-web-compromised 04:55Z, 3rd: audit-overshoot CONTEXT_BY_CAMPAIGN
+  // 05:25Z, this: authenticated-key upgrade prompts). Sub-medium detail
+  // (quota/pro-feature/pkg-cap/dashboard) is carried in utm_medium for
+  // analytics replay but does not affect attribution.
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
@@ -3064,7 +3075,12 @@ app.get("/api/keys/usage", async (c) => {
     period_reset_at: periodResetAt,
     created_at: row.created_at,
     last_used_at: row.last_used_at,
-    upgrade_url: tier === "free" ? "https://getcommit.dev/pricing" : null,
+    // medium=dashboard tags clicks from /dashboard (signed-in usage check).
+    // Was a static '/pricing' string — never carried email or campaign, so
+    // dashboard upgrade clicks landed on generic pricing with no banner and
+    // no email pre-fill. buildUpgradeUrl carries both now; dashboard.astro
+    // wires this href into the upgrade CTA in renderUsage().
+    upgrade_url: tier === "free" ? buildUpgradeUrl(row.email, { medium: "dashboard" }) : null,
   });
 });
 
@@ -3840,16 +3856,35 @@ async function getOrCreateDefaultProject(db: D1Database, apiKeyId: string, email
  *  The upgrade.url carries the authenticated user's email as a query param so
  *  the /pricing modal pre-fills it — removes one re-type step at the highest-
  *  stakes click in the funnel. The user is already authenticated to this
- *  endpoint, so returning their own email back to them is not a leak. UTM
- *  source/campaign is conventionally added by the CLI when it surfaces the
- *  URL to the user (printUpgradeRequired in npm-package/index.js). The
+ *  endpoint, so returning their own email back to them is not a leak. The
  *  pre-fill in /pricing.astro reads `email` from URLSearchParams and only
  *  applies it when the value looks like an email.
+ *
+ *  utm_campaign=key-upgrade fires CONTEXT_BY_CAMPAIGN['key-upgrade'] in
+ *  pricing.astro — a banner that reframes the page as "you came from your own
+ *  authenticated key" and pre-selects Developer in the checkout modal. Without
+ *  this tag the visitor lands on generic /pricing with no context, identical
+ *  asymmetry to the 2026-06-10 audit-overshoot destination-context gap (4th
+ *  occurrence of funnel-surface-gap pattern). Backend authoring of utm_campaign
+ *  also feeds the checkout-webhook attribution path (worker.ts:6954 reads
+ *  metadata.utm_campaign first → api_keys.source) — so any conversion from a
+ *  rate-limited or pro-feature-blocked free user is now measurable in
+ *  source_breakdown instead of silently bucketing as 'web'. CLI callers
+ *  (npm-package/index.js printUpgradeRequired) append their own utm_source=cli
+ *  + utm_campaign=<cmd> after this — URLSearchParams.get returns the first
+ *  occurrence, so backend campaigning wins for the banner; CLI's tag remains
+ *  for analytics replay. `medium` identifies the surface that triggered the
+ *  prompt: 'quota' (429), 'pro-feature' (402), 'pkg-cap' (422), 'dashboard'
+ *  (signed-in usage check).
  */
-function buildUpgradeUrl(email: string | undefined): string {
+export function buildUpgradeUrl(email: string | undefined, ctx?: { medium?: string }): string {
   const base = "https://getcommit.dev/pricing";
-  if (!email) return base;
-  return `${base}?email=${encodeURIComponent(email)}`;
+  const params = new URLSearchParams();
+  if (email) params.set("email", email);
+  params.set("utm_campaign", "key-upgrade");
+  params.set("utm_source", "key");
+  if (ctx?.medium) params.set("utm_medium", ctx.medium);
+  return `${base}?${params.toString()}`;
 }
 
 /** Require any valid API key (free, developer, pro, enterprise).
@@ -3879,7 +3914,7 @@ function requireProKey(
     }, 401);
   }
   if (key.tier !== "developer" && key.tier !== "pro" && key.tier !== "enterprise") {
-    const upgradeUrl = buildUpgradeUrl(key.email);
+    const upgradeUrl = buildUpgradeUrl(key.email, { medium: "pro-feature" });
     return c.json({
       error: "upgrade_required",
       message: `Monitoring + alerts start on Developer ($15/mo). Upgrade at ${upgradeUrl}`,
@@ -3943,11 +3978,11 @@ app.post("/api/watchlist", async (c) => {
       current: existingCount,
       limit: cap,
       upgrade: key.tier === "free"
-        ? { url: buildUpgradeUrl(key.email), plan: "developer", price: "$15/month", message: "Upgrade to Developer for 15 monitored packages + daily scans" }
+        ? { url: buildUpgradeUrl(key.email, { medium: "pkg-cap" }), plan: "developer", price: "$15/month", message: "Upgrade to Developer for 15 monitored packages + daily scans" }
         : key.tier === "developer"
-          ? { url: buildUpgradeUrl(key.email), plan: "pro", price: "$29/month" }
+          ? { url: buildUpgradeUrl(key.email, { medium: "pkg-cap" }), plan: "pro", price: "$29/month" }
           : key.tier === "pro"
-            ? { url: buildUpgradeUrl(key.email), plan: "enterprise" }
+            ? { url: buildUpgradeUrl(key.email, { medium: "pkg-cap" }), plan: "enterprise" }
             : undefined,
     }, 422);
   }
