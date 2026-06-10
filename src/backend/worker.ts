@@ -2833,7 +2833,18 @@ app.post("/api/keys/create", async (c) => {
   // user still chooses the free flow from that pivot we want to tag it
   // separately so source_breakdown can measure overshoot-attributed
   // free-tier signups (gateway behavior) vs paid checkout-intent.
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook", "audit-overshoot", "cli-watch"];
+  // 'audit-web-compromised' added 2026-06-10: post-result CTA branch on
+  // /audit when ≥1 audited package is in the compromised registry (Miasma,
+  // Mini Shai-Hulud, axios token theft, TrapDoor, IronWorm, LiteLLM,
+  // node-ipc, @cap-js/*, @uipath/*). Inline form posts source='audit-web-
+  // inline' so this whitelist entry only carries the noscript-fallback
+  // signups arriving at /get-started?ref=audit-web-compromised. Prior to
+  // this entry those signups silently dropped to 'web' — invisible in the
+  // funnel report alongside the audit-page CTA fix shipped 04:15Z 2026-06-10
+  // (audit.astro compromisedCount branch). Same funnel-wide enforcement
+  // pattern as audit-web-critical / audit-web-healthy: every layer that
+  // observes the ref needs its own gate against the canonical source list.
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook", "audit-overshoot", "cli-watch"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
