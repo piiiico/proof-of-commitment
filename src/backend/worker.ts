@@ -2921,24 +2921,30 @@ app.post("/api/keys/create", async (c) => {
   // Send via Resend email API (RESEND_API_KEY is a worker secret)
   let emailSent = false;
 
-  const emailBody = `Your Commit API key + 3 things to try
+  const emailBody = `Your Commit API key + 4 things to try
 
   ${apiKey}
 
 Save it. It won't be shown again.
 
 
-1) Add a CI gate to one of your repos (free, 1 repo):
-   cd your-project
+1) Watch 3 packages — weekly score-change digest (free, no project setup):
    npx proof-of-commitment poc login    # paste the key above
+   npx proof-of-commitment poc watch express
+   npx proof-of-commitment poc watch lodash
+
+   Mondays we email you when any watched score drops a tier.
+
+2) Add a CI gate to one of your repos (free, 1 repo):
+   cd your-project
    npx proof-of-commitment poc init     # adds GitHub Action + README badge
 
    Every PR fails if it introduces a CRITICAL dependency.
 
-2) Score any project from the command line:
+3) Score any project from the command line:
    npx proof-of-commitment --file package-lock.json
 
-3) Use the API directly:
+4) Use the API directly:
    curl https://poc-backend.amdal-dev.workers.dev/api/audit \\
      -H "Authorization: Bearer ${apiKey}" \\
      -H "Content-Type: application/json" \\
@@ -2947,11 +2953,12 @@ Save it. It won't be shown again.
 
 Your free tier:
   • 200 audits/day (resets midnight UTC)
+  • Watch 3 packages · weekly digest (Mondays)
   • 1 CI-gated repo · README badges (unlimited)
 
-When you need more (batch API, multi-repo CI auto-trigger, package monitoring):
-  • Developer $15/mo — 1,000 audits/day, batch up to 5, unlimited CI repos, watch 3 projects
-  • Pro $29/mo — 10K audits/mo, batch up to 20, webhooks, watch 10 projects
+When you need more (batch API, daily scans, alerts):
+  • Developer $15/mo — 1,000 audits/day, batch up to 5, unlimited CI repos, monitor 15 packages (daily scans)
+  • Pro $29/mo — 10K audits/mo, batch up to 20, monitor 50 packages (~10 projects, daily scans + Slack/webhook alerts)
   https://getcommit.dev/pricing
   30-day money-back guarantee.
 
