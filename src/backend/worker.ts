@@ -2895,6 +2895,43 @@ app.post("/api/keys/create", async (c) => {
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
+  // 2026-06-11: auto-seed watchlist with packages the user just audited.
+  // Proposition fix: pre-this, an audit-page signup got a key + welcome email
+  // referencing hardcoded `poc watch express` / `poc watch lodash` examples —
+  // orthogonal to what the user actually came to monitor. They audited their
+  // real package.json (often 30+ packages, 2 CRITICAL), then had to manually
+  // re-add the packages they had already shown us. The watchlist arrived
+  // empty; the weekly digest had nothing to report on; the proposition
+  // "we'll alert you if your packages get attacked" delivered zero immediate
+  // value. Now: audit-web-inline / audit-web-critical / audit-web-healthy /
+  // audit-web-compromised flows post the prioritized package set; the free
+  // tier (PACKAGE_LIMITS.free = 3) gets the top 3 (CRITICAL > compromised >
+  // first-3-by-input-order). Capped at PACKAGE_LIMITS[tier] regardless of how
+  // many are sent. Ecosystem is validated against ECOSYSTEMS (npm/pypi/cargo/
+  // golang). Diagnoses 0-organic-signups: conversion isn't gated on email
+  // friction — that's been stripped 5 times. It's gated on the post-signup
+  // value gap. (Disconfirming read on 13 funnel-surface fixes: the proposition
+  // outranks the surface; this changes WHAT you get for your email, not where
+  // the form sits.)
+  type WatchSeed = { name: string; ecosystem: string };
+  const rawWatch: unknown = body?.watch;
+  const watchSeeds: WatchSeed[] = [];
+  if (Array.isArray(rawWatch)) {
+    for (const raw of rawWatch) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const rawName = (raw as { name?: unknown }).name;
+      if (typeof rawName !== "string") continue;
+      const name = rawName.trim();
+      if (!name || name.length > 214) continue; // npm package name max
+      const rawEco = (raw as { ecosystem?: unknown }).ecosystem;
+      const eco = (typeof rawEco === "string" ? rawEco : "npm").toLowerCase();
+      if (!ECOSYSTEMS.has(eco)) continue;
+      // Dedupe by (name, ecosystem)
+      if (watchSeeds.some((w) => w.name === name && w.ecosystem === eco)) continue;
+      watchSeeds.push({ name, ecosystem: eco });
+    }
+  }
+
   // Validate email
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return c.json({ error: "invalid_email", message: "A valid email address is required." }, 400);
@@ -2954,8 +2991,58 @@ app.post("/api/keys/create", async (c) => {
      VALUES (?, ?, ?, ?, 'free', 0, ?, ?, datetime('now'))`
   ).bind(id, keyHash, keyPrefix, email, periodResetAt, source).run();
 
+  // Auto-seed watchlist (free tier, audit-page sources). Caller passed
+  // body.watch — already filtered into watchSeeds. We cap at PACKAGE_LIMITS.free
+  // (3) on the server side regardless of input length, then upsert into the
+  // default project. Failures are non-fatal: the key creation already
+  // succeeded, and the user can manually `poc watch <pkg>` if seeding fails.
+  // We only run this when seeds exist AND the api_key is free tier (this
+  // endpoint always creates free; the gate matters once paid keys can also
+  // come through here, e.g., via a future Stripe upgrade webhook).
+  const seededPackages: Array<{ name: string; ecosystem: string }> = [];
+  if (watchSeeds.length > 0) {
+    try {
+      const cap = PACKAGE_LIMITS.free;
+      const toSeed = watchSeeds.slice(0, cap);
+      const projectId = await getOrCreateDefaultProject(c.env.DB, id, email);
+      for (const seed of toSeed) {
+        const pkgId = newId();
+        // INSERT OR IGNORE so duplicate (project_id, name, ecosystem) is a no-op
+        await c.env.DB.prepare(
+          `INSERT OR IGNORE INTO monitored_packages (id, project_id, package_name, ecosystem)
+           VALUES (?, ?, ?, ?)`
+        ).bind(pkgId, projectId, seed.name, seed.ecosystem).run();
+        seededPackages.push(seed);
+      }
+    } catch {
+      // Swallow — key creation already succeeded; seeding is best-effort.
+    }
+  }
+
   // Send via Resend email API (RESEND_API_KEY is a worker secret)
   let emailSent = false;
+
+  // Welcome-email body. When we auto-seeded the watchlist from the audit
+  // page, step 1 references the user's actual packages instead of the
+  // generic `poc watch express / lodash` placeholders. Keeps surface parity
+  // with the audit success state, which renders the same "watching your
+  // packages" framing — the email is the persistent reminder of what the
+  // signup actually bought.
+  const seededList = seededPackages.map((p) => `   - ${p.name} (${p.ecosystem})`).join("\n");
+  const step1 = seededPackages.length > 0
+    ? `1) Your watchlist already contains the ${seededPackages.length === 1 ? "package" : `${seededPackages.length} packages`} you audited:
+${seededList}
+
+   poc login                         # paste the key above
+   poc list                          # confirm what's being watched
+
+   Mondays we email you if any score drops a tier or a watched package gets attacked.`
+    : `1) Watch 3 packages — weekly score-change digest (free, no project setup):
+   npx proof-of-commitment poc login    # paste the key above
+   npx proof-of-commitment poc watch express
+   npx proof-of-commitment poc watch lodash
+
+   Mondays we email you when any watched score drops a tier.`;
 
   const emailBody = `Your Commit API key + 4 things to try
 
@@ -2964,12 +3051,7 @@ app.post("/api/keys/create", async (c) => {
 Save it. It won't be shown again.
 
 
-1) Watch 3 packages — weekly score-change digest (free, no project setup):
-   npx proof-of-commitment poc login    # paste the key above
-   npx proof-of-commitment poc watch express
-   npx proof-of-commitment poc watch lodash
-
-   Mondays we email you when any watched score drops a tier.
+${step1}
 
 2) Add a CI gate to one of your repos (free, 1 repo):
    cd your-project
@@ -3040,6 +3122,12 @@ Commit · supply-chain risk scoring · getcommit.dev`;
       message: `API key ready. Backup sent to ${email}.`,
       key: apiKey,
       key_prefix: keyPrefix,
+      // watched_packages echo lets the audit-page success state confirm
+      // exactly what we seeded (and how many we capped — free=3). UI uses
+      // this to render "Already watching: foo, bar, baz" instead of
+      // "we'll watch [unspecified]." Drives discoverability of the
+      // seeded value before the first weekly digest fires (~7d).
+      watched_packages: seededPackages,
     });
   } else {
     // Fallback: return key in response with warning
@@ -3050,6 +3138,7 @@ Commit · supply-chain risk scoring · getcommit.dev`;
       key: apiKey,
       key_prefix: keyPrefix,
       note: "Email delivery unavailable. This is the only time your key will be shown.",
+      watched_packages: seededPackages,
     });
   }
 });
