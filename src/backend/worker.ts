@@ -3094,7 +3094,7 @@ Commit · supply-chain risk scoring · getcommit.dev`;
         body: JSON.stringify({
           from: "Commit <noreply@getcommit.dev>",
           to: [email],
-          subject: "Your Commit API key + 3 things to try",
+          subject: "Your Commit API key + 4 things to try",
           text: emailBody,
         }),
       });

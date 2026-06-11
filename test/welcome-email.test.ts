@@ -112,6 +112,19 @@ describe("welcome email shell (constant across both branches)", () => {
     expect(SHELL).not.toContain("Your Commit API key + 3 things");
   });
 
+  test("email subject matches body title (2026-06-11 fix)", () => {
+    // Pre-2026-06-11: body said "+ 4 things to try" but the actual Resend
+    // subject was still "+ 3 things to try" — the user saw the wrong
+    // subject in their inbox, body said something else, broken trust on
+    // the very first touchpoint. Pin both must match.
+    expect(WORKER_SOURCE).toContain(
+      'subject: "Your Commit API key + 4 things to try"',
+    );
+    expect(WORKER_SOURCE).not.toContain(
+      'subject: "Your Commit API key + 3 things',
+    );
+  });
+
   test("step1 placeholder interpolated into shell", () => {
     expect(SHELL).toContain("${step1}");
   });

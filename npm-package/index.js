@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.29.0
+ * proof-of-commitment CLI v1.29.2
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -710,40 +710,41 @@ async function inlineSignup(results, opts = {}) {
   const critPkgs = results.filter(r => hasCritical(r.riskFlags));
   const lowScorePkgs = results.filter(r => typeof r.score === 'number' && r.score < 60);
   const hasFindings = critPkgs.length >= 1 || lowScorePkgs.length >= 2;
-  // engagementSignal: true when the backend returned an `_cta` field, which
-  // means this IP has scored ≥ AUDIT_SOFT_CTA_AT (5) packages today.
-  // That's a server-confirmed engagement signal independent of local result
-  // shape — the user is approaching the daily wall (15) and will hit it
-  // soon. Pre-this fix, single-package healthy scans at counts 5–14 saw
-  // only a dim URL: the strongest in-terminal conversion moment dropped to
-  // a copy-paste task. With engagementSignal=true we bypass the findings
-  // gate so the inline email→key prompt fires at the moment of warmest
-  // engagement. Closes the leak found 2026-06-10 dogfooding /api/keys/stats:
-  // 4 IPs hit AUDIT_SOFT_CTA_AT in 7d, 0 organic signups.
+  // engagementSignal: server _cta — this IP has scored ≥ AUDIT_SOFT_CTA_AT
+  // (5) packages today. Server-confirmed repeat-use signal independent of
+  // local result shape.
   const engagementSignal = !!opts.engagementSignal;
-  // Gate: show prompt when there's something worth monitoring OR the user
-  // has demonstrated repeat-use engagement today (server _cta signal).
-  // Old gate (results.length < 3) blocked the most common entry point:
-  // `npx proof-of-commitment axios` after reading about an attack.
-  // A single CRITICAL result IS the high-intent moment — don't skip it.
-  // For healthy single-package checks with no findings AND no engagement
-  // signal, still skip.
-  if (results.length < 3 && !hasFindings && !engagementSignal) return;
+  // 2026-06-11 v1.29.2 proposition shift: gate relaxed to results.length<1.
+  // Prior gates (`<3 && !hasFindings && !engagementSignal`) blocked the most
+  // common entry point — `npx proof-of-commitment axios` after reading about
+  // an attack — when the result was healthy. The watchlist auto-seed shipped
+  // earlier today (abe53f1) made single-package signups valuable: signup →
+  // that package goes on watchlist + email if attacked. "Enter to skip"
+  // keeps opt-out one keystroke. Closes the proposition gap from 2026-06-10
+  // /api/keys/stats dogfood: 4 IPs hit soft-CTA in 7d, 0 organic signups —
+  // copy was quota-focused, not value-focused.
+  if (results.length < 1) return;
 
-  // Copy adapts to context. Findings → degradation framing.
-  // Healthy → baseline-lock framing (still real value: alert me if any score drops).
-  // engagementSignal without findings → soft-CTA wall-approach framing.
+  // Heading copy: lead with the proposition (auto-watch + alert on attack),
+  // not the friction (quota wall). Pre-v1.29.2 the engagementSignal heading
+  // was wall-approach quota framing (see git log for prior copy) — friction-
+  // removal for a user the system has already identified as security-engaged.
+  // New framing names what they actually get: watchlist seeded from this
+  // scan, email if anything tampers.
+  const count = results.length;
+  const pkgRef = count === 1 ? 'this' : `these ${count}`;
+  const subjRef = count === 1 ? 'it' : 'any';
+  const subjGets = count === 1 ? 'gets' : 'get';
+
   const heading = hasFindings
-    ? (results.length === 1
-      ? '  🔔 Monitor this package. Get alerted if it gets worse.'
-      : '  🔔 Lock in this audit. Get alerted if these packages get worse.')
+    ? `  🔔 Auto-watch ${pkgRef}. Email if ${subjRef} ${subjGets} attacked or score drops.`
     : engagementSignal
-      ? '  🔔 Past the free anonymous quota on this network — lift it to 200/day.'
-      : '  🔔 Lock in this baseline. Get alerted if any of these packages degrade.';
+      ? `  🔔 You're scanning a lot. Watch ${pkgRef} for the next attack? Free.`
+      : `  🔔 Auto-watch ${pkgRef}. Free email alert if ${subjRef} ${subjGets} attacked.`;
 
   console.log(clr(c.dim, '  ─────────────────────────────────────────────'));
   console.log(clr(c.bold, heading));
-  console.log(clr(c.dim, '     Free, no card, 10 seconds. Saves to ~/.commit/config.\n'));
+  console.log(clr(c.dim, '     Seeds your watchlist from this scan. 10s, no card.\n'));
 
   const { createInterface } = await import('readline');
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -845,7 +846,7 @@ async function inlineSignup(results, opts = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.29.1 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.29.2 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir

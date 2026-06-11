@@ -179,17 +179,17 @@ describe("backend contract surface (worker.ts side)", () => {
 });
 
 describe("Version pin", () => {
-  test("package.json is at v1.29.1", () => {
+  test("package.json is at v1.29.2", () => {
     const pkg = JSON.parse(
       readFileSync(
         join(import.meta.dir, "..", "npm-package", "package.json"),
         "utf-8",
       ),
     );
-    expect(pkg.version).toBe("1.29.1");
+    expect(pkg.version).toBe("1.29.2");
   });
 
-  test("CLI --help banner advertises v1.29.1", () => {
-    expect(CLI_SOURCE).toContain("proof-of-commitment')} v1.29.1");
+  test("CLI --help banner advertises v1.29.2", () => {
+    expect(CLI_SOURCE).toContain("proof-of-commitment')} v1.29.2");
   });
 });

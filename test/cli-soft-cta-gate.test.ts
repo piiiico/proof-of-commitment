@@ -1,38 +1,42 @@
 /**
- * CLI engagementSignal gate-bypass contract — npm-package@1.28.0+.
+ * CLI engagementSignal + watchlist-seed proposition contract — npm-package@1.29.2+.
+ *
+ * 2026-06-11 v1.29.2 proposition shift:
+ *   - Gate relaxed from `results.length < 3 && !hasFindings && !engagementSignal`
+ *     to `results.length < 1` — single-package healthy scans (most common
+ *     entry point, e.g. `npx proof-of-commitment axios` after reading about
+ *     an attack) now see the prompt, because the watchlist auto-seed shipped
+ *     earlier today (abe53f1) made single-package signups buy real value.
+ *   - Heading rephrased from quota-wall ("Past the free anonymous quota —
+ *     lift it to 200/day") to ongoing-value ("Auto-watch X. Email if
+ *     attacked. Free."). Quota framing was friction-removal for a user
+ *     already identified as security-engaged — wrong frame.
+ *   - Subline rephrased from "Free, no card, 10 seconds. Saves to
+ *     ~/.commit/config" (friction-only) to "Seeds your watchlist from
+ *     this scan. 10s, no card" (value + friction).
+ *
+ * Diagnosis from 2026-06-10 /api/keys/stats dogfood: 4 IPs hit soft-CTA
+ * in 7d, ZERO organic signups. Hypothesis: copy was quota-focused at
+ * the moment the user was actually security-shopping.
  *
  * What this pins:
  *  1. inlineSignup accepts an `opts` parameter with `engagementSignal`.
- *  2. The findings gate (`results.length < 3 && !hasFindings`) is bypassed
- *     when `engagementSignal === true`. This is the 2026-06-10 fix that
- *     captures the soft-CTA leak: single-package healthy scans where the
- *     backend's `_cta` field signals the user has hit ≥AUDIT_SOFT_CTA_AT
- *     (5) scans today. Pre-fix, those scans showed only a dim URL.
- *  3. Both audit call sites pass `{ engagementSignal: !!apiCta }` so the
- *     server's soft-CTA signal drives the prompt at every entry point.
- *  4. When engagementSignal triggers (no findings), the prompt heading uses
- *     wall-approach framing ("past the free anonymous quota — lift it
- *     to 200/day"), not baseline-lock framing.
- *  5. Source attribution: engagement-signal-driven signups (no findings)
- *     post `source: 'cli-soft-cta'`; findings-driven prompts post
- *     `source: 'cli'`. Backend VALID_SOURCES whitelist includes
+ *  2. Gate fires for any TTY scan with ≥1 result (post-2026-06-11 contract).
+ *  3. Both audit call sites pass `{ engagementSignal: !!apiCta }`.
+ *  4. Heading copy leads with the auto-watch proposition (not the quota
+ *     wall). engagementSignal path acknowledges repeated use; findings
+ *     path acknowledges criticality; baseline path pitches ongoing value.
+ *  5. Subline mentions watchlist seeding (the actual value of signup).
+ *  6. Source attribution unchanged: engagement-signal-driven signups (no
+ *     findings) post `source: 'cli-soft-cta'`; findings-driven prompts
+ *     post `source: 'cli'`. Backend VALID_SOURCES still includes
  *     'cli-soft-cta'.
- *  6. Landing-page surface parity: get-started.astro HERO_BY_REF has an
- *     'audit-cli-soft-cta' entry AND REF_TO_SOURCE maps it to
- *     'cli-soft-cta' AND CLI_SOURCES set includes 'cli-soft-cta' so the
- *     post-signup view shows CLI-shaped guidance.
+ *  7. Landing-page surface parity: get-started.astro HERO_BY_REF entry
+ *     for 'audit-cli-soft-cta' echoes the same auto-watch framing.
  *
- * Plain-text source pinning. The CLI is a stand-alone Node script in
- * npm-package/ and the worker is CF Workers TS — no shared runtime
- * harness. The bug shape (backend constants vs distribution surfaces)
- * is itself a multi-file-string drift, so a text-level invariant test
- * is the cheapest contract.
- *
- * Regression pattern: 12 funnel-surface fixes shipped 2026-06-10 alone,
- * every one was a string in one file drifting from a canonical
- * source-of-truth in another. The reflection at 19:15Z explicitly
- * pivoted from surface to proposition — this test fences the
- * surface-side leak so the next attempt can target proposition.
+ * Plain-text source pinning. The CLI is a stand-alone Node script and the
+ * worker is CF Workers TS — no shared runtime harness. The bug shape
+ * (multi-file string drift) is exactly what a text-level invariant catches.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -62,7 +66,7 @@ const GET_STARTED_SOURCE = readFileSync(
   "utf-8",
 );
 
-describe("CLI inlineSignup engagementSignal gate-bypass", () => {
+describe("CLI inlineSignup gate + proposition copy (v1.29.2)", () => {
   test("inlineSignup signature accepts opts parameter", () => {
     expect(CLI_SOURCE).toContain(
       "async function inlineSignup(results, opts = {})",
@@ -73,25 +77,53 @@ describe("CLI inlineSignup engagementSignal gate-bypass", () => {
     expect(CLI_SOURCE).toContain("const engagementSignal = !!opts.engagementSignal;");
   });
 
-  test("gate bypasses findings check when engagementSignal is true", () => {
-    // The gate must include !engagementSignal so a true value lets the
-    // prompt proceed. Pre-fix: `if (results.length < 3 && !hasFindings) return;`
-    // Post-fix: `if (results.length < 3 && !hasFindings && !engagementSignal) return;`
-    expect(CLI_SOURCE).toContain(
-      "if (results.length < 3 && !hasFindings && !engagementSignal) return;",
-    );
-    // Regression guard: the old gate must not still exist verbatim.
+  test("gate fires for any TTY scan with ≥1 result (relaxed v1.29.2)", () => {
+    // Watchlist auto-seed (abe53f1) made single-package signups valuable.
+    // Single-package healthy scans (most common entry point) now see the
+    // prompt instead of dropping silently.
+    expect(CLI_SOURCE).toContain("if (results.length < 1) return;");
+    // Regression guard: old gates must not still exist verbatim.
     expect(CLI_SOURCE).not.toContain(
       "if (results.length < 3 && !hasFindings) return;",
     );
+    expect(CLI_SOURCE).not.toContain(
+      "if (results.length < 3 && !hasFindings && !engagementSignal) return;",
+    );
   });
 
-  test("heading uses wall-approach framing for engagement-only path", () => {
-    // The new no-findings + engagementSignal branch should use
-    // wall-approach copy distinct from baseline-lock copy.
-    expect(CLI_SOURCE).toContain(
-      "🔔 Past the free anonymous quota on this network — lift it to 200/day.",
-    );
+  test("heading rejects quota-wall framing (regression guard)", () => {
+    // v1.28.0–v1.29.1 heading: "Past the free anonymous quota — lift it
+    // to 200/day." Friction-removal framing. 4 IPs / 0 conversions in 7d.
+    expect(CLI_SOURCE).not.toContain("Past the free anonymous quota");
+    expect(CLI_SOURCE).not.toContain("lift it to 200/day");
+  });
+
+  test("engagementSignal heading leads with auto-watch proposition", () => {
+    // v1.29.2 engagementSignal copy: behavior-recognition + ongoing-value
+    // ("You're scanning a lot. Watch X for the next attack? Free.").
+    expect(CLI_SOURCE).toContain("You're scanning a lot");
+    expect(CLI_SOURCE).toContain("for the next attack");
+  });
+
+  test("findings heading mentions auto-watch + attack-or-score-drop", () => {
+    // Findings path: "Auto-watch X. Email if Y attacked or score drops."
+    expect(CLI_SOURCE).toMatch(/Auto-watch \$\{pkgRef\}\. Email if/);
+    expect(CLI_SOURCE).toContain("attacked or score drops");
+  });
+
+  test("baseline (no findings, no engagement) heading uses auto-watch framing", () => {
+    // Baseline path: "Auto-watch X. Free email alert if Y attacked."
+    expect(CLI_SOURCE).toContain("Free email alert if");
+  });
+
+  test("subline names watchlist seeding (the actual value bought)", () => {
+    // Pre-v1.29.2 subline: "Free, no card, 10 seconds. Saves to ~/.commit/config."
+    //   Friction-only — said nothing about what the signup buys.
+    // v1.29.2 subline: "Seeds your watchlist from this scan. 10s, no card."
+    //   Value + friction. Echoes the watchlist auto-seed proposition.
+    expect(CLI_SOURCE).toContain("Seeds your watchlist from this scan");
+    // Regression guard: old subline gone.
+    expect(CLI_SOURCE).not.toContain("Free, no card, 10 seconds. Saves to ~/.commit/config");
   });
 
   test("source: 'cli-soft-cta' when engagementSignal && !hasFindings", () => {
@@ -137,27 +169,32 @@ describe("Landing-page surface parity (get-started.astro)", () => {
     );
   });
 
-  test("HERO_BY_REF entry uses wall-approach framing", () => {
-    // The page should echo the in-terminal framing so the user does not
-    // see the wrong page on context-switch.
+  test("HERO_BY_REF entry echoes auto-watch framing (v1.29.2)", () => {
+    // Page echo must match the new in-terminal heading. Pre-v1.29.2 the
+    // page said "Approaching the daily anonymous wall" — quota framing
+    // that no longer matches the CLI copy.
     expect(GET_STARTED_SOURCE).toContain(
+      "Watch your packages for the next attack",
+    );
+    // Regression guard: old quota framing must not still be present.
+    expect(GET_STARTED_SOURCE).not.toContain(
       "Approaching the daily anonymous wall",
     );
   });
 });
 
 describe("Version pin", () => {
-  test("package.json is at v1.29.1", () => {
+  test("package.json is at v1.29.2", () => {
     const pkg = JSON.parse(
       readFileSync(
         join(import.meta.dir, "..", "npm-package", "package.json"),
         "utf-8",
       ),
     );
-    expect(pkg.version).toBe("1.29.1");
+    expect(pkg.version).toBe("1.29.2");
   });
 
-  test("CLI --help banner advertises v1.29.1", () => {
-    expect(CLI_SOURCE).toContain("proof-of-commitment')} v1.29.1");
+  test("CLI --help banner advertises v1.29.2", () => {
+    expect(CLI_SOURCE).toContain("proof-of-commitment')} v1.29.2");
   });
 });
