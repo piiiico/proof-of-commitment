@@ -13,6 +13,9 @@
 #        {tool_name:'Bash', tool_input:{command:'npm install lodash'}} after RL →
 #        hookSpecificOutput.permissionDecision in (ask|deny)
 #        + signup URL referencing claude-code-hook-429 (v1.22.0 dual-client regression)
+#   E: cursor-hook stdin in WINDSURF pre_run_command format
+#        {agent_action_name:'pre_run_command', tool_info:{command_line:'npm install lodash'}} after RL →
+#        exit code 2 (blocked) + stderr contains signup URL with windsurf-hook-429 ref
 #
 # Each path is driven against a local mock server so the gate is deterministic
 # in CI and free of production rate-limit state.
@@ -315,6 +318,33 @@ except Exception as e:
 " 2>/dev/null || echo "non-JSON output")
     fail "Path D: Claude Code format regression — wrong shape, decision, or attribution"
     echo "   Detail: $DETAIL"
+  fi
+
+  echo ""
+  echo "── Path E: cursor-hook RL via WINDSURF pre_run_command format ────────────"
+  echo "   URL: $RL_URL"
+
+  # Windsurf pre_run_command stdin: {agent_action_name, tool_info:{command_line}}
+  # Expected: exit code 2 (blocked) + stderr contains windsurf-hook-429 ref.
+  WS_INPUT='{"agent_action_name":"pre_run_command","tool_info":{"command_line":"npm install lodash","cwd":"/tmp"},"trajectory_id":"smoke"}'
+  WS_STDERR="$SMOKE_DIR/ws_stderr.txt"
+  WS_EXIT=0
+  echo "$WS_INPUT" | HOME="$HOOK_HOME" COMMIT_API_URL="$RL_URL" node "$HOOK_SCRIPT" 2>"$WS_STDERR" || WS_EXIT=$?
+  WS_ERR=$(cat "$WS_STDERR")
+  echo "   Exit code: $WS_EXIT"
+  echo "   Stderr: $(echo "$WS_ERR" | head -3)"
+
+  if [[ "$WS_EXIT" -eq 2 ]]; then
+    pass "Path E: Windsurf hook exited with code 2 (blocked)"
+  else
+    fail "Path E: Windsurf hook exit code=$WS_EXIT, expected 2 (blocked)"
+  fi
+
+  if echo "$WS_ERR" | grep -qE "windsurf-hook-429|get-started|getcommit"; then
+    pass "Path E: Windsurf hook stderr contains signup URL with windsurf attribution"
+  else
+    fail "Path E: Windsurf hook stderr missing signup CTA or windsurf-hook-429 ref"
+    echo "   Full stderr: $WS_ERR"
   fi
 fi
 

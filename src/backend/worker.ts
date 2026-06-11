@@ -2891,7 +2891,7 @@ app.post("/api/keys/create", async (c) => {
   // the user hit the soft-CTA threshold but local result had no
   // findings (the previously-silent leak — 4 IPs hit soft-CTA in 7d,
   // 0 organic signups).
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade", "cli-soft-cta"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade", "cli-soft-cta"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 

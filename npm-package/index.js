@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.29.2
+ * proof-of-commitment CLI v1.30.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -596,7 +596,7 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
   console.log(clr(c.cyan, `\n  🔗 Full report: ${WEB}?packages=${encodeURIComponent(topPkgs)}&${utm}`));
   console.log(clr(c.cyan, `  🤖 GitHub Action: github.com/piiiico/commit-action — block CRITICAL packages in CI`));
   console.log(clr(c.dim, `  📋 Add to this project: `) + clr(c.cyan, `poc init`) + clr(c.dim, ` — creates workflow + README badge`));
-  console.log(clr(c.dim, `  🛡️  Protect every install: `) + clr(c.cyan, `poc hook`) + clr(c.dim, ` — Cursor hook, blocks CRITICAL before npm/pip/cargo runs`));
+  console.log(clr(c.dim, `  🛡️  Protect every install: `) + clr(c.cyan, `poc hook`) + clr(c.dim, ` — Cursor/Claude Code/Windsurf hook, blocks CRITICAL before npm/pip/cargo runs`));
 
   // Per-package profile URLs — drive traffic to permanent, indexable pages
   const ecoPath = { npm: 'npm', pypi: 'pypi', cargo: 'cargo', golang: 'go' };
@@ -714,7 +714,7 @@ async function inlineSignup(results, opts = {}) {
   // (5) packages today. Server-confirmed repeat-use signal independent of
   // local result shape.
   const engagementSignal = !!opts.engagementSignal;
-  // 2026-06-11 v1.29.2 proposition shift: gate relaxed to results.length<1.
+  // 2026-06-11 v1.30.0 proposition shift: gate relaxed to results.length<1.
   // Prior gates (`<3 && !hasFindings && !engagementSignal`) blocked the most
   // common entry point — `npx proof-of-commitment axios` after reading about
   // an attack — when the result was healthy. The watchlist auto-seed shipped
@@ -726,7 +726,7 @@ async function inlineSignup(results, opts = {}) {
   if (results.length < 1) return;
 
   // Heading copy: lead with the proposition (auto-watch + alert on attack),
-  // not the friction (quota wall). Pre-v1.29.2 the engagementSignal heading
+  // not the friction (quota wall). Pre-v1.30.0 the engagementSignal heading
   // was wall-approach quota framing (see git log for prior copy) — friction-
   // removal for a user the system has already identified as security-engaged.
   // New framing names what they actually get: watchlist seeded from this
@@ -846,7 +846,7 @@ async function inlineSignup(results, opts = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.29.2 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.30.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -874,11 +874,12 @@ ${clr(c.bold, 'Reports:')}
                       Saves audit-report.html to cwd + prints Markdown for GitHub issues
 
 ${clr(c.bold, 'IDE Hooks:')}
-  poc hook            Install supply chain gate for Cursor + Claude Code (blocks CRITICAL packages)
+  poc hook            Install supply chain gate for Cursor + Claude Code + Windsurf
   poc hook --cursor   Install only the Cursor beforeShellExecution hook
   poc hook --claude-code  Install only the Claude Code PreToolUse hook
-  poc hook --global   Install for the current user (~/.cursor + ~/.claude)
-  poc hook --uninstall Remove the hook from both Cursor and Claude Code
+  poc hook --windsurf Install only the Windsurf pre_run_command hook
+  poc hook --global   Install for the current user (~/.cursor + ~/.claude + ~/.codeium/windsurf)
+  poc hook --uninstall Remove the hook from all IDEs
 
 ${clr(c.bold, 'Account:')}
   poc login [key]     Save and validate your API key (interactive or direct)
@@ -1504,18 +1505,20 @@ async function cmdLogout() {
 }
 
 /**
- * poc hook [--cursor] [--claude-code] [--global] [--uninstall]
- * Install a supply chain gate hook for Cursor (beforeShellExecution) and/or
- * Claude Code (PreToolUse) that scores packages before install.
+ * poc hook [--cursor] [--claude-code] [--windsurf] [--global] [--uninstall]
+ * Install a supply chain gate hook for Cursor (beforeShellExecution),
+ * Claude Code (PreToolUse), and/or Windsurf (pre_run_command) that scores
+ * packages before install.
  *
  * Writes a single hook script to ~/.commit/cursor-hook.js (the filename is
  * kept for backward compatibility with v1.21.x installs; the same script
  * now auto-detects whether stdin is in Cursor or Claude Code format and
  * emits the matching response shape).
  *
- * Default installs both Cursor + Claude Code configs. Pass --cursor or
- * --claude-code to install only one. --global writes to ~/.cursor and
- * ~/.claude; default writes to ./.cursor and ./.claude.
+ * Default installs all three (Cursor + Claude Code + Windsurf). Pass
+ * --cursor, --claude-code, or --windsurf to install only one.
+ * --global writes to ~/.cursor, ~/.claude, and ~/.codeium/windsurf;
+ * default writes to ./.cursor, ./.claude, and ./.windsurf.
  */
 async function cmdHook(args) {
   const os = await import('os');
@@ -1526,22 +1529,26 @@ async function cmdHook(args) {
   const uninstall = args.includes('--uninstall') || args.includes('--remove');
   const onlyCursor = args.includes('--cursor');
   const onlyClaude = args.includes('--claude-code') || args.includes('--claude');
-  // Default (no client flag) = install both. --cursor and --claude-code narrow scope.
-  const installCursor = !onlyClaude;
-  const installClaude = !onlyCursor;
+  const onlyWindsurf = args.includes('--windsurf');
+  // Default (no client flag) = install all three. Narrow with --cursor, --claude-code, or --windsurf.
+  const hasClientFlag = onlyCursor || onlyClaude || onlyWindsurf;
+  const installCursor = hasClientFlag ? onlyCursor : true;
+  const installClaude = hasClientFlag ? onlyClaude : true;
+  const installWindsurf = hasClientFlag ? onlyWindsurf : true;
 
   // ── Hook script (plain Node.js, no external deps) ─────────────────────
-  // Single script serves BOTH Cursor (beforeShellExecution) and Claude Code
-  // (PreToolUse). It auto-detects which client called it by inspecting the
-  // stdin JSON and emits the matching response format.
+  // Single script serves Cursor (beforeShellExecution), Claude Code
+  // (PreToolUse), AND Windsurf (pre_run_command). It auto-detects which
+  // client called it by inspecting the stdin JSON and emits the matching
+  // response format.
   const hookScript = `#!/usr/bin/env node
 /**
- * Commit supply chain hook for Cursor + Claude Code (auto-generated by \`poc hook\`)
+ * Commit supply chain hook for Cursor + Claude Code + Windsurf (auto-generated by \`poc hook\`)
  * Intercepts npm/pip/cargo/go install commands and scores packages
  * against getcommit.dev before they run.
  *
  * CRITICAL packages are blocked. HIGH packages trigger confirmation.
- * Auto-detects Cursor vs Claude Code stdin format and replies in kind.
+ * Auto-detects Cursor vs Claude Code vs Windsurf stdin format and replies in kind.
  * Docs: https://getcommit.dev/docs/cursor-hook
  */
 const API = process.env.COMMIT_API_URL || 'https://poc-backend.amdal-dev.workers.dev/api/audit';
@@ -1578,7 +1585,11 @@ function parseInstall(cmd) {
 // Detect which client called us and how to extract the command.
 // Cursor:      stdin = { command: 'npm install ...', workingDirectory? }
 // Claude Code: stdin = { tool_name: 'Bash', tool_input: { command: '...' }, hook_event_name: 'PreToolUse', ... }
+// Windsurf:    stdin = { agent_action_name: 'pre_run_command', tool_info: { command_line: '...' } }
 function detectClient(input) {
+  if (input && input.agent_action_name === 'pre_run_command' && input.tool_info) {
+    return { client: 'windsurf', cmd: input.tool_info.command_line || '' };
+  }
   if (input && input.tool_input && typeof input.tool_input.command === 'string') {
     return { client: 'claude-code', cmd: input.tool_input.command };
   }
@@ -1590,8 +1601,8 @@ function detectClient(input) {
 
 // Emit the appropriate "no decision" / "allow" output for the detected client.
 function emitAllow(client) {
-  if (client === 'claude-code') {
-    // No stdout + exit 0 = defer to normal permission flow.
+  if (client === 'claude-code' || client === 'windsurf') {
+    // No stdout + exit 0 = allow / defer to normal permission flow.
     return;
   }
   process.stdout.write(JSON.stringify({ permission: 'allow' }));
@@ -1599,6 +1610,12 @@ function emitAllow(client) {
 
 // Emit deny / ask in the matching format.
 function emit(client, decision, userMsg, agentMsg) {
+  if (client === 'windsurf') {
+    // Windsurf uses exit codes: 0 = allow, 2 = block. stderr = message shown in Cascade UI.
+    process.stderr.write(userMsg.replace(/\\\\n/g, '\\n'));
+    process.exit(2);
+    return;
+  }
   if (client === 'claude-code') {
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
@@ -1642,7 +1659,7 @@ async function main() {
     // Without this, hook would silently allow unscored packages on 429 (false sense of security).
     const rateLimited = res.status === 429;
     // Per-client attribution so /api/keys/create source counters split traffic cleanly.
-    const refTag = client === 'claude-code' ? 'claude-code-hook-429' : 'cursor-hook-429';
+    const refTag = client === 'claude-code' ? 'claude-code-hook-429' : client === 'windsurf' ? 'windsurf-hook-429' : 'cursor-hook-429';
     const rlUrl = rateLimited ? 'https://getcommit.dev/get-started?ref=' + refTag + '&utm_source=cli' : '';
     const unscored = rateLimited ? Math.max(0, parsed.pkgs.length - results.length) : 0;
     const rlNote = rateLimited
@@ -1776,6 +1793,46 @@ main();
     } catch { return false; }
   }
 
+  // ── Windsurf config helpers ──────────────────────────────────────────
+  function windsurfHooksFile(global) {
+    const dir = global ? path.join(os.homedir(), '.codeium', 'windsurf') : path.join(process.cwd(), '.windsurf');
+    return { dir, file: path.join(dir, 'hooks.json') };
+  }
+
+  function installWindsurfHook(global) {
+    const { dir, file } = windsurfHooksFile(global);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    let cfg = { hooks: {} };
+    if (fs.existsSync(file)) {
+      try { cfg = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch {}
+    }
+    if (!cfg.hooks) cfg.hooks = {};
+    if (!Array.isArray(cfg.hooks.pre_run_command)) cfg.hooks.pre_run_command = [];
+    const existing = cfg.hooks.pre_run_command.some(h => h.command?.includes('cursor-hook.js'));
+    if (!existing) {
+      cfg.hooks.pre_run_command.push({
+        command: `node ${hookPath}`,
+        show_output: true
+      });
+    }
+    fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
+    return file;
+  }
+
+  function uninstallWindsurfHook(global) {
+    const { file } = windsurfHooksFile(global);
+    if (!fs.existsSync(file)) return false;
+    try {
+      const cfg = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const hooks = cfg.hooks?.pre_run_command || [];
+      const filtered = hooks.filter(h => !h.command?.includes('cursor-hook.js'));
+      if (filtered.length === hooks.length) return false;
+      cfg.hooks.pre_run_command = filtered;
+      fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
+      return true;
+    } catch { return false; }
+  }
+
   // ── Uninstall ──────────────────────────────────────────────────────────
   if (uninstall) {
     let removed = false;
@@ -1795,9 +1852,16 @@ main();
         console.log(clr(c.dim, `  Updated: ${claudeSettingsFile(g).file}`));
       }
     }
+    // Windsurf: same.
+    for (const g of [false, true]) {
+      if (uninstallWindsurfHook(g)) {
+        removed = true;
+        console.log(clr(c.dim, `  Updated: ${windsurfHooksFile(g).file}`));
+      }
+    }
 
     if (removed) {
-      console.log(clr(c.green, '\n  ✓ Commit hook uninstalled (Cursor + Claude Code).'));
+      console.log(clr(c.green, '\n  ✓ Commit hook uninstalled (Cursor + Claude Code + Windsurf).'));
     } else {
       console.log(clr(c.dim, '\n  No hook found to remove.'));
     }
@@ -1813,6 +1877,7 @@ main();
   const writtenFiles = [];
   if (installCursor) writtenFiles.push({ client: 'Cursor', file: installCursorHook(isGlobal) });
   if (installClaude) writtenFiles.push({ client: 'Claude Code', file: installClaudeHook(isGlobal) });
+  if (installWindsurf) writtenFiles.push({ client: 'Windsurf', file: installWindsurfHook(isGlobal) });
 
   // 3. Report
   const clientList = writtenFiles.map(w => w.client).join(' + ');

@@ -158,12 +158,12 @@ CRITICAL and HIGH packages show as alerts in the repo's Security tab. Compromise
 
 **Web demo (no install):** [getcommit.dev/audit](https://getcommit.dev/audit) — paste your packages, see risk scores in seconds.
 
-## IDE Hooks (Cursor + Claude Code)
+## IDE Hooks (Cursor + Claude Code + Windsurf)
 
-`poc hook` installs a supply chain gate for **both** Cursor ([`beforeShellExecution`](https://docs.cursor.com/context/hooks)) and Claude Code ([`PreToolUse`](https://code.claude.com/docs/en/hooks)) in one command. The same hook script intercepts package installs from either agent, auto-detects which client called it, and blocks CRITICAL packages before they run.
+`poc hook` installs a supply chain gate for **Cursor** ([`beforeShellExecution`](https://docs.cursor.com/context/hooks)), **Claude Code** ([`PreToolUse`](https://code.claude.com/docs/en/hooks)), and **Windsurf** ([`pre_run_command`](https://docs.windsurf.com/windsurf/cascade/hooks)) in one command. The same hook script intercepts package installs from any agent, auto-detects which client called it, and blocks CRITICAL packages before they run.
 
 ```bash
-# Install for the current project (writes both .cursor/hooks.json + .claude/settings.json):
+# Install for the current project (writes .cursor/hooks.json + .claude/settings.json + .windsurf/hooks.json):
 poc hook
 
 # Or protect every project for your user:
@@ -172,12 +172,13 @@ poc hook --global
 # Narrow to one client:
 poc hook --cursor          # only .cursor/hooks.json
 poc hook --claude-code     # only .claude/settings.json
+poc hook --windsurf        # only .windsurf/hooks.json
 
-# Remove (cleans both):
+# Remove (cleans all three):
 poc hook --uninstall
 ```
 
-The hook writes `.cursor/hooks.json` and `.claude/settings.json` (project) or the equivalents under `~/` (with `--global`). When Cursor or Claude Code runs `npm install axios`, `pip install litellm`, `cargo add serde`, or `go get github.com/gin-gonic/gin`, the hook calls the Commit API and either blocks, warns, or allows — in under 500ms.
+The hook writes `.cursor/hooks.json`, `.claude/settings.json`, and `.windsurf/hooks.json` (project) or the equivalents under `~/` (with `--global`). When Cursor, Claude Code, or Windsurf runs `npm install axios`, `pip install litellm`, `cargo add serde`, or `go get github.com/gin-gonic/gin`, the hook calls the Commit API and either blocks, warns, or allows — in under 500ms.
 
 **What gets intercepted:**
 
@@ -190,9 +191,9 @@ The hook writes `.cursor/hooks.json` and `.claude/settings.json` (project) or th
 | cargo | `cargo add <pkg>`, `cargo install <pkg>` |
 | go | `go get <module>`, `go install <module>` |
 
-**Why this matters:** Supply chain attacks now happen in minutes. The Shai-Hulud worm (May 2026) compromised 637 packages in 39 minutes and specifically targeted AI coding assistants — planting persistence hooks in `.claude/settings.json` and `.vscode/tasks.json`. When your AI assistant installs a dependency, it bypasses the human review that used to be the last line of defense. `poc hook` puts a gate back in — same gate, whether Cursor or Claude Code is driving.
+**Why this matters:** Supply chain attacks now happen in minutes. The Shai-Hulud worm (May 2026) compromised 637 packages in 39 minutes and specifically targeted AI coding assistants — planting persistence hooks in `.claude/settings.json` and `.vscode/tasks.json`. When your AI assistant installs a dependency, it bypasses the human review that used to be the last line of defense. `poc hook` puts a gate back in — same gate, whether Cursor, Claude Code, or Windsurf is driving.
 
-**Default behavior:** CRITICAL packages (sole npm publisher + >10M downloads/week — the exact LiteLLM/axios attack profile) are blocked. HIGH packages trigger an "ask user" prompt. Set `COMMIT_HOOK_SEVERITY_BLOCK=HIGH` to block both.
+**Default behavior:** CRITICAL packages (sole npm publisher + >10M downloads/week — the exact LiteLLM/axios attack profile) are blocked. HIGH packages trigger an "ask user" prompt (Cursor/Claude Code) or are blocked with a message (Windsurf). Set `COMMIT_HOOK_SEVERITY_BLOCK=HIGH` to block both.
 
 **With an API key:** `poc login sk_commit_…` before running `poc hook` — the key is embedded in the hook config and lifts the rate limit.
 
