@@ -3028,10 +3028,95 @@ app.post("/api/keys/create", async (c) => {
   // with the audit success state, which renders the same "watching your
   // packages" framing — the email is the persistent reminder of what the
   // signup actually bought.
+  //
+  // 2026-06-11 (welcome-scores): for the seeded branch, also include CURRENT
+  // SCORES for each seeded package. Diagnosed: the high-intent CLI/audit-page
+  // user saw scores in the CLI output 30 seconds ago — the welcome email
+  // recapitulated package names but ZERO state, just promising "Mondays we
+  // email you." The lower-intent /api/subscribe (homepage form) path already
+  // ships full scores in its welcome email. The asymmetry was inverted:
+  // best-converting path got least proof-of-value. Closes that gap — the
+  // email becomes the persistent anchor of *why this signup is worth keeping*
+  // and surfaces CRITICAL flags in the subject line so the inbox preview
+  // wins on urgency. Score npm seeds best-effort; non-npm seeds are listed
+  // by name with no score (scoring scope matches the runWeeklyDigest npm-only
+  // scope — keeps behaviour consistent across the lifecycle).
+  type SeedScore = {
+    name: string;
+    ecosystem: string;
+    score: number | null;
+    maintainers: number | null;
+    weeklyDownloads: number | null;
+    riskFlags: string[];
+  };
+  const seedScores: SeedScore[] = [];
+  for (const s of seededPackages) {
+    if (s.ecosystem !== "npm") {
+      seedScores.push({ ...s, score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] });
+      continue;
+    }
+    try {
+      const profile = await buildNpmCommitmentProfile(s.name);
+      if (!profile) {
+        seedScores.push({ ...s, score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] });
+        continue;
+      }
+      const wdl = profile.recentWeeklyDownloads ?? 0;
+      const riskFlags: string[] = [];
+      if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+      else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
+      else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+      seedScores.push({
+        ...s,
+        score: profile.commitmentScore,
+        maintainers: profile.maintainerCount,
+        weeklyDownloads: wdl,
+        riskFlags,
+      });
+    } catch {
+      seedScores.push({ ...s, score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] });
+    }
+  }
+
+  function fmtSeedDL(n: number | null): string {
+    if (!n) return "?";
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
+    if (n >= 1e6) return Math.round(n / 1e6) + "M";
+    if (n >= 1e3) return Math.round(n / 1e3) + "K";
+    return String(n);
+  }
+  const seedCriticalCount = seedScores.filter((r) => r.riskFlags.includes("CRITICAL")).length;
+  const seedScoreLines = seedScores
+    .map((r) => {
+      const flag = r.riskFlags.includes("CRITICAL") ? "⚑ CRITICAL"
+        : r.riskFlags.includes("HIGH") ? "⚠ HIGH"
+        : r.riskFlags.includes("WARN") ? "↓ WARN"
+        : r.score === null ? "(not scored)"
+        : "✓ OK";
+      const scoreStr = r.score === null ? "  —" : `${String(r.score).padStart(3)}/100`;
+      const maint = r.maintainers === null ? "?" : `${r.maintainers}`;
+      return `  ${r.name.padEnd(22)} ${scoreStr}  ${maint}p  ${fmtSeedDL(r.weeklyDownloads)}/wk  ${flag}`;
+    })
+    .join("\n");
+
+  // Upgrade-overflow signal: when the user pushed more packages than the free
+  // cap, surface that gap as upgrade pressure tied to their actual data
+  // (vs the generic Developer pitch in the tier-block below).
+  const overflowCount = Math.max(0, watchSeeds.length - seededPackages.length);
+  const overflowLine = overflowCount > 0
+    ? `\n   (Capped at 3 — ${overflowCount} more from your audit didn't fit. Developer $15/mo monitors 15.)`
+    : "";
+
   const seededList = seededPackages.map((p) => `   - ${p.name} (${p.ecosystem})`).join("\n");
+  const seededScoreHeader = seedCriticalCount > 0
+    ? `Current scores (${seedCriticalCount} CRITICAL — sole maintainer + 10M+/wk):`
+    : `Current scores:`;
   const step1 = seededPackages.length > 0
     ? `1) Your watchlist already contains the ${seededPackages.length === 1 ? "package" : `${seededPackages.length} packages`} you audited:
-${seededList}
+${seededList}${overflowLine}
+
+   ${seededScoreHeader}
+${seedScoreLines}
 
    poc login                         # paste the key above
    poc list                          # confirm what's being watched
@@ -3043,6 +3128,10 @@ ${seededList}
    npx proof-of-commitment poc watch lodash
 
    Mondays we email you when any watched score drops a tier.`;
+
+  const emailSubject = seedCriticalCount > 0
+    ? `⚑ ${seedCriticalCount} CRITICAL package${seedCriticalCount > 1 ? "s" : ""} in your watchlist — your Commit API key inside`
+    : "Your Commit API key + 4 things to try";
 
   const emailBody = `Your Commit API key + 4 things to try
 
@@ -3094,7 +3183,7 @@ Commit · supply-chain risk scoring · getcommit.dev`;
         body: JSON.stringify({
           from: "Commit <noreply@getcommit.dev>",
           to: [email],
-          subject: "Your Commit API key + 4 things to try",
+          subject: emailSubject,
           text: emailBody,
         }),
       });

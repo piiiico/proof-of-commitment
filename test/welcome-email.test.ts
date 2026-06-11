@@ -112,17 +112,36 @@ describe("welcome email shell (constant across both branches)", () => {
     expect(SHELL).not.toContain("Your Commit API key + 3 things");
   });
 
-  test("email subject matches body title (2026-06-11 fix)", () => {
+  test("email subject matches body title in default branch (2026-06-11 fix)", () => {
     // Pre-2026-06-11: body said "+ 4 things to try" but the actual Resend
     // subject was still "+ 3 things to try" — the user saw the wrong
     // subject in their inbox, body said something else, broken trust on
-    // the very first touchpoint. Pin both must match.
+    // the very first touchpoint.
+    //
+    // 2026-06-11 (welcome-scores): subject is now derived from emailSubject
+    // — conditional on seedCriticalCount. The default branch (no CRITICAL
+    // packages, OR no seeds at all) MUST match the body title.
     expect(WORKER_SOURCE).toContain(
-      'subject: "Your Commit API key + 4 things to try"',
+      '"Your Commit API key + 4 things to try"',
     );
+    expect(WORKER_SOURCE).toMatch(
+      /const emailSubject = seedCriticalCount > 0\s*\?\s*`⚑ \$\{seedCriticalCount\} CRITICAL package\$\{seedCriticalCount > 1 \? "s" : ""\} in your watchlist — your Commit API key inside`\s*:\s*"Your Commit API key \+ 4 things to try"/,
+    );
+    expect(WORKER_SOURCE).toContain("subject: emailSubject");
     expect(WORKER_SOURCE).not.toContain(
       'subject: "Your Commit API key + 3 things',
     );
+  });
+
+  test("CRITICAL subject overrides default when seeded packages have CRITICAL flag", () => {
+    // The inbox-preview surface is the highest-CTR copy in the entire funnel.
+    // When the user audited a package.json with sole-maintainer 10M+/wk
+    // packages (the structural axios profile), the welcome email subject must
+    // surface that urgency BEFORE the user opens it. Generic "+ 4 things to
+    // try" wastes the strongest engagement moment.
+    expect(WORKER_SOURCE).toContain("seedCriticalCount > 0");
+    expect(WORKER_SOURCE).toContain("⚑ ${seedCriticalCount} CRITICAL package");
+    expect(WORKER_SOURCE).toContain("in your watchlist — your Commit API key inside");
   });
 
   test("step1 placeholder interpolated into shell", () => {
@@ -214,6 +233,65 @@ describe("step 1 — seeded branch (audit-page signup with body.watch)", () => {
 
   test("Monday-digest promise survives (drop-tier OR attack)", () => {
     expect(STEP1).toMatch(/Mondays we email you if any score drops a tier or a watched package gets attacked/);
+  });
+
+  test("includes current scores block (2026-06-11 welcome-scores fix)", () => {
+    // The proposition gap closed here: pre-fix, the seeded branch named the
+    // packages but showed ZERO state — just promised "Mondays we email you."
+    // High-intent CLI/audit-page user saw scores in the CLI 30 seconds ago,
+    // then got an email recapitulating nothing. The persistent-anchor
+    // surface (their inbox) had no proof-of-value.
+    expect(STEP1).toContain("${seededScoreHeader}");
+    expect(STEP1).toContain("${seedScoreLines}");
+  });
+
+  test("includes overflow-upgrade signal when user wanted more than free cap", () => {
+    // ${overflowLine} interpolation surfaces actual data-driven upgrade
+    // pressure: "you audited 30 packages, free can watch 3, Developer
+    // watches 15." Different from the generic Developer pitch in the
+    // tier-block below — this one is tied to THIS USER's input.
+    expect(STEP1).toContain("${overflowLine}");
+  });
+});
+
+describe("seeded-branch scoring (2026-06-11 welcome-scores)", () => {
+  test("scoring loop emits SeedScore objects per seeded package", () => {
+    expect(WORKER_SOURCE).toContain("const seedScores: SeedScore[]");
+    expect(WORKER_SOURCE).toContain("buildNpmCommitmentProfile(s.name)");
+  });
+
+  test("non-npm seeds are listed without scoring (matches digest scope)", () => {
+    expect(WORKER_SOURCE).toMatch(/if \(s\.ecosystem !== ["']npm["']\)/);
+    expect(WORKER_SOURCE).toMatch(/score: null, maintainers: null, weeklyDownloads: null, riskFlags: \[\]/);
+  });
+
+  test("CRITICAL = sole maintainer + 10M+/wk (matches digest + /api/subscribe logic)", () => {
+    expect(WORKER_SOURCE).toMatch(/profile\.maintainerCount === 1 && wdl > 10_000_000/);
+  });
+
+  test("scoring failures are swallowed (seed flow stays best-effort)", () => {
+    // Same defensive shape as the existing seed-handler block. A failed
+    // npm registry fetch must never break the welcome email — the user
+    // still gets their key and unscored packages still appear by name.
+    const start = WORKER_SOURCE.indexOf("const seedScores: SeedScore[]");
+    const end = WORKER_SOURCE.indexOf("function fmtSeedDL", start);
+    const block = WORKER_SOURCE.slice(start, end);
+    expect(block).toContain("} catch {");
+  });
+
+  test("score line format: name (22) score (7) maintainers (Xp) downloads flag", () => {
+    expect(WORKER_SOURCE).toContain("r.name.padEnd(22)");
+    expect(WORKER_SOURCE).toMatch(/\$\{maint\}p/);
+    expect(WORKER_SOURCE).toContain("fmtSeedDL(r.weeklyDownloads)");
+    expect(WORKER_SOURCE).toContain("⚑ CRITICAL");
+  });
+
+  test("overflow uses watchSeeds.length vs seededPackages.length", () => {
+    // overflowCount must be computed BEFORE slicing-cap, not after — so it
+    // accurately captures "user wanted N, free gives 3." Using seededPackages
+    // (capped) vs watchSeeds (raw) is the correct asymmetry.
+    expect(WORKER_SOURCE).toContain("watchSeeds.length - seededPackages.length");
+    expect(WORKER_SOURCE).toMatch(/Developer \$15\/mo monitors 15/);
   });
 });
 
