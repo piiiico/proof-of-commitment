@@ -845,10 +845,11 @@ async function inlineSignup(results, opts = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.29.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.29.1 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
+  npx proof-of-commitment audit                      Same — verb-first alias (also: scan, check)
   npx proof-of-commitment [packages...]              Score npm packages
   npx proof-of-commitment --pypi [pkgs...]           Score PyPI packages
   npx proof-of-commitment --cargo [crates...]        Score Rust crates
@@ -2465,7 +2466,26 @@ async function main() {
   }
 
   // Subcommands
-  const subcmd = args[0];
+  let subcmd = args[0];
+
+  // Transparent aliases: every other package manager (`npm audit`, `yarn audit`,
+  // `pnpm audit`, `cargo audit`, `pip-audit`) puts the verb first. Users —
+  // including readers of our own blog post at npm-trust-q2-2026 line 559 — type
+  // `npx proof-of-commitment audit` and expect it to scan cwd's manifest.
+  //
+  // Without this branch the CLI parses `audit` as a POSITIONAL PACKAGE NAME,
+  // which is a 13.9y-old npmjs.com/package/audit utility — silently scoring
+  // the wrong package while burning the caller's daily quota. Caught during
+  // 2026-06-11 buyer-journey dogfood (full transcript in reflection).
+  //
+  // We shift the verb off and fall through to the main parser so all flags
+  // (--file, --pypi, --cargo, --golang, --json, --sarif, --fail-on) continue
+  // to work positionally: `proof-of-commitment audit lodash --json` still
+  // means "scan lodash, JSON output".
+  if (subcmd === 'audit' || subcmd === 'scan' || subcmd === 'check') {
+    args.shift();
+    subcmd = args[0];
+  }
 
   if (subcmd === 'init') {
     await cmdInit();
