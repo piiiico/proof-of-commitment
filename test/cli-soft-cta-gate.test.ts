@@ -147,17 +147,17 @@ describe("Landing-page surface parity (get-started.astro)", () => {
 });
 
 describe("Version pin", () => {
-  test("package.json is at v1.28.0", () => {
+  test("package.json is at v1.29.0", () => {
     const pkg = JSON.parse(
       readFileSync(
         join(import.meta.dir, "..", "npm-package", "package.json"),
         "utf-8",
       ),
     );
-    expect(pkg.version).toBe("1.28.0");
+    expect(pkg.version).toBe("1.29.0");
   });
 
-  test("CLI --help banner advertises v1.28.0", () => {
-    expect(CLI_SOURCE).toContain("proof-of-commitment')} v1.28.0");
+  test("CLI --help banner advertises v1.29.0", () => {
+    expect(CLI_SOURCE).toContain("proof-of-commitment')} v1.29.0");
   });
 });

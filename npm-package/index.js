@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.28.0
+ * proof-of-commitment CLI v1.29.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -649,6 +649,59 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
  * intent. Copy adapts to context: degradation alerts (CRITICAL) vs baseline
  * lock-in (healthy). Quick lookups (<3 packages) still skip the prompt.
  */
+/**
+ * Build the top-3-by-risk-priority watch seeds for /api/keys/create body.watch.
+ *
+ * Mirrors the web-side buildWatchSeeds at
+ * commit-landing-v2/src/pages/audit.astro:1299 so the two signup paths
+ * (web audit form vs CLI inline-prompt) feed the backend with the same
+ * shape — backend then writes the user's default project's
+ * monitored_packages BEFORE the welcome email so step 1 names actual
+ * packages instead of hardcoded `poc watch express / lodash` examples.
+ *
+ * Priority: compromised > CRITICAL > HIGH > others (any flags) > clean.
+ * The free-tier cap (3) is enforced both here and again on the backend
+ * (PACKAGE_LIMITS.free) — defense in depth across client-server drift.
+ * Validates ecosystem against the backend ECOSYSTEMS set
+ * (npm/pypi/cargo/golang); unknown ecosystems fall back to npm because
+ * the backend rejects unknowns and we want to surface SOMETHING rather
+ * than nothing. Filters out names that fail npm's 214-char max and
+ * dedupes by (name, ecosystem).
+ *
+ * Closes the second proposition-gap layer (CLI-side mirror of the
+ * 2026-06-11 audit-page watchlist auto-seed at abe53f1/df8a8be).
+ */
+function buildCliWatchSeeds(results) {
+  if (!Array.isArray(results) || results.length === 0) return [];
+  const VALID_ECOS = new Set(['npm', 'pypi', 'cargo', 'golang']);
+  function priority(r) {
+    if (r.compromised) return 0;
+    if (Array.isArray(r.riskFlags) && r.riskFlags.some(f => typeof f === 'string' && f.startsWith('CRITICAL'))) return 1;
+    if (Array.isArray(r.riskFlags) && r.riskFlags.some(f => typeof f === 'string' && f.startsWith('HIGH'))) return 2;
+    if (Array.isArray(r.riskFlags) && r.riskFlags.length > 0) return 3;
+    return 4;
+  }
+  const filtered = results.filter(r => typeof r.name === 'string' && r.name.length > 0 && r.name.length < 215);
+  const sorted = filtered.slice().sort((a, b) => {
+    const pa = priority(a);
+    const pb = priority(b);
+    if (pa !== pb) return pa - pb;
+    return filtered.indexOf(a) - filtered.indexOf(b);
+  });
+  const seeds = [];
+  const seen = new Set();
+  for (const r of sorted) {
+    const rawEco = typeof r.ecosystem === 'string' ? r.ecosystem.toLowerCase() : 'npm';
+    const eco = VALID_ECOS.has(rawEco) ? rawEco : 'npm';
+    const key = `${r.name}|${eco}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    seeds.push({ name: r.name, ecosystem: eco });
+    if (seeds.length >= 3) break; // free-tier cap (backend re-validates)
+  }
+  return seeds;
+}
+
 async function inlineSignup(results, opts = {}) {
   // Only prompt in interactive TTY when no key saved
   if (!process.stdin.isTTY || !process.stdout.isTTY) return;
@@ -719,10 +772,22 @@ async function inlineSignup(results, opts = {}) {
     // 'cli-soft-cta' in this same commit; older worker versions drop
     // unknown sources to 'web' (safe degradation, no error).
     const source = engagementSignal && !hasFindings ? 'cli-soft-cta' : 'cli';
+    // Proposition shift (2026-06-11, second layer): same defect the audit-page
+    // welcome email had until df8a8be — pre-fix, every CLI signup got hardcoded
+    // "poc watch express / lodash" in their welcome email regardless of what
+    // they actually scanned. Web side now seeds top-3-by-risk-priority on POST
+    // and the backend writes them to the user's default project before sending
+    // the welcome email. CLI must mirror or signups via `npx proof-of-commitment
+    // <some-package>` still get an email orthogonal to their intent. Backend
+    // accepts body.watch = [{name, ecosystem}], caps at PACKAGE_LIMITS.free=3,
+    // echoes seededPackages back as data.watched_packages. Priority order
+    // (compromised > CRITICAL > HIGH > others) matches the web-side
+    // buildWatchSeeds at commit-landing-v2/src/pages/audit.astro:1299.
+    const watch = buildCliWatchSeeds(results);
     const res = await fetch('https://poc-backend.amdal-dev.workers.dev/api/keys/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, source }),
+      body: JSON.stringify({ email, source, watch }),
     });
 
     const data = await res.json();
@@ -733,16 +798,39 @@ async function inlineSignup(results, opts = {}) {
       console.log(clr(c.green, ' ✓ Saved to ~/.commit/config'));
       console.log(clr(c.dim, `     Backup sent to ${email}`));
       console.log();
-      console.log(clr(c.bold, '  Next steps:'));
-      // Surface a concrete watch target. CRITICAL first (highest urgency);
-      // otherwise pick the lowest-score package as the most-likely-to-degrade.
-      const watchTarget = critPkgs[0]?.name
-        || results.slice().sort((a, b) => (a.score || 100) - (b.score || 100))[0]?.name;
-      if (watchTarget) {
-        console.log(clr(c.dim, '    • ') + clr(c.cyan, `poc watch ${watchTarget}`) + clr(c.dim, '  — monitor this package (free: 3 packages, weekly)'));
+      // Render the backend echo (data.watched_packages) — the user sees
+      // "Now watching: foo, bar, baz" before the first weekly digest fires
+      // (~7d). Mirrors the audit-page renderInlineForm success state at
+      // commit-landing-v2/src/pages/audit.astro:1971 so on-context-switch the
+      // user does not see contradictory "you have nothing watched" messaging
+      // in `poc list`. Trust the server echo, not our pre-submit array (the
+      // server caps + dedups). Older backend versions that predate body.watch
+      // simply omit watched_packages — we fall through to the legacy
+      // single-target hint, no regression.
+      const watched = Array.isArray(data.watched_packages) ? data.watched_packages : [];
+      if (watched.length > 0) {
+        const names = watched.map(w => w.name).join(', ');
+        const noun = watched.length === 1 ? 'package' : 'packages';
+        console.log(clr(c.green, `  ✓ Now watching ${watched.length} ${noun}: ${names}`));
+        console.log(clr(c.dim, '     Mondays we email you if any score drops a tier or a watched package gets attacked.\n'));
+        console.log(clr(c.bold, '  Next steps:'));
+        console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc list') + clr(c.dim, '          — confirm your watchlist'));
+        console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc init') + clr(c.dim, '          — add CI gate to this project'));
+        console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc status') + clr(c.dim, '       — check your account'));
+      } else {
+        console.log(clr(c.bold, '  Next steps:'));
+        // Legacy fallback: backend did not seed (old worker, empty seeds, or
+        // seed failure swallowed). Surface a concrete watch target. CRITICAL
+        // first (highest urgency); otherwise pick the lowest-score package as
+        // the most-likely-to-degrade.
+        const watchTarget = critPkgs[0]?.name
+          || results.slice().sort((a, b) => (a.score || 100) - (b.score || 100))[0]?.name;
+        if (watchTarget) {
+          console.log(clr(c.dim, '    • ') + clr(c.cyan, `poc watch ${watchTarget}`) + clr(c.dim, '  — monitor this package (free: 3 packages, weekly)'));
+        }
+        console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc init') + clr(c.dim, '          — add CI gate to this project'));
+        console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc status') + clr(c.dim, '       — check your account'));
       }
-      console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc init') + clr(c.dim, '          — add CI gate to this project'));
-      console.log(clr(c.dim, '    • ') + clr(c.cyan, 'poc status') + clr(c.dim, '       — check your account'));
     } else if (data.message) {
       console.log(clr(c.green, ` ✓ ${data.message}`));
     } else {
@@ -757,7 +845,7 @@ async function inlineSignup(results, opts = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.28.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.29.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
