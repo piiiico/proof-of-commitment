@@ -200,16 +200,51 @@ describe("welcome email shell (constant across both branches)", () => {
 });
 
 describe("step 1 — unseeded branch (e.g. /get-started direct, no audit-page seeds)", () => {
-  test("opens with weekly-digest framing", () => {
-    expect(STEP1).toMatch(/1\) Watch 3 packages.*weekly score-change digest/);
+  test("opens with watch-3-and-digest framing tying both deltas (score-drop AND attack)", () => {
+    // 2026-06-12: rewrote from "weekly score-change digest" generic framing
+    // to "Mondays we email you when scores drop or attacks happen" — same
+    // shape as the seeded branch's Monday line. The unseeded user (direct
+    // /get-started signup) has no audit context, so the email IS their only
+    // proposition surface. Lead with the value, not the cadence.
+    expect(STEP1).toMatch(/1\) Watch 3 packages.*Mondays we email you when scores drop or attacks happen/);
   });
 
-  test("keeps hardcoded poc watch examples as fallback", () => {
-    expect(STEP1).toContain("npx proof-of-commitment poc watch express");
-    expect(STEP1).toContain("npx proof-of-commitment poc watch lodash");
+  test("does NOT hardcode specific package names (Visionmedia regression class)", () => {
+    // 2026-06-12 (Visionmedia-class fix): the unseeded branch used to suggest
+    // `poc watch express` + `poc watch lodash` as concrete copy-paste examples.
+    // Disposition: a direct /get-started signup has no idea why express/lodash
+    // — those packages are probably not even in their tree. The hardcoded
+    // names made the email look like a generic tutorial template, diluting
+    // the bespoke value-prop of the watchlist proposition. Dogfooded by
+    // walking pico+direct-getstarted-<ts>@amdal.dev signup at 05:49Z — the
+    // welcome email recommended packages orthogonal to anything the user
+    // (had they been real) might be running. Replaced with parametric
+    // `<package-name>` placeholder + audit-first call-to-action that sells
+    // the actual value-prop. Reflection: dogfood-verifiability-gap also
+    // mentions the broader Visionmedia pattern (hardcoded 'watch express'
+    // for 30d).
+    expect(STEP1).not.toContain("npx proof-of-commitment poc watch express");
+    expect(STEP1).not.toContain("npx proof-of-commitment poc watch lodash");
   });
 
-  test("Monday-digest promise is visible", () => {
+  test("uses parametric <package-name> placeholder instead of hardcoded packages", () => {
+    expect(STEP1).toContain("npx proof-of-commitment poc watch <package-name>");
+  });
+
+  test("sells the value-prop: audit first (the proposition path)", () => {
+    // The audit tool IS the proposition that auto-seeds the watchlist. For
+    // unseeded signups, this is how they get the seeded value. Naming both
+    // surfaces (CLI + web) gives the user agency over how they connect.
+    expect(STEP1).toContain("npx proof-of-commitment --file package-lock.json");
+    expect(STEP1).toContain("https://getcommit.dev/audit");
+    expect(STEP1).toMatch(/auto-seed your watchlist/);
+  });
+
+  test("login step still present (one-time setup before watch)", () => {
+    expect(STEP1).toContain("npx proof-of-commitment poc login");
+  });
+
+  test("Monday-digest promise is visible (cadence stays consistent across branches)", () => {
     expect(STEP1).toMatch(/Mondays we email you when any watched score drops a tier/);
   });
 });

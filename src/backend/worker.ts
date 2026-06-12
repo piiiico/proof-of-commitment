@@ -3122,10 +3122,20 @@ ${seedScoreLines}
    poc list                          # confirm what's being watched
 
    Mondays we email you if any score drops a tier or a watched package gets attacked.`
-    : `1) Watch 3 packages — weekly score-change digest (free, no project setup):
+    : `1) Watch 3 packages — Mondays we email you when scores drop or attacks happen:
+
+   First save your key (one time):
    npx proof-of-commitment poc login    # paste the key above
-   npx proof-of-commitment poc watch express
-   npx proof-of-commitment poc watch lodash
+
+   Then audit your project to see which packages need watching most:
+   cd your-project
+   npx proof-of-commitment --file package-lock.json    # scores every dep
+
+   Watch the riskiest 3 — free cap:
+   npx proof-of-commitment poc watch <package-name>
+
+   Or audit online — https://getcommit.dev/audit — sign up there and we
+   auto-seed your watchlist with the riskiest 3 from that scan.
 
    Mondays we email you when any watched score drops a tier.`;
 
