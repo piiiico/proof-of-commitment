@@ -2891,7 +2891,24 @@ app.post("/api/keys/create", async (c) => {
   // the user hit the soft-CTA threshold but local result had no
   // findings (the previously-silent leak — 4 IPs hit soft-CTA in 7d,
   // 0 organic signups).
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade", "cli-soft-cta"];
+  // 'ci-annotation' added 2026-06-12: GitHub Actions PR-checks rate-limit
+  // annotation shipped in npm-package v1.31.0. When the CLI runs under
+  // GITHUB_ACTIONS=true and the audit endpoint returns 429, the npm
+  // package emits a `::warning::` annotation pointing at
+  // /get-started?ref=ci-annotation (anonymous free-key fall-through) or
+  // /pricing?ref=ci-annotation (keyUpgrade or overshoot — paid pivot).
+  // Without this whitelist entry the resulting key signups would silently
+  // bucket into 'web' — invisible in the funnel report alongside the
+  // matching landing-page work (get-started.astro HERO_BY_REF +
+  // REF_TO_SOURCE shipped same commit, pricing.astro ref→utm_campaign
+  // promotion + CONTEXT_BY_CAMPAIGN['ci-annotation'] shipped same commit).
+  // Same funnel-wide enforcement pattern as audit-web-critical/healthy
+  // (2026-05-23), audit-web-compromised (2026-06-10), audit-overshoot
+  // (2026-06-10), key-upgrade (2026-06-10): every layer that observes
+  // the ref needs its own gate against the canonical source list.
+  // 5th occurrence — npm-package release ships a new ref symbol, surfaces
+  // downstream don't know about it until dogfood / next session catches it.
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade", "cli-soft-cta", "ci-annotation"];
   const rawSource = typeof body?.source === "string" ? body.source : "";
   const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
 
