@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.30.0
+ * proof-of-commitment CLI v1.31.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -161,6 +161,24 @@ async function handle429(res) {
     );
   }
   console.error('');
+
+  // GitHub Actions: surface rate-limit as a workflow annotation so the human
+  // reviewer sees it in the PR checks tab, not buried in raw CI logs.
+  // Must fire BEFORE the path-specific branches — keyUpgrade and overshoot
+  // both exit early with process.exit(1) and would skip a late annotation.
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    const fixUrl = keyUpgrade
+      ? (data.upgrade?.url || 'https://getcommit.dev/pricing?ref=ci-annotation')
+      : overshoot
+        ? (instantKeyUrl || 'https://getcommit.dev/pricing?ref=ci-annotation')
+        : (instantKeyUrl || 'https://getcommit.dev/get-started?ref=ci-annotation');
+    const fixLabel = keyUpgrade
+      ? 'Upgrade your API key for higher limits'
+      : overshoot
+        ? 'Get a Developer key ($15/mo, 1000/day)'
+        : 'Get a free API key (200/day, no card)';
+    console.error(`::warning title=Commit supply chain audit rate-limited::${fixLabel}. Add COMMIT_API_KEY to repo secrets. ${fixUrl}`);
+  }
 
   // Authenticated-key quota path: user already has a key, hit their daily
   // allowance. Free-key inline prompt is the wrong tool — surface upgrade.
@@ -585,6 +603,20 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
     console.log('\n' + clr(c.green, `✓  No CRITICAL packages found${suffix}.`));
   }
 
+  // GitHub Actions: emit annotations so CRITICAL findings surface in the PR
+  // checks tab and workflow summary — not buried in raw log output. This is
+  // the same visibility commit-action gives, but for direct CLI users.
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    if (effectiveCritical > 0) {
+      const critNames = results.filter(r => hasCritical(r.riskFlags)).slice(0, 5).map(r => r.name).join(', ');
+      console.error(`::warning title=Commit: ${effectiveCritical} CRITICAL package${effectiveCritical > 1 ? 's' : ''}::Sole npm publisher + >10M downloads/week: ${critNames}. Details: getcommit.dev/audit?packages=${encodeURIComponent(critNames)}&utm_source=cli&utm_medium=ci-annotation`);
+    }
+    if (compromisedCount > 0) {
+      const compNames = results.filter(r => r.compromised).slice(0, 5).map(r => r.name).join(', ');
+      console.error(`::error title=Commit: ${compromisedCount} compromised package${compromisedCount > 1 ? 's' : ''}::Recently attacked in supply chain incidents: ${compNames}. Verify you are on clean versions.`);
+    }
+  }
+
   if (compromisedCount > 0) {
     console.log(clr(c.red + c.bold, `\n⚠  ${compromisedCount} package${compromisedCount > 1 ? 's' : ''} recently compromised in supply chain attacks.`));
     console.log(clr(c.dim, '   Verify you are on clean versions. See URLs above for incident details.'));
@@ -846,7 +878,7 @@ async function inlineSignup(results, opts = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.30.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.31.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
