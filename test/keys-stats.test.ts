@@ -349,11 +349,13 @@ describe("buildOrganicMcpKeyStats", () => {
     const insert = sqlite.query(
       `INSERT INTO api_keys (id, email, source) VALUES (?, ?, 'mcp-soft-cta')`
     );
-    insert.run("k1", "pico+test1@amdal.dev");                // internal
-    insert.run("k2", "hawkaa+probe@example.com");             // internal
-    insert.run("k3", "test-evaluator-probe@example.com");    // internal (literal)
-    insert.run("k4", "real-user@stranger.com");              // organic
-    insert.run("k5", "another@gmail.com");                   // organic
+    insert.run("k1", "pico+test1@amdal.dev");                 // internal (domain-anchored)
+    insert.run("k2", "hawkaa+probe@amdal.dev");               // internal (domain-anchored)
+    insert.run("k3", "test-evaluator-probe@example.com");     // internal (literal)
+    insert.run("k4", "real-user@stranger.com");               // organic
+    insert.run("k5", "pico+spoof@evil.com");                  // organic — cross-domain spoof
+                                                              // would have leaked as internal
+                                                              // under the old `pico+*@*` pattern
 
     const db = d1Shim(sqlite) as Parameters<typeof buildOrganicMcpKeyStats>[0];
     const stats = await buildOrganicMcpKeyStats(db, undefined);
@@ -362,8 +364,8 @@ describe("buildOrganicMcpKeyStats", () => {
     expect(stats.internal_test).toBe(3);
     expect(stats.organic).toBe(2);
     expect(stats.internal_test_patterns).toEqual([
-      "pico+*@*",
-      "hawkaa+*@*",
+      "pico+*@amdal.dev",
+      "hawkaa+*@amdal.dev",
       "test-evaluator-probe@example.com",
     ]);
   });
@@ -413,9 +415,24 @@ describe("buildOrganicMcpKeyStats", () => {
     // Guardrail: the default constant in worker.ts and the default in
     // wrangler.toml must stay in sync, otherwise a missing env var binding
     // silently flips ALL internal keys into the "organic" bucket.
+    // Domain-anchored (NOT `*@*`) — keeps an attacker from spoofing
+    // `pico+x@evil.com` to (a) inflate /api/keys/stats internal_test count
+    // and (b) bypass the /api/keys/create IP rate limit (2026-06-12 add).
     expect(DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS).toBe(
-      "pico+*@*,hawkaa+*@*,test-evaluator-probe@example.com"
+      "pico+*@amdal.dev,hawkaa+*@amdal.dev,test-evaluator-probe@example.com"
     );
+  });
+
+  test("default pattern rejects cross-domain spoof of `pico+` prefix", () => {
+    // Earlier `pico+*@*` would classify `pico+anything@evil.com` as
+    // internal-test. After narrowing to amdal.dev, the spoof goes back to
+    // organic — which is also the rate-limit-bypass guard at /api/keys/create.
+    const pats = parseEmailPatterns(DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS);
+    expect(isInternalTestEmail("pico+dogfood@amdal.dev", pats)).toBe(true);
+    expect(isInternalTestEmail("hawkaa+test@amdal.dev", pats)).toBe(true);
+    expect(isInternalTestEmail("pico+x@evil.com", pats)).toBe(false);
+    expect(isInternalTestEmail("pico+anything@gmail.com", pats)).toBe(false);
+    expect(isInternalTestEmail("hawkaa+x@evil.com", pats)).toBe(false);
   });
 
   test("missing api_keys table → empty stats, no throw", async () => {

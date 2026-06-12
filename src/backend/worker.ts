@@ -2937,37 +2937,60 @@ app.post("/api/keys/create", async (c) => {
     return c.json({ error: "invalid_email", message: "A valid email address is required." }, 400);
   }
 
-  // IP-based rate limit: 3 key creations per IP per day
+  // IP-based rate limit: 3 key creations per IP per day.
+  //
+  // Internal-test bypass (2026-06-12): when `email` matches
+  // INTERNAL_TEST_EMAIL_PATTERNS (default `pico+*@amdal.dev` + `hawkaa+*@amdal.dev`
+  // + `test-evaluator-probe@example.com` — domain-anchored, NOT `*@*` to prevent
+  // attacker spoofing), the IP rate-limit gate is skipped AND the counter is not
+  // incremented. Diagnosed: the dogfood-verifiability-gap recurred for the 4th
+  // time on 2026-06-12 — yesterday's welcome-email "be your own first user" walk
+  // was blocked by 3/day; today's unseeded-branch ship (88eec06, deployed
+  // 05:51Z) had ZERO unseeded signups in the wild between deploy and
+  // verification, so the user-inbox copy was unverified. Code-level fix because
+  // text-level discipline keeps losing to environment friction; the welcome
+  // email IS the buyer-onboarding artifact, not verifying it at body depth is
+  // shipping blind. Bypass is keyed on the EMAIL, not the IP, so a single dev
+  // workstation can burn 3+ probes per day without polluting the 3-real-users
+  // budget. Stats classification (organic vs internal_test) already filters on
+  // the same patterns — keeping a unified definition.
   const ip = c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || "unknown";
   const now = new Date();
-  const ipRow = await c.env.DB.prepare(
-    `SELECT count, reset_at FROM key_creation_rate_limits WHERE ip = ? LIMIT 1`
-  ).bind(ip).first<{ count: number; reset_at: string }>();
+  const internalTestPatterns = parseEmailPatterns(
+    c.env.INTERNAL_TEST_EMAIL_PATTERNS ?? DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS
+  );
+  const isInternalTest = isInternalTestEmail(email, internalTestPatterns);
 
-  let ipCount = 0;
-  if (ipRow) {
-    if (new Date(ipRow.reset_at) > now) {
-      ipCount = ipRow.count;
+  if (!isInternalTest) {
+    const ipRow = await c.env.DB.prepare(
+      `SELECT count, reset_at FROM key_creation_rate_limits WHERE ip = ? LIMIT 1`
+    ).bind(ip).first<{ count: number; reset_at: string }>();
+
+    let ipCount = 0;
+    if (ipRow) {
+      if (new Date(ipRow.reset_at) > now) {
+        ipCount = ipRow.count;
+      }
+      // else: period expired, treat as fresh
     }
-    // else: period expired, treat as fresh
-  }
 
-  if (ipCount >= 3) {
-    return c.json({
-      error: "rate_limit_exceeded",
-      message: "Maximum 3 API keys per IP per day. Try again tomorrow.",
-    }, 429);
-  }
+    if (ipCount >= 3) {
+      return c.json({
+        error: "rate_limit_exceeded",
+        message: "Maximum 3 API keys per IP per day. Try again tomorrow.",
+      }, 429);
+    }
 
-  // Update IP rate limit counter
-  const tomorrowIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
-  await c.env.DB.prepare(
-    `INSERT INTO key_creation_rate_limits (ip, count, reset_at)
-     VALUES (?, 1, ?)
-     ON CONFLICT(ip) DO UPDATE SET
-       count = CASE WHEN reset_at <= datetime('now') THEN 1 ELSE count + 1 END,
-       reset_at = CASE WHEN reset_at <= datetime('now') THEN ? ELSE reset_at END`
-  ).bind(ip, tomorrowIso, tomorrowIso).run();
+    // Update IP rate limit counter
+    const tomorrowIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
+    await c.env.DB.prepare(
+      `INSERT INTO key_creation_rate_limits (ip, count, reset_at)
+       VALUES (?, 1, ?)
+       ON CONFLICT(ip) DO UPDATE SET
+         count = CASE WHEN reset_at <= datetime('now') THEN 1 ELSE count + 1 END,
+         reset_at = CASE WHEN reset_at <= datetime('now') THEN ? ELSE reset_at END`
+    ).bind(ip, tomorrowIso, tomorrowIso).run();
+  }
 
   // Generate API key: sk_commit_ + 32 random hex chars
   const rawBytes = new Uint8Array(16);
@@ -3428,8 +3451,14 @@ export const AUDIT_TRAFFIC_THRESHOLDS = {
   hard_limit: AUDIT_HARD_LIMIT,
 } as const;
 
+// Domain-anchored — `*` in the local-part only, fixed domain. Earlier (`pico+*@*`)
+// would classify `pico+anything@evil.com` as internal-test, letting an attacker
+// spoof the dogfood pattern from any domain — both polluting /api/keys/stats
+// "organic" counts AND (after the 2026-06-12 ship below) bypassing the
+// 3-keys-per-IP-per-day rate limit on /api/keys/create. Anchoring to amdal.dev
+// closes both leaks. test-evaluator-probe@example.com kept as the only literal.
 export const DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS =
-  "pico+*@*,hawkaa+*@*,test-evaluator-probe@example.com";
+  "pico+*@amdal.dev,hawkaa+*@amdal.dev,test-evaluator-probe@example.com";
 
 export type McpTrafficStats = {
   today: {

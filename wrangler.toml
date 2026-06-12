@@ -8,8 +8,12 @@ ENVIRONMENT = "production"
 # count as internal test signups, not organic ones. Used by /api/keys/stats to
 # split source=mcp-soft-cta key counts into "organic" vs "internal_test" so we
 # can tell whether v1.14 MCP soft-CTA is actually converting external traffic.
+# ALSO used by /api/keys/create (2026-06-12) to bypass the 3-keys-per-IP-per-day
+# rate limit when the signup email matches one of these patterns — unblocks
+# welcome-email body dogfooding. Domain-anchored (NOT `*@*`) so an attacker
+# can't spoof `pico+x@evil.com` to inflate the dogfood lane.
 # Curatable without code redeploy: edit here, redeploy worker (no code change).
-INTERNAL_TEST_EMAIL_PATTERNS = "pico+*@*,hawkaa+*@*,test-evaluator-probe@example.com"
+INTERNAL_TEST_EMAIL_PATTERNS = "pico+*@amdal.dev,hawkaa+*@amdal.dev,test-evaluator-probe@example.com"
 
 [[d1_databases]]
 binding = "DB"
