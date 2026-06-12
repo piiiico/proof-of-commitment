@@ -3183,6 +3183,47 @@ ${seedScoreLines}
     ? `⚑ ${seedCriticalCount} CRITICAL package${seedCriticalCount > 1 ? "s" : ""} in your watchlist — your Commit API key inside`
     : "Your Commit API key + 4 things to try";
 
+  // Source-aware step 2. Mirrors the get-started.astro success-note fork:
+  // CI engineers arriving from PR-check annotations don't need to "add a CI
+  // gate" — they already have one (that's why the annotation fired). They
+  // need to bind the key to repo secrets and re-run. Hook users (Cursor/
+  // Claude Code/Windsurf/poc-hook) have the package installed locally and
+  // just need to persist the key for the hook to read. MCP users need the
+  // key in their MCP client's env block. Default ("web", "api", "audit-web",
+  // "pkg-profile", etc.) is a new user — give them the CI-gate onboarding.
+  // Keeps step 2's frame consistent with the get-started success-note that
+  // immediately preceded this email — no contradicting next-actions across
+  // the chain. Pairs with the get-started.astro CI_SOURCES branch shipped
+  // same commit.
+  const CI_SOURCES_WELCOME = new Set(["ci-annotation"]);
+  const HOOK_SOURCES_WELCOME = new Set(["cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook"]);
+  const MCP_SOURCES_WELCOME = new Set(["mcp-soft-cta"]);
+  const step2 = CI_SOURCES_WELCOME.has(source)
+    ? `2) Bind the key in your repo so CI stops rate-limiting:
+   gh secret set COMMIT_API_KEY --body ${apiKey}
+
+   (Or paste in Settings → Secrets and variables → Actions.)
+   Re-run the failed job. The PR-check annotation goes away the moment
+   the key is bound — 200 audits/day covers every PR on most projects.`
+    : HOOK_SOURCES_WELCOME.has(source)
+    ? `2) Persist the key so the hook reads it on every install:
+   npx proof-of-commitment login ${apiKey}
+
+   The hook reads ~/.commit/config on every package install — once-and-done.
+   No env-var juggling, no per-shell binding. Future terminals just work.`
+    : MCP_SOURCES_WELCOME.has(source)
+    ? `2) Add the key to your MCP client config so the server can use it.
+   In Claude Desktop / Cursor MCP config, add to the env block for this server:
+
+   "COMMIT_API_KEY": "${apiKey}"
+
+   Restart the client. The MCP server bumps to 200 audits/day, bound to you.`
+    : `2) Add a CI gate to one of your repos (free, 1 repo):
+   cd your-project
+   npx proof-of-commitment poc init     # adds GitHub Action + README badge
+
+   Every PR fails if it introduces a CRITICAL dependency.`;
+
   const emailBody = `Your Commit API key + 4 things to try
 
   ${apiKey}
@@ -3192,11 +3233,7 @@ Save it. It won't be shown again.
 
 ${step1}
 
-2) Add a CI gate to one of your repos (free, 1 repo):
-   cd your-project
-   npx proof-of-commitment poc init     # adds GitHub Action + README badge
-
-   Every PR fails if it introduces a CRITICAL dependency.
+${step2}
 
 3) Score any project from the command line:
    npx proof-of-commitment --file package-lock.json
