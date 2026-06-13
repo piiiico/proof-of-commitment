@@ -6,6 +6,24 @@
 
 An MCP server and web tool that scores npm packages, PyPI packages, Rust crates, Go modules, and GitHub repos on **behavioral commitment** — signals that are harder to fake than stars, READMEs, or download counts.
 
+```text
+$ npx proof-of-commitment axios zod chalk lodash minimatch
+Scoring 5 npm packages... done in 3.0s
+
+Package      Risk          Score   Publishers   Downloads      Age    Provenance
+chalk        🔴 CRITICAL   72      1            432.9M/wk      14.6y  —
+minimatch    🔴 CRITICAL   78      1            634.1M/wk      14.9y  —
+lodash       🔴 CRITICAL   80      1            158.9M/wk      14.1y  —
+zod          🔴 CRITICAL   83      1            161.2M/wk      6.3y   🔐 verified
+axios        🔴 CRITICAL   88      1            115.7M/wk      11.8y  🔐 verified
+                ⚠ COMPROMISED — axios token theft (2026-03-30)
+
+⚠  5 CRITICAL packages found.
+   CRITICAL = sole npm publisher + >10M weekly downloads (publish-access concentration risk)
+```
+
+`npm audit` flags none of these. They're not vulnerabilities — they're attack-surface concentration. One stolen npm token, one phished maintainer, and a single push reaches the whole ecosystem (axios, March 30 2026 — happened).
+
 ## The supply chain security problem
 
 26 of the 91 npm packages with >10M weekly downloads have a **single npm publisher**. Together they account for over 3 billion downloads per week. `npm audit` doesn't surface this. Stars don't either.
