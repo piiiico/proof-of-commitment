@@ -7544,6 +7544,138 @@ app.get("/api/admin/leads", async (c) => {
 });
 
 /**
+ * GET /api/admin/key-analytics
+ * Admin endpoint — X-Admin-Secret required.
+ * Returns aggregate API key usage data for conversion analysis:
+ *   - total keys, active (used in last 7d), tier breakdown
+ *   - keys approaching daily limit (>75% usage today)
+ *   - top domains by signup volume
+ *   - daily signup trend (last 14d)
+ * No PII in default response; pass ?emails=1 for email list (admin use only).
+ */
+app.get("/api/admin/key-analytics", async (c) => {
+  const adminSecret = c.env.ADMIN_SECRET;
+  if (!adminSecret || c.req.header("X-Admin-Secret") !== adminSecret) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const includeEmails = c.req.query("emails") === "1";
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  // Run queries in parallel
+  const [
+    totalRow,
+    tierRows,
+    activeRow,
+    approachingLimitRows,
+    domainRows,
+    signupTrendRows,
+    topUsersRows,
+  ] = await Promise.all([
+    // Total non-revoked keys
+    c.env.DB.prepare(
+      `SELECT COUNT(*) AS total FROM api_keys WHERE revoked_at IS NULL`
+    ).first<{ total: number }>(),
+
+    // Tier breakdown
+    c.env.DB.prepare(
+      `SELECT COALESCE(tier, 'free') AS tier, COUNT(*) AS count
+       FROM api_keys WHERE revoked_at IS NULL GROUP BY tier ORDER BY count DESC`
+    ).all<{ tier: string; count: number }>(),
+
+    // Active in last 7d
+    c.env.DB.prepare(
+      `SELECT COUNT(*) AS active FROM api_keys
+       WHERE revoked_at IS NULL AND last_used_at >= ?`
+    ).bind(sevenDaysAgo).first<{ active: number }>(),
+
+    // Keys approaching daily limit (>75% of tier limit used today)
+    c.env.DB.prepare(
+      `SELECT key_prefix, COALESCE(tier, 'free') AS tier,
+              requests_this_period AS used, COALESCE(source, 'web') AS source
+       FROM api_keys
+       WHERE revoked_at IS NULL
+         AND COALESCE(tier, 'free') = 'free'
+         AND requests_this_period >= 150
+       ORDER BY requests_this_period DESC LIMIT 20`
+    ).all<{ key_prefix: string; tier: string; used: number; source: string }>(),
+
+    // Top email domains
+    c.env.DB.prepare(
+      `SELECT SUBSTR(email, INSTR(email, '@') + 1) AS domain, COUNT(*) AS count
+       FROM api_keys WHERE revoked_at IS NULL AND email LIKE '%@%'
+       GROUP BY domain ORDER BY count DESC LIMIT 15`
+    ).all<{ domain: string; count: number }>(),
+
+    // Daily signup trend (last 14d)
+    c.env.DB.prepare(
+      `SELECT DATE(created_at) AS day, COUNT(*) AS signups
+       FROM api_keys WHERE revoked_at IS NULL
+         AND created_at >= datetime('now', '-14 days')
+       GROUP BY day ORDER BY day DESC`
+    ).all<{ day: string; signups: number }>(),
+
+    // Top users by request volume
+    c.env.DB.prepare(
+      `SELECT key_prefix, COALESCE(tier, 'free') AS tier,
+              requests_this_period AS used_today,
+              COALESCE(source, 'web') AS source,
+              last_used_at
+       FROM api_keys
+       WHERE revoked_at IS NULL AND requests_this_period > 0
+       ORDER BY requests_this_period DESC LIMIT 20`
+    ).all<{ key_prefix: string; tier: string; used_today: number; source: string; last_used_at: string | null }>(),
+  ]);
+
+  // Optionally include email list for manual outreach
+  let emailList: { email: string; tier: string; source: string; created_at: string; used_today: number }[] = [];
+  if (includeEmails) {
+    const emailRows = await c.env.DB.prepare(
+      `SELECT email, COALESCE(tier, 'free') AS tier, COALESCE(source, 'web') AS source,
+              created_at, requests_this_period AS used_today
+       FROM api_keys WHERE revoked_at IS NULL
+       ORDER BY created_at DESC LIMIT 200`
+    ).all<{ email: string; tier: string; source: string; created_at: string; used_today: number }>();
+    emailList = emailRows.results ?? [];
+  }
+
+  return c.json({
+    summary: {
+      total_keys: totalRow?.total ?? 0,
+      active_7d: activeRow?.active ?? 0,
+      tiers: (tierRows.results ?? []).reduce((acc, r) => {
+        acc[r.tier] = r.count;
+        return acc;
+      }, {} as Record<string, number>),
+    },
+    approaching_limit: (approachingLimitRows.results ?? []).map((r) => ({
+      key_prefix: r.key_prefix,
+      tier: r.tier,
+      used_today: r.used,
+      limit: 200,
+      pct: Math.round((r.used / 200) * 100),
+      source: r.source,
+    })),
+    top_users: (topUsersRows.results ?? []).map((r) => ({
+      key_prefix: r.key_prefix,
+      tier: r.tier,
+      used_today: r.used_today,
+      source: r.source,
+      last_used: r.last_used_at,
+    })),
+    domains: (domainRows.results ?? []).map((r) => ({
+      domain: r.domain,
+      count: r.count,
+    })),
+    signup_trend: (signupTrendRows.results ?? []).map((r) => ({
+      day: r.day,
+      signups: r.signups,
+    })),
+    ...(includeEmails ? { emails: emailList } : {}),
+  });
+});
+
+/**
  * GET /api/stats/teams-protected
  * Public stats for the /pricing page social-proof line.
  *
