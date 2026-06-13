@@ -1035,9 +1035,14 @@ app.post("/api/audit", async (c) => {
       packages.splice(RATE_LIMIT_TASTE);
     }
 
-    if (auditCount >= AUDIT_SOFT_CTA_AT) {
-      showAuditCta = true;
-    }
+    // Always show CTA for anonymous users — prior gate (>=AUDIT_SOFT_CTA_AT,
+    // i.e. 5th audit) meant first-time CLI users in CI (non-TTY, no
+    // inlineSignup) never saw ANY conversion prompt. With 17 unique IPs/day
+    // and only 2 reaching the soft-CTA threshold in 7 days, 15/17 IPs
+    // churned without a single touchpoint. auditCtaText now has a
+    // first-touch variant for count<SOFT_CTA that leads with value
+    // (attack alerting) not quota pressure.
+    showAuditCta = true;
   }
 
   const results: Array<{
@@ -4949,26 +4954,48 @@ function pickWorstAuditPackage(results: AuditResultForCta[]): AuditResultForCta 
 function auditCtaText(count: number, results?: AuditResultForCta[]): string {
   const remaining = Math.max(0, AUDIT_HARD_LIMIT - count);
   const worst = results ? pickWorstAuditPackage(results) : null;
+  // First-touch variant (count < AUDIT_SOFT_CTA_AT): value-focused, no quota
+  // pressure. Most CLI users audit 1-2 times and never return. The first audit
+  // is the highest-intent moment — they just saw CRITICAL findings. Lead with
+  // "get alerted if this gets attacked" not "you've used 1/15 of your quota."
+  // Quota framing kicks in only at >=SOFT_CTA where the user has demonstrated
+  // repeat engagement and the wall is approaching. Prior code gated _cta at
+  // >=SOFT_CTA (5), so 80%+ of anonymous IPs (15/17 in a 7-day window) churned
+  // without ever seeing a single CTA from the server — in CI (non-TTY), where
+  // the CLI's inlineSignup prompt is skipped, the server _cta was the ONLY
+  // conversion touchpoint.
+  const firstTouch = count < AUDIT_SOFT_CTA_AT;
 
   if (worst) {
     if (worst.compromised) {
-      return `⚠ ${worst.name} was compromised (${worst.compromised.attack}, ${worst.compromised.date}). Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get alerted the next time a package you scan flips — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`;
+      return firstTouch
+        ? `⚠ ${worst.name} was compromised (${worst.compromised.attack}, ${worst.compromised.date}). Get alerted before the next attack hits your dependencies — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`
+        : `⚠ ${worst.name} was compromised (${worst.compromised.attack}, ${worst.compromised.date}). Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get alerted the next time a package you scan flips — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`;
     }
     const criticalFlag = worst.riskFlags?.find((f) => f.startsWith("CRITICAL"));
     if (criticalFlag) {
       const reason = criticalFlag.replace(/^CRITICAL:\s*/, "").trim();
-      return `⚠ ${worst.name} scored CRITICAL — ${reason}. Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get alerted when ${worst.name}'s score worsens — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`;
+      return firstTouch
+        ? `⚠ ${worst.name} is CRITICAL — ${reason}. Same attack profile as axios (Mar 2026). Monitor it — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`
+        : `⚠ ${worst.name} scored CRITICAL — ${reason}. Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get alerted when ${worst.name}'s score worsens — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`;
     }
     const highFlag = worst.riskFlags?.find((f) => f.startsWith("HIGH"));
     if (highFlag) {
       const reason = highFlag.replace(/^HIGH:\s*/, "").trim();
-      return `${worst.name} flagged HIGH — ${reason}. Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get alerted when ${worst.name}'s score worsens — free key, no card: ${AUDIT_SIGNUP_URL}`;
+      return firstTouch
+        ? `${worst.name} flagged HIGH — ${reason}. Get alerted when it worsens — free key, no card: ${AUDIT_SIGNUP_URL}`
+        : `${worst.name} flagged HIGH — ${reason}. Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get alerted when ${worst.name}'s score worsens — free key, no card: ${AUDIT_SIGNUP_URL}`;
     }
     if (typeof worst.score === "number") {
-      return `${worst.name} scored ${worst.score}/100 — lowest in this scan. Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get notified when scores worsen — free key, no card: ${AUDIT_SIGNUP_URL}`;
+      return firstTouch
+        ? `${worst.name} scored ${worst.score}/100. Get notified if it drops further — free key, no card: ${AUDIT_SIGNUP_URL}`
+        : `${worst.name} scored ${worst.score}/100 — lowest in this scan. Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get notified when scores worsen — free key, no card: ${AUDIT_SIGNUP_URL}`;
     }
   }
 
+  if (firstTouch) {
+    return `Get alerted when any dependency gets compromised — free key, no card: ${AUDIT_SIGNUP_URL}`;
+  }
   if (count >= AUDIT_STRONG_CTA_AT) {
     return `⚠ Commit free tier — ${count}/${AUDIT_HARD_LIMIT} audits used today (${remaining} left). Lock in alerts on these packages before the wall — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`;
   }
