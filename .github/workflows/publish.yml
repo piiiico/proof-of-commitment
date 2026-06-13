@@ -22,6 +22,15 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Set up Bun
+        # Required by the docs↔CLI verb-parity gate (scripts/check-advertised-commands.ts).
+        # Runner image only ships Node by default; without this, the gate step exits 127
+        # ("bun: command not found") and blocks publish on every tag. Pinned to v1 (latest
+        # major) — script uses only stable Bun APIs (Bun.file, fetch, regex, fs/promises).
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: Check if version already published
         working-directory: ./npm-package
         run: |
