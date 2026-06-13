@@ -3189,15 +3189,25 @@ ${seedScoreLines}
   // need to bind the key to repo secrets and re-run. Hook users (Cursor/
   // Claude Code/Windsurf/poc-hook) have the package installed locally and
   // just need to persist the key for the hook to read. MCP users need the
-  // key in their MCP client's env block. Default ("web", "api", "audit-web",
-  // "pkg-profile", etc.) is a new user — give them the CI-gate onboarding.
-  // Keeps step 2's frame consistent with the get-started success-note that
-  // immediately preceded this email — no contradicting next-actions across
-  // the chain. Pairs with the get-started.astro CI_SOURCES branch shipped
-  // same commit.
+  // key in their MCP client's env block. README users (GitHub + npm) came
+  // for the monitoring promise — hero copy says "score your tree" / "watch
+  // packages", success-note says "poc login + audit", so step 2 must extend
+  // that into setting up watches (the differentiator the README CTA sold).
+  // Default ("web", "api", "audit-web", "pkg-profile", etc.) is a new user
+  // — give them the CI-gate onboarding. Keeps step 2's frame consistent
+  // with the get-started success-note that immediately preceded this email
+  // — no contradicting next-actions across the chain. Pairs with the
+  // get-started.astro source-aware branches.
   const CI_SOURCES_WELCOME = new Set(["ci-annotation"]);
   const HOOK_SOURCES_WELCOME = new Set(["cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook"]);
   const MCP_SOURCES_WELCOME = new Set(["mcp-soft-cta"]);
+  const README_SOURCES_WELCOME = new Set(["readme-monitoring", "npm-readme-monitoring"]);
+  // 2026-06-13: CLI users (audit-cli-429 / audit-baseline / cli / audit-cli /
+  // cli-soft-cta) got the generic "Add a CI gate" step 2 in welcome email,
+  // contradicting the success-note's CLI-frame `export COMMIT_API_KEY=…`.
+  // Email arrives later, possibly in a new terminal, so persistent `poc login`
+  // is the right next-step (env-var binding only covers one shell).
+  const CLI_SOURCES_WELCOME = new Set(["audit-cli-429", "audit-baseline", "cli", "audit-cli", "cli-soft-cta"]);
   const step2 = CI_SOURCES_WELCOME.has(source)
     ? `2) Bind the key in your repo so CI stops rate-limiting:
    gh secret set COMMIT_API_KEY --body ${apiKey}
@@ -3218,6 +3228,22 @@ ${seedScoreLines}
    "COMMIT_API_KEY": "${apiKey}"
 
    Restart the client. The MCP server bumps to 200 audits/day, bound to you.`
+    : README_SOURCES_WELCOME.has(source)
+    ? `2) Score your tree, then watch the riskiest package:
+   npx proof-of-commitment login ${apiKey}
+   cd your-project
+   npx proof-of-commitment --file package-lock.json    # scores every dep
+   npx proof-of-commitment poc watch <riskiest-pkg>    # adds to weekly digest
+
+   Free tier watches 3 packages. Developer ($15/mo) bumps to 15 with daily
+   scans + instant email alerts the moment a score drops a tier.`
+    : CLI_SOURCES_WELCOME.has(source)
+    ? `2) Persist the key for every future terminal — no more re-binding:
+   npx proof-of-commitment login ${apiKey}
+
+   Reads ~/.commit/config every run. The earlier export COMMIT_API_KEY only
+   bound the shell you re-ran in; this binds you across reboots and new tabs.
+   Bumps you to 200 audits/day with no anonymous rate cap.`
     : `2) Add a CI gate to one of your repos (free, 1 repo):
    cd your-project
    npx proof-of-commitment poc init     # adds GitHub Action + README badge
