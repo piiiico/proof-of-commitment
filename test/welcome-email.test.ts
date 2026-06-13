@@ -149,8 +149,29 @@ describe("welcome email shell (constant across both branches)", () => {
   });
 
   test("CI gate is step 2 (was step 1 — demoted because higher friction)", () => {
-    expect(SHELL).toMatch(/2\) Add a CI gate to one of your repos/);
-    expect(SHELL).toContain("npx proof-of-commitment poc init");
+    // step 2 content lives in the `step2` variable that the shell interpolates,
+    // so assert against WORKER_SOURCE rather than SHELL (SHELL only carries the
+    // `${step2}` placeholder). The 'default' branch of the step2 ternary is
+    // the "Add a CI gate" copy that ships to web/api/audit-web/pkg-profile
+    // signups — the most common path.
+    expect(WORKER_SOURCE).toMatch(/2\) Add a CI gate to one of your repos/);
+    // 2026-06-13: CLI canonical form is `npx proof-of-commitment <subcmd>`.
+    // The earlier `npx proof-of-commitment poc init` shape was a regression:
+    // the CLI parses `args[0]` as the subcommand, so `poc` was treated as a
+    // package name and `init` as a second package name. Both were scored
+    // (npmjs.com/poc + npmjs.com/init), wasting the user's daily quota and
+    // never running `init`. Verified live 2026-06-13 by running
+    // `npx proof-of-commitment poc login` → two random packages scored
+    // instead of saving the key. Same class as the 2026-06-12 audit.astro
+    // fix (lines 2011/2020/2059) that missed this welcome-email path.
+    expect(WORKER_SOURCE).toContain("npx proof-of-commitment init     # adds GitHub Action");
+    // Explicit anti-regression: do NOT advertise the broken `npx … poc <verb>`
+    // shape anywhere in the worker source (covers both shell + ternary branches).
+    expect(WORKER_SOURCE).not.toContain("npx proof-of-commitment poc init");
+    expect(WORKER_SOURCE).not.toContain("npx proof-of-commitment poc login");
+    expect(WORKER_SOURCE).not.toContain("npx proof-of-commitment poc watch");
+    expect(WORKER_SOURCE).not.toContain("npx proof-of-commitment poc watchlist");
+    expect(WORKER_SOURCE).not.toContain("npx proof-of-commitment poc unwatch");
   });
 
   test("CLI scan is step 3 (file-based audit)", () => {
@@ -225,10 +246,16 @@ describe("step 1 — unseeded branch (e.g. /get-started direct, no audit-page se
     // for 30d).
     expect(STEP1).not.toContain("npx proof-of-commitment poc watch express");
     expect(STEP1).not.toContain("npx proof-of-commitment poc watch lodash");
+    expect(STEP1).not.toContain("npx proof-of-commitment watch express");
+    expect(STEP1).not.toContain("npx proof-of-commitment watch lodash");
   });
 
   test("uses parametric <package-name> placeholder instead of hardcoded packages", () => {
-    expect(STEP1).toContain("npx proof-of-commitment poc watch <package-name>");
+    // 2026-06-13: canonical CLI form (no spurious `poc` prefix — CLI parses
+    // args[0] as subcommand, so `npx proof-of-commitment poc watch foo`
+    // scored "poc" as a package instead of running watch).
+    expect(STEP1).toContain("npx proof-of-commitment watch <package-name>");
+    expect(STEP1).not.toContain("npx proof-of-commitment poc watch <package-name>");
   });
 
   test("sells the value-prop: audit first (the proposition path)", () => {
@@ -241,7 +268,13 @@ describe("step 1 — unseeded branch (e.g. /get-started direct, no audit-page se
   });
 
   test("login step still present (one-time setup before watch)", () => {
-    expect(STEP1).toContain("npx proof-of-commitment poc login");
+    // 2026-06-13: canonical form is `npx proof-of-commitment login <key>`
+    // with key inlined so users copy-paste a single line. The prior
+    // `npx proof-of-commitment poc login` shape silently scored npm packages
+    // "poc" + "login" instead of binding the key — verified live and rolled
+    // out as a worker.ts fix the same day. Pinning the canonical form here.
+    expect(STEP1).toContain("npx proof-of-commitment login ");
+    expect(STEP1).not.toContain("npx proof-of-commitment poc login");
   });
 
   test("Monday-digest promise is visible (cadence stays consistent across branches)", () => {
@@ -258,12 +291,16 @@ describe("step 1 — seeded branch (audit-page signup with body.watch)", () => {
     expect(STEP1).toContain("${seededList}");
   });
 
-  test("replaces poc watch with poc list (already configured)", () => {
-    expect(STEP1).toContain("poc list");
+  test("replaces poc watch with watchlist (already configured)", () => {
+    // 2026-06-13: pinned canonical form `npx proof-of-commitment watchlist`
+    // (subcommand is `watchlist`, not `list` — `list` was an outdated alias
+    // baked into the email that the CLI never resolved). Same dogfood pass
+    // that found `npx proof-of-commitment poc login` scoring `poc + login`.
+    expect(STEP1).toContain("npx proof-of-commitment watchlist");
     // The seeded branch must NOT instruct re-adding packages by hand —
     // that's the proposition gap this whole change closes.
     const seededHalf = STEP1.split("seededPackages.length > 0")[1] || "";
-    expect(seededHalf).toContain("poc list");
+    expect(seededHalf).toContain("npx proof-of-commitment watchlist");
   });
 
   test("Monday-digest promise survives (drop-tier OR attack)", () => {

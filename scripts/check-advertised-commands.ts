@@ -250,6 +250,25 @@ function main(): void {
     }
   }
 
+  // 2026-06-13: also scan the worker source. The welcome-email template lives
+  // in src/backend/worker.ts and is the FIRST instruction-set every signed-up
+  // user reads (delivered via Resend at /api/keys/create time). When the email
+  // shipped `npx proof-of-commitment poc login`, every new web signup ran a
+  // command that scored npm packages "poc" + "login" instead of saving their
+  // key — the same regression class this gate was built for, but the file
+  // wasn't in the scan tree. Pinning it here so audit.astro and worker.ts
+  // can't drift independently again.
+  for (const tsFile of [
+    join(REPO_ROOT, "src", "backend", "worker.ts"),
+  ]) {
+    try {
+      statSync(tsFile);
+      docFiles.push(tsFile);
+    } catch {
+      // optional
+    }
+  }
+
   if (VERBOSE) {
     console.log(
       `[check-advertised-commands] Scanning ${docFiles.length} files`

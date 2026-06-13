@@ -3198,21 +3198,21 @@ ${seededList}${overflowLine}
    ${seededScoreHeader}
 ${seedScoreLines}
 
-   poc login                         # paste the key above
-   poc list                          # confirm what's being watched
+   npx proof-of-commitment login ${apiKey}
+   npx proof-of-commitment watchlist                          # confirm what's being watched
 
    Mondays we email you if any score drops a tier or a watched package gets attacked.`
     : `1) Watch 3 packages — Mondays we email you when scores drop or attacks happen:
 
    First save your key (one time):
-   npx proof-of-commitment poc login    # paste the key above
+   npx proof-of-commitment login ${apiKey}
 
    Then audit your project to see which packages need watching most:
    cd your-project
    npx proof-of-commitment --file package-lock.json    # scores every dep
 
    Watch the riskiest 3 — free cap:
-   npx proof-of-commitment poc watch <package-name>
+   npx proof-of-commitment watch <package-name>
 
    Or audit online — https://getcommit.dev/audit — sign up there and we
    auto-seed your watchlist with the riskiest 3 from that scan.
@@ -3273,7 +3273,7 @@ ${seedScoreLines}
    npx proof-of-commitment login ${apiKey}
    cd your-project
    npx proof-of-commitment --file package-lock.json    # scores every dep
-   npx proof-of-commitment poc watch <riskiest-pkg>    # adds to weekly digest
+   npx proof-of-commitment watch <riskiest-pkg>    # adds to weekly digest
 
    Free tier watches 3 packages. Developer ($15/mo) bumps to 15 with daily
    scans + instant email alerts the moment a score drops a tier.`
@@ -3286,7 +3286,7 @@ ${seedScoreLines}
    Bumps you to 200 audits/day with no anonymous rate cap.`
     : `2) Add a CI gate to one of your repos (free, 1 repo):
    cd your-project
-   npx proof-of-commitment poc init     # adds GitHub Action + README badge
+   npx proof-of-commitment init     # adds GitHub Action + README badge
 
    Every PR fails if it introduces a CRITICAL dependency.`;
 
@@ -6667,7 +6667,7 @@ Upgrade: ${upgradeUrl}
 
 —
 Commit · getcommit.dev
-Manage watchlist: run \`poc watchlist\` in your terminal, or \`poc unwatch <package>\` to remove`;
+Manage watchlist: run \`npx proof-of-commitment watchlist\` in your terminal, or \`npx proof-of-commitment unwatch <package>\` to remove`;
 
     try {
       const emailResp = await fetch("https://api.resend.com/emails", {
