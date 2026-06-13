@@ -167,79 +167,85 @@ describe("buildMcpTrafficStats", () => {
     expect(stats.today.date).toBe(utcToday());
   });
 
-  test("single IP at count=42 → ips_at_soft_cta=1, not strong/hard", async () => {
+  test("single IP at count=7 → ips_at_soft_cta=1, not strong/hard", async () => {
+    // Thresholds: MCP_SOFT_CTA_AT=5, MCP_STRONG_CTA_AT=10, MCP_HARD_LIMIT=15
+    // (tightened from 41/81/100 to drive free-key signups). count=7 sits
+    // between soft and strong — exactly the "saw the CTA, hasn't escalated"
+    // bucket the dashboard surfaces.
     const sqlite = new Database(":memory:");
     setupSchema(sqlite);
     sqlite
       .query(`INSERT INTO mcp_rate_limits (ip, date, count) VALUES (?, ?, ?)`)
-      .run("1.2.3.4", utcToday(), 42);
+      .run("1.2.3.4", utcToday(), 7);
 
     const db = d1Shim(sqlite) as Parameters<typeof buildMcpTrafficStats>[0];
     const stats = await buildMcpTrafficStats(db);
 
-    expect(stats.today.calls).toBe(42);
+    expect(stats.today.calls).toBe(7);
     expect(stats.today.unique_ips).toBe(1);
     expect(stats.today.ips_at_soft_cta).toBe(1);
     expect(stats.today.ips_at_strong_cta).toBe(0);
     expect(stats.today.ips_at_hard_limit).toBe(0);
   });
 
-  test("threshold edges — 40/41/81/100", async () => {
+  test("threshold edges — 4/5/10/15", async () => {
     const sqlite = new Database(":memory:");
     setupSchema(sqlite);
     const today = utcToday();
     const insert = sqlite.query(
       `INSERT INTO mcp_rate_limits (ip, date, count) VALUES (?, ?, ?)`
     );
-    insert.run("ip-40", today, 40);  // below soft CTA
-    insert.run("ip-41", today, 41);  // at soft CTA (inclusive)
-    insert.run("ip-80", today, 80);  // soft only
-    insert.run("ip-81", today, 81);  // at strong CTA (inclusive)
-    insert.run("ip-99", today, 99);  // strong only
-    insert.run("ip-100", today, 100); // at hard limit (inclusive)
-    insert.run("ip-150", today, 150); // past hard limit
+    insert.run("ip-4", today, 4);    // below soft CTA
+    insert.run("ip-5", today, 5);    // at soft CTA (inclusive)
+    insert.run("ip-9", today, 9);    // soft only
+    insert.run("ip-10", today, 10);  // at strong CTA (inclusive)
+    insert.run("ip-14", today, 14);  // strong only
+    insert.run("ip-15", today, 15);  // at hard limit (inclusive)
+    insert.run("ip-20", today, 20);  // past hard limit
 
     const db = d1Shim(sqlite) as Parameters<typeof buildMcpTrafficStats>[0];
     const stats = await buildMcpTrafficStats(db);
 
-    // soft CTA threshold (≥41): 41, 80, 81, 99, 100, 150 = 6 IPs
+    // soft CTA threshold (≥5): 5, 9, 10, 14, 15, 20 = 6 IPs
     expect(stats.today.ips_at_soft_cta).toBe(6);
-    // strong CTA threshold (≥81): 81, 99, 100, 150 = 4 IPs
+    // strong CTA threshold (≥10): 10, 14, 15, 20 = 4 IPs
     expect(stats.today.ips_at_strong_cta).toBe(4);
-    // hard limit threshold (≥100): 100, 150 = 2 IPs
+    // hard limit threshold (≥15): 15, 20 = 2 IPs
     expect(stats.today.ips_at_hard_limit).toBe(2);
 
     expect(stats.today.unique_ips).toBe(7);
-    expect(stats.today.calls).toBe(40 + 41 + 80 + 81 + 99 + 100 + 150);
+    expect(stats.today.calls).toBe(4 + 5 + 9 + 10 + 14 + 15 + 20);
   });
 
   test("multi-day aggregates correctly in last_7d", async () => {
+    // Soft CTA threshold = 5 (tightened from 41 in 2026 to drive signups).
+    // count=4 sits below; count≥5 trips the CTA bucket.
     const sqlite = new Database(":memory:");
     setupSchema(sqlite);
     const insert = sqlite.query(
       `INSERT INTO mcp_rate_limits (ip, date, count) VALUES (?, ?, ?)`
     );
     // Today and 5 prior days within window
-    insert.run("a", utcOffset(0), 10);
-    insert.run("b", utcOffset(0), 50);   // a soft-CTA-hitter today
-    insert.run("a", utcOffset(-1), 5);
-    insert.run("c", utcOffset(-1), 60);  // distinct soft-CTA hitter yesterday
-    insert.run("d", utcOffset(-3), 200); // max-daily candidate
+    insert.run("a", utcOffset(0), 2);
+    insert.run("b", utcOffset(0), 8);    // soft-CTA hitter today (≥5)
+    insert.run("a", utcOffset(-1), 1);
+    insert.run("c", utcOffset(-1), 6);   // distinct soft-CTA hitter yesterday
+    insert.run("d", utcOffset(-3), 25);  // max-daily candidate
     // Outside the 7d window (8 days back) — must NOT count
     insert.run("e", utcOffset(-8), 999);
 
     const db = d1Shim(sqlite) as Parameters<typeof buildMcpTrafficStats>[0];
     const stats = await buildMcpTrafficStats(db);
 
-    // Today: a + b = 60 calls, 2 unique IPs
-    expect(stats.today.calls).toBe(60);
+    // Today: a + b = 10 calls, 2 unique IPs
+    expect(stats.today.calls).toBe(10);
     expect(stats.today.unique_ips).toBe(2);
-    expect(stats.today.ips_at_soft_cta).toBe(1); // only b
+    expect(stats.today.ips_at_soft_cta).toBe(1); // only b (8 ≥ 5)
     // 7d totals exclude the 8-days-back row
-    expect(stats.last_7d.calls).toBe(10 + 50 + 5 + 60 + 200);
-    // max_daily_calls: 200 (day -3, single row)
-    expect(stats.last_7d.max_daily_calls).toBe(200);
-    // Distinct soft-CTA IPs: b (today, 50), c (-1, 60), d (-3, 200) = 3
+    expect(stats.last_7d.calls).toBe(2 + 8 + 1 + 6 + 25);
+    // max_daily_calls: 25 (day -3, single row)
+    expect(stats.last_7d.max_daily_calls).toBe(25);
+    // Distinct soft-CTA IPs: b (today, 8), c (-1, 6), d (-3, 25) = 3
     expect(stats.last_7d.ips_that_hit_soft_cta_in_7d).toBe(3);
     // unique_ips_per_day_avg over 7 days: 3 observed days have ips 2,2,1,
     //   total ips_sum=5, divided by 7 calendar days → round(0.71...) = 1
@@ -274,48 +280,51 @@ describe("buildAuditTrafficStats", () => {
     expect(stats.today.date).toBe(utcToday());
   });
 
-  test("traffic at threshold edges — 40/41/81/100", async () => {
+  test("traffic at threshold edges — 4/5/10/15", async () => {
+    // Audit thresholds: soft=5, strong=10, hard=15 (tightened from 41/81/100).
     const sqlite = new Database(":memory:");
     setupSchema(sqlite);
     const today = utcToday();
     const insert = sqlite.query(
       `INSERT INTO audit_rate_limits (ip, date, count) VALUES (?, ?, ?)`
     );
-    insert.run("ip-40", today, 40);   // below soft
-    insert.run("ip-41", today, 41);   // at soft (inclusive)
-    insert.run("ip-81", today, 81);   // at strong (inclusive)
-    insert.run("ip-100", today, 100); // at hard (inclusive of soft/strong/hard)
-    insert.run("ip-101", today, 101); // beyond hard
+    insert.run("ip-4", today, 4);    // below soft
+    insert.run("ip-5", today, 5);    // at soft (inclusive)
+    insert.run("ip-10", today, 10);  // at strong (inclusive)
+    insert.run("ip-15", today, 15);  // at hard (inclusive of soft/strong/hard)
+    insert.run("ip-16", today, 16);  // beyond hard
 
     const db = d1Shim(sqlite) as Parameters<typeof buildAuditTrafficStats>[0];
     const stats = await buildAuditTrafficStats(db);
 
-    expect(stats.today.calls).toBe(40 + 41 + 81 + 100 + 101);
+    expect(stats.today.calls).toBe(4 + 5 + 10 + 15 + 16);
     expect(stats.today.unique_ips).toBe(5);
-    expect(stats.today.ips_at_soft_cta).toBe(4);     // 41, 81, 100, 101
-    expect(stats.today.ips_at_strong_cta).toBe(3);   // 81, 100, 101
-    expect(stats.today.ips_at_hard_limit).toBe(2);   // 100, 101
+    expect(stats.today.ips_at_soft_cta).toBe(4);     // 5, 10, 15, 16
+    expect(stats.today.ips_at_strong_cta).toBe(3);   // 10, 15, 16
+    expect(stats.today.ips_at_hard_limit).toBe(2);   // 15, 16
   });
 
   test("audit and mcp counters are independent", async () => {
     // Per-channel budgets — heavy MCP user shouldn't lock out CLI, and v.v.
+    // Soft threshold = 5; we use audit=2 (well below) to confirm no leak from
+    // the mcp side where the same IP is past strong-CTA (count=12).
     const sqlite = new Database(":memory:");
     setupSchema(sqlite);
     const today = utcToday();
     sqlite
       .query(`INSERT INTO mcp_rate_limits (ip, date, count) VALUES (?, ?, ?)`)
-      .run("shared-ip", today, 99); // heavy MCP
+      .run("shared-ip", today, 12); // heavy MCP (≥strong)
     sqlite
       .query(`INSERT INTO audit_rate_limits (ip, date, count) VALUES (?, ?, ?)`)
-      .run("shared-ip", today, 5); // light audit
+      .run("shared-ip", today, 2); // light audit (below soft)
 
     const db = d1Shim(sqlite) as Parameters<typeof buildAuditTrafficStats>[0];
     const auditStats = await buildAuditTrafficStats(db);
-    expect(auditStats.today.calls).toBe(5);
+    expect(auditStats.today.calls).toBe(2);
     expect(auditStats.today.ips_at_soft_cta).toBe(0);
 
     const mcpStats = await buildMcpTrafficStats(db);
-    expect(mcpStats.today.calls).toBe(99);
+    expect(mcpStats.today.calls).toBe(12);
     expect(mcpStats.today.ips_at_strong_cta).toBe(1);
   });
 
@@ -344,29 +353,43 @@ describe("buildOrganicMcpKeyStats", () => {
   });
 
   test("mix of internal + organic with default patterns", async () => {
+    // 2026-06-13 expansion: the defaults widened from +alias-only patterns to
+    // full-domain wildcards on operator-owned domains. Plain pico@, hakon@,
+    // *@getcommit.dev, *@pico.amdal.dev, *@example.invalid all now correctly
+    // classify as internal_test. hawkaamdal@gmail.com is the one third-party
+    // literal — gmail.com cannot be wildcarded (rate-limit bypass vector).
     const sqlite = new Database(":memory:");
     setupSchema(sqlite);
     const insert = sqlite.query(
       `INSERT INTO api_keys (id, email, source) VALUES (?, ?, 'mcp-soft-cta')`
     );
-    insert.run("k1", "pico+test1@amdal.dev");                 // internal (domain-anchored)
-    insert.run("k2", "hawkaa+probe@amdal.dev");               // internal (domain-anchored)
-    insert.run("k3", "test-evaluator-probe@example.com");     // internal (literal)
+    insert.run("k1", "pico+test1@amdal.dev");                 // internal (*@amdal.dev)
+    insert.run("k2", "hawkaa+probe@amdal.dev");               // internal (*@amdal.dev)
+    insert.run("k3", "test-evaluator-probe@example.com");     // internal (*@example.com)
     insert.run("k4", "real-user@stranger.com");               // organic
     insert.run("k5", "pico+spoof@evil.com");                  // organic — cross-domain spoof
                                                               // would have leaked as internal
                                                               // under the old `pico+*@*` pattern
+    insert.run("k6", "pico@amdal.dev");                       // internal — plain @amdal.dev
+                                                              // (would have been organic under
+                                                              // the old +alias-only patterns)
+    insert.run("k7", "hawkaamdal@gmail.com");                 // internal — literal Håkon Gmail
+    insert.run("k8", "noreply@getcommit.dev");                // internal — Håkon-owned domain
+    insert.run("k9", "anyone@example.invalid");               // internal — RFC 2606 reserved
 
     const db = d1Shim(sqlite) as Parameters<typeof buildOrganicMcpKeyStats>[0];
     const stats = await buildOrganicMcpKeyStats(db, undefined);
 
-    expect(stats.total_with_source_mcp).toBe(5);
-    expect(stats.internal_test).toBe(3);
-    expect(stats.organic).toBe(2);
+    expect(stats.total_with_source_mcp).toBe(9);
+    expect(stats.internal_test).toBe(7);
+    expect(stats.organic).toBe(2); // k4 stranger.com + k5 evil.com
     expect(stats.internal_test_patterns).toEqual([
-      "pico+*@amdal.dev",
-      "hawkaa+*@amdal.dev",
-      "test-evaluator-probe@example.com",
+      "*@amdal.dev",
+      "*@pico.amdal.dev",
+      "*@getcommit.dev",
+      "*@example.com",
+      "*@example.invalid",
+      "hawkaamdal@gmail.com",
     ]);
   });
 
@@ -415,24 +438,42 @@ describe("buildOrganicMcpKeyStats", () => {
     // Guardrail: the default constant in worker.ts and the default in
     // wrangler.toml must stay in sync, otherwise a missing env var binding
     // silently flips ALL internal keys into the "organic" bucket.
-    // Domain-anchored (NOT `*@*`) — keeps an attacker from spoofing
-    // `pico+x@evil.com` to (a) inflate /api/keys/stats internal_test count
-    // and (b) bypass the /api/keys/create IP rate limit (2026-06-12 add).
+    // Domain-anchored — every wildcard pattern targets an operator-owned or
+    // RFC 2606 reserved domain. The single gmail.com entry is a LITERAL —
+    // wildcarding gmail.com would open the /api/keys/create rate-limit bypass
+    // to any attacker with a Gmail account.
     expect(DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS).toBe(
-      "pico+*@amdal.dev,hawkaa+*@amdal.dev,test-evaluator-probe@example.com"
+      "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com"
     );
   });
 
-  test("default pattern rejects cross-domain spoof of `pico+` prefix", () => {
-    // Earlier `pico+*@*` would classify `pico+anything@evil.com` as
-    // internal-test. After narrowing to amdal.dev, the spoof goes back to
-    // organic — which is also the rate-limit-bypass guard at /api/keys/create.
+  test("default pattern rejects cross-domain spoofs but accepts all operator-owned addresses", () => {
+    // Two properties this test pins:
+    //   (1) wildcards never apply to third-party domains (no @evil.com /
+    //       @gmail.com spoof can claim internal-test status and bypass
+    //       /api/keys/create rate-limit)
+    //   (2) plain (non-+aliased) operator-owned addresses DO classify as
+    //       internal — closes the 2026-06-13 gap where pico@amdal.dev and
+    //       hawkaamdal@gmail.com were leaking into the "organic" count.
     const pats = parseEmailPatterns(DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS);
+    // Operator-owned, +aliased — must still match (was the only path that worked before)
     expect(isInternalTestEmail("pico+dogfood@amdal.dev", pats)).toBe(true);
     expect(isInternalTestEmail("hawkaa+test@amdal.dev", pats)).toBe(true);
+    // Operator-owned, plain — new positive coverage (was leaking as organic)
+    expect(isInternalTestEmail("pico@amdal.dev", pats)).toBe(true);
+    expect(isInternalTestEmail("hakon@amdal.dev", pats)).toBe(true);
+    expect(isInternalTestEmail("hawkaamdal@gmail.com", pats)).toBe(true);
+    expect(isInternalTestEmail("noreply@getcommit.dev", pats)).toBe(true);
+    expect(isInternalTestEmail("anything@pico.amdal.dev", pats)).toBe(true);
+    expect(isInternalTestEmail("anyone@example.invalid", pats)).toBe(true);
+    // Cross-domain spoof — must NOT match (rate-limit bypass guard)
     expect(isInternalTestEmail("pico+x@evil.com", pats)).toBe(false);
     expect(isInternalTestEmail("pico+anything@gmail.com", pats)).toBe(false);
     expect(isInternalTestEmail("hawkaa+x@evil.com", pats)).toBe(false);
+    expect(isInternalTestEmail("attacker@gmail.com", pats)).toBe(false);
+    // Cousin-domain spoofs — must NOT match (no prefix/suffix wildcard creep)
+    expect(isInternalTestEmail("anyone@amdal.dev.evil.com", pats)).toBe(false);
+    expect(isInternalTestEmail("anyone@notamdal.dev", pats)).toBe(false);
   });
 
   test("missing api_keys table → empty stats, no throw", async () => {

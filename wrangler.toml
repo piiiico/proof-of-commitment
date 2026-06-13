@@ -11,17 +11,30 @@ ENVIRONMENT = "production"
 # by /api/keys/create (2026-06-12) to bypass the 3-keys-per-IP-per-day rate
 # limit so welcome-email body dogfooding works without burning rate budget.
 #
-# Patterns are anchored to safe domains only:
-#   amdal.dev  — Pico owns it; *dogfood* / *probe* prefixes are signal of
-#                an internal test run, never a real signup.
-#   example.com — RFC 2606 reserved; no real user signs up here.
-# Do NOT use `*@*` or `*dogfood*@*` — an attacker could spoof emails on a
-# third-party domain to bypass the rate limit. Domain anchors close that hole.
+# Patterns are anchored to operator-owned or RFC 2606 reserved domains only:
+#   *@amdal.dev          — Pico-owned via Migadu (catch-all forwards to
+#                          pico@amdal.dev). All +alias prefixes (pico+, hawkaa+,
+#                          *dogfood*, *probe*) plus plain pico@/hakon@ land here.
+#   *@pico.amdal.dev     — subdomain of amdal.dev.
+#   *@getcommit.dev      — Håkon-owned via Cloudflare Email Routing (catch-all
+#                          → pico@amdal.dev as of 2026-06-03).
+#   *@example.com        — RFC 2606 reserved.
+#   *@example.invalid    — RFC 2606 reserved.
+#   hawkaamdal@gmail.com — Håkon's personal Gmail (LITERAL — cannot wildcard
+#                          gmail.com; any other Håkon Gmail address needs to be
+#                          added explicitly).
+# Do NOT use `*@*` or `*@gmail.com` — an attacker could spoof emails on a
+# third-party domain to bypass the rate limit. Operator-owned-domain anchors
+# close that hole.
 # Curatable without code redeploy: edit here, redeploy worker (no code change).
-# 2026-06-13 expansion: discovered dogfood-test-2026-06-11@example.com +
-# commit-dogfood-noplus-2026-06-11@amdal.dev were counted as organic by the
-# narrower previous list. Real 7d organic = 0 once those are filtered.
-INTERNAL_TEST_EMAIL_PATTERNS = "pico+*@amdal.dev,hawkaa+*@amdal.dev,*dogfood*@amdal.dev,*probe*@amdal.dev,*@example.com"
+# 2026-06-13 widening: 2026-06-13 19:12Z probe (Stripe ledger=$0, /api/keys/stats
+# reported 20 organic out of 111 total). Domain breakdown showed 86 amdal.dev
+# + 17 example.com + 2 getcommit.dev + 1 pico.amdal.dev + 1 example.invalid +
+# 2 gmail.com (Håkon) + 2 test.com. Under old narrower patterns, plain pico@,
+# hakon@, hawkaamdal@gmail.com, every *@getcommit.dev / *@pico.amdal.dev /
+# *@example.invalid were counted as organic. Widening collapses organic to its
+# true value (≤5 — bounded above by test.com + any non-Håkon gmail).
+INTERNAL_TEST_EMAIL_PATTERNS = "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com"
 
 [[d1_databases]]
 binding = "DB"

@@ -3582,18 +3582,30 @@ export const AUDIT_TRAFFIC_THRESHOLDS = {
   hard_limit: AUDIT_HARD_LIMIT,
 } as const;
 
-// Domain-anchored — `*` in the local-part only, fixed domain. Earlier (`pico+*@*`)
-// would classify `pico+anything@evil.com` as internal-test, letting an attacker
-// spoof the dogfood pattern from any domain — both polluting /api/keys/stats
-// "organic" counts AND (after the 2026-06-12 ship below) bypassing the
-// 3-keys-per-IP-per-day rate limit on /api/keys/create. Anchoring to amdal.dev
-// closes both leaks. test-evaluator-probe@example.com kept as the only literal.
+// Domain-anchored — wildcards only in the local-part of operator-owned domains
+// or RFC 2606 reserved domains. Earlier narrower forms (`pico+*@*`) classified
+// `pico+anything@evil.com` as internal-test, letting an attacker spoof the
+// dogfood pattern from any domain — both polluting /api/keys/stats "organic"
+// counts AND bypassing the 3-keys-per-IP-per-day rate limit on /api/keys/create.
+// 2026-06-13 probe (Stripe ledger=$0, 91/111 keys internal under old pattern but
+// "organic 20" still counted plain pico@amdal.dev / hakon@amdal.dev / catch-all
+// @getcommit.dev / Håkon's gmail) showed the old +alias-only patterns missed
+// every non-+suffixed Håkon-controlled address. Widening to full-domain wildcards
+// on operator-owned domains catches them all; the operator-owned-domain
+// requirement keeps the rate-limit bypass safe (no third-party email registration
+// at amdal.dev / pico.amdal.dev / getcommit.dev is possible — all three route
+// to Pico-controlled mailboxes via Migadu/Cloudflare Email Routing).
 export const DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS =
   // Kept in lock-step with wrangler.toml [vars] INTERNAL_TEST_EMAIL_PATTERNS.
-  // amdal.dev (Pico-owned) and example.com (RFC 2606 reserved) are the only
-  // safe domains to anchor wildcard patterns against — see wrangler.toml for
-  // the security rationale.
-  "pico+*@amdal.dev,hawkaa+*@amdal.dev,*dogfood*@amdal.dev,*probe*@amdal.dev,*@example.com";
+  // Safe-to-wildcard domains:
+  //   *@amdal.dev          — Pico-owned via Migadu (catch-all → pico@amdal.dev)
+  //   *@pico.amdal.dev     — subdomain of amdal.dev (same ownership)
+  //   *@getcommit.dev      — Håkon-owned via Cloudflare Email Routing
+  //   *@example.com        — RFC 2606 reserved (cannot be registered)
+  //   *@example.invalid    — RFC 2606 reserved
+  // Specific Håkon-controlled third-party literal (cannot wildcard gmail.com):
+  //   hawkaamdal@gmail.com — Håkon's personal Gmail (per workspace standing facts)
+  "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com";
 
 export type McpTrafficStats = {
   today: {
