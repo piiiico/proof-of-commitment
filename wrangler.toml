@@ -6,14 +6,22 @@ compatibility_date = "2024-12-01"
 ENVIRONMENT = "production"
 # Comma-separated glob patterns (use `*` for wildcard) of email addresses that
 # count as internal test signups, not organic ones. Used by /api/keys/stats to
-# split source=mcp-soft-cta key counts into "organic" vs "internal_test" so we
-# can tell whether v1.14 MCP soft-CTA is actually converting external traffic.
-# ALSO used by /api/keys/create (2026-06-12) to bypass the 3-keys-per-IP-per-day
-# rate limit when the signup email matches one of these patterns — unblocks
-# welcome-email body dogfooding. Domain-anchored (NOT `*@*`) so an attacker
-# can't spoof `pico+x@evil.com` to inflate the dogfood lane.
+# split EVERY headline count (total / today / 24h / 7d) into "organic" vs
+# "internal_test" so dashboards don't read probe traffic as growth. Also used
+# by /api/keys/create (2026-06-12) to bypass the 3-keys-per-IP-per-day rate
+# limit so welcome-email body dogfooding works without burning rate budget.
+#
+# Patterns are anchored to safe domains only:
+#   amdal.dev  — Pico owns it; *dogfood* / *probe* prefixes are signal of
+#                an internal test run, never a real signup.
+#   example.com — RFC 2606 reserved; no real user signs up here.
+# Do NOT use `*@*` or `*dogfood*@*` — an attacker could spoof emails on a
+# third-party domain to bypass the rate limit. Domain anchors close that hole.
 # Curatable without code redeploy: edit here, redeploy worker (no code change).
-INTERNAL_TEST_EMAIL_PATTERNS = "pico+*@amdal.dev,hawkaa+*@amdal.dev,test-evaluator-probe@example.com"
+# 2026-06-13 expansion: discovered dogfood-test-2026-06-11@example.com +
+# commit-dogfood-noplus-2026-06-11@amdal.dev were counted as organic by the
+# narrower previous list. Real 7d organic = 0 once those are filtered.
+INTERNAL_TEST_EMAIL_PATTERNS = "pico+*@amdal.dev,hawkaa+*@amdal.dev,*dogfood*@amdal.dev,*probe*@amdal.dev,*@example.com"
 
 [[d1_databases]]
 binding = "DB"

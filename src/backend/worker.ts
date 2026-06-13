@@ -3578,7 +3578,11 @@ export const AUDIT_TRAFFIC_THRESHOLDS = {
 // 3-keys-per-IP-per-day rate limit on /api/keys/create. Anchoring to amdal.dev
 // closes both leaks. test-evaluator-probe@example.com kept as the only literal.
 export const DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS =
-  "pico+*@amdal.dev,hawkaa+*@amdal.dev,test-evaluator-probe@example.com";
+  // Kept in lock-step with wrangler.toml [vars] INTERNAL_TEST_EMAIL_PATTERNS.
+  // amdal.dev (Pico-owned) and example.com (RFC 2606 reserved) are the only
+  // safe domains to anchor wildcard patterns against — see wrangler.toml for
+  // the security rationale.
+  "pico+*@amdal.dev,hawkaa+*@amdal.dev,*dogfood*@amdal.dev,*probe*@amdal.dev,*@example.com";
 
 export type McpTrafficStats = {
   today: {
