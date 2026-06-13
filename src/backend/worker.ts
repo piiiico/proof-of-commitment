@@ -2025,29 +2025,64 @@ function generatePackageOgSvg(opts: {
 }
 
 /**
+ * Word-wrap helper: split text into lines of at most maxChars characters.
+ */
+function wrapText(text: string, maxChars: number): string[] {
+  const words = text.split(" ");
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? current + " " + word : word;
+    if (candidate.length > maxChars && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+/**
  * Generate a 1200×630 SVG OG card for a blog post.
+ * Width-aware: tries 1-line at 72px → 2-line at 64px → 3-line at 52px,
+ * picking the first font size where all lines fit the 1040px usable canvas
+ * (1200px − 80px left margin − 80px right margin).
+ * Char thresholds assume bold sans-serif ~0.55 × fontSize avg char width.
  */
 function generateBlogOgSvg(opts: { title: string; date?: string }): string {
   const { title, date } = opts;
 
-  // Wrap title text (simple word-wrap at ~40 chars)
-  const words = title.split(" ");
-  const lines: string[] = [];
-  let current = "";
-  for (const word of words) {
-    if ((current + " " + word).length > 42) {
-      if (current) lines.push(current);
-      current = word;
-    } else {
-      current = current ? current + " " + word : word;
+  const MAX_LINE_PX = 1040; // 1200 canvas − 80px margins each side
+
+  // Try configs in order; pick first where wrapped lines ≤ maxLines
+  const configs = [
+    { fontSize: 72, maxChars: 27, maxLines: 1 },
+    { fontSize: 64, maxChars: 31, maxLines: 2 },
+    { fontSize: 52, maxChars: 38, maxLines: 3 },
+  ] as const;
+
+  let displayLines: string[] = [];
+  let fontSize = 52;
+
+  for (const cfg of configs) {
+    const wrapped = wrapText(title, cfg.maxChars);
+    if (wrapped.length <= cfg.maxLines) {
+      displayLines = wrapped;
+      fontSize = cfg.fontSize;
+      break;
     }
   }
-  if (current) lines.push(current);
-  // Max 3 lines; truncate rest. Use "..." not "…" — see generatePackageOgSvg note.
-  const displayLines = lines.slice(0, 3);
-  if (lines.length > 3) displayLines[2] = displayLines[2].slice(0, 37) + "...";
 
-  const fontSize = displayLines.length === 1 ? 72 : displayLines.length === 2 ? 64 : 52;
+  // Fallback: force 3-line at 52px with truncation for very long titles
+  if (displayLines.length === 0) {
+    const wrapped = wrapText(title, 38);
+    displayLines = wrapped.slice(0, 3);
+    if (wrapped.length > 3) displayLines[2] = displayLines[2].slice(0, 35) + "...";
+    fontSize = 52;
+  }
+
   const lineH = fontSize * 1.2;
   const totalH = displayLines.length * lineH;
   const startY = (630 - totalH) / 2 + fontSize;
@@ -2056,10 +2091,15 @@ function generateBlogOgSvg(opts: { title: string; date?: string }): string {
   const H = 630;
 
   const textLines = displayLines
-    .map(
-      (l, i) =>
-        `<text x="80" y="${startY + i * lineH}" font-family="sans-serif" font-size="${fontSize}" fill="#ffffff" font-weight="700" letter-spacing="-1">${escSvg(l)}</text>`
-    )
+    .map((l, i) => {
+      // Safety net: if estimated width exceeds canvas, compress spacing
+      const estimatedPx = l.length * fontSize * 0.55;
+      const textLengthAttr =
+        estimatedPx > MAX_LINE_PX
+          ? ` textLength="${MAX_LINE_PX}" lengthAdjust="spacingAndGlyphs"`
+          : "";
+      return `<text x="80" y="${startY + i * lineH}" font-family="sans-serif" font-size="${fontSize}" fill="#ffffff" font-weight="700" letter-spacing="-1"${textLengthAttr}>${escSvg(l)}</text>`;
+    })
     .join("\n  ");
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
@@ -3853,6 +3893,55 @@ app.get("/api/keys/stats", async (c) => {
     sourceBreakdown[row.source] = row.count;
   }
 
+  // Organic vs internal-test split for headline counts. Discovered 2026-06-13
+  // dogfooding the daily Telegram report: every recent "growth spike" entry
+  // (+767% in 24h) was pico+*@amdal.dev probe traffic from my own sessions,
+  // not real users. Raw counts kept above for back-compat; `organic` is what
+  // every dashboard should read by default. Filtering uses the same
+  // INTERNAL_TEST_EMAIL_PATTERNS env var as buildOrganicMcpKeyStats — single
+  // source of truth for what counts as a probe.
+  const orgCompiled = parseEmailPatterns(
+    c.env.INTERNAL_TEST_EMAIL_PATTERNS ?? DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS
+  );
+  const orgPatterns = (c.env.INTERNAL_TEST_EMAIL_PATTERNS ?? DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS)
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+
+  // Single query, client-side bucket. ~100 rows; cheap. Avoids re-implementing
+  // glob matching in SQL where it would diverge from parseEmailPatterns.
+  let organicTotal = 0;
+  let organicToday = 0;
+  let organicLast24h = 0;
+  let organicLast7d = 0;
+  let internalTotal = 0;
+  try {
+    const orgRows = await c.env.DB.prepare(
+      `SELECT email, created_at FROM api_keys WHERE revoked_at IS NULL`
+    ).all<{ email: string; created_at: string }>();
+    const nowMs = Date.now();
+    const cutoff24h = nowMs - 24 * 3600 * 1000;
+    const cutoff7d = nowMs - 7 * 24 * 3600 * 1000;
+    const todayUtc = new Date(nowMs).toISOString().slice(0, 10);
+    for (const r of orgRows.results ?? []) {
+      const isInternal = isInternalTestEmail(r.email, orgCompiled);
+      if (isInternal) {
+        internalTotal++;
+        continue;
+      }
+      organicTotal++;
+      // created_at is sqlite UTC "YYYY-MM-DD HH:MM:SS"; parse defensively.
+      const ts = Date.parse(r.created_at.replace(" ", "T") + "Z");
+      if (r.created_at.startsWith(todayUtc)) organicToday++;
+      if (!Number.isNaN(ts) && ts >= cutoff24h) organicLast24h++;
+      if (!Number.isNaN(ts) && ts >= cutoff7d) organicLast7d++;
+    }
+  } catch {
+    // Defensive: if SELECT fails, organic_* are left at 0 and the response
+    // still serves the raw counts — the dashboard reverts to overestimating
+    // rather than crashing.
+  }
+
   // MCP traffic + organic-key splits. Wrapped in try/catch so an aggregation
   // bug or missing mcp_rate_limits table never breaks the endpoint. If MCP
   // metrics fail, mcp_traffic is returned as null with an error string for
@@ -3886,6 +3975,17 @@ app.get("/api/keys/stats", async (c) => {
     keys_today: todayRow?.count ?? 0,
     keys_last_24h: last24hRow?.count ?? 0,
     keys_last_7d: last7dRow?.count ?? 0,
+    // Organic = excludes pico+*@amdal.dev / hawkaa+*@amdal.dev / test probes.
+    // This is what should drive every "growth" claim. Raw counts above stay
+    // for back-compat with any consumer that explicitly opts into raw.
+    organic: {
+      total: organicTotal,
+      today: organicToday,
+      last_24h: organicLast24h,
+      last_7d: organicLast7d,
+    },
+    internal_test_total: internalTotal,
+    internal_test_patterns: orgPatterns,
     source_breakdown: sourceBreakdown,
     recent: (recentRows.results ?? []).map((r) => ({
       key_prefix: r.key_prefix,
@@ -3893,6 +3993,7 @@ app.get("/api/keys/stats", async (c) => {
       tier: r.tier,
       source: r.source,
       created_at: r.created_at,
+      is_internal_test: isInternalTestEmail(r.email, orgCompiled),
     })),
     mcp_traffic: mcpTraffic,
     mcp_traffic_error: mcpTrafficError,
