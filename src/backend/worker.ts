@@ -3340,6 +3340,12 @@ Commit · supply-chain risk scoring · getcommit.dev`;
         },
         body: JSON.stringify({
           from: "Commit <noreply@getcommit.dev>",
+          // reply_to: prospects who reply to the welcome email (highest reply-
+          // intent moment — they just saw CRITICAL packages and signed up)
+          // would otherwise land at noreply@getcommit.dev with no inbound MX.
+          // Route to pico@amdal.dev so prospect questions ("can I get the
+          // Developer tier?", "do you support enterprise?") reach a human.
+          reply_to: "pico@amdal.dev",
           to: [email],
           subject: emailSubject,
           text: emailBody,
@@ -4465,6 +4471,10 @@ Reply "unsubscribe" to stop receiving these reports.`;
         },
         body: JSON.stringify({
           from: "Commit <noreply@getcommit.dev>",
+          // reply_to: anonymous /api/subscribe risk-report recipients reply
+          // intent ("how do I upgrade?", "scan our private repos?") would
+          // otherwise vanish at noreply@. Route to a real human inbox.
+          reply_to: "pico@amdal.dev",
           to: [email],
           subject: emailSubject,
           text: emailBody,
@@ -6526,6 +6536,10 @@ Unsubscribe: ${unsubLink}`;
         },
         body: JSON.stringify({
           from: "Commit <noreply@getcommit.dev>",
+          // reply_to: weekly watchlist digest is the recurring touchpoint
+          // most likely to surface "we should upgrade" / "can you scan X" —
+          // route prospect replies to a real human inbox.
+          reply_to: "pico@amdal.dev",
           to: [row.email],
           subject,
           text: body,
@@ -6705,6 +6719,10 @@ Manage watchlist: run \`npx proof-of-commitment watchlist\` in your terminal, or
         },
         body: JSON.stringify({
           from: "Commit <noreply@getcommit.dev>",
+          // reply_to: this is the "Up to 15 packages" Pro upsell nudge —
+          // the single highest reply-intent transactional email Commit
+          // sends. Replies were silently lost at noreply@.
+          reply_to: "pico@amdal.dev",
           to: [row.email],
           subject,
           text: body,
@@ -6988,6 +7006,10 @@ async function runProMonitoringScan(env: Bindings): Promise<ProScanResult> {
         headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           from: "Commit <noreply@getcommit.dev>",
+          // reply_to: Pro tier weekly digest — paying customer replies
+          // (enterprise pricing, support, custom packages) route to a
+          // human, not noreply@.
+          reply_to: "pico@amdal.dev",
           to: [recipient],
           subject,
           text: lines.join("\n"),
@@ -7947,6 +7969,10 @@ Commit · getcommit.dev`;
           },
           body: JSON.stringify({
             from: "Commit <noreply@getcommit.dev>",
+            // reply_to: paid-tier API key delivery is the moment a brand-
+            // new paying customer is most likely to ask onboarding
+            // questions — route replies to a human inbox, not noreply@.
+            reply_to: "pico@amdal.dev",
             to: [email],
             subject: `Your Commit ${tierLabel} API Key`,
             text: emailText,

@@ -440,3 +440,79 @@ describe("response payload echoes watched_packages", () => {
     expect(segment).toContain("watched_packages: seededPackages");
   });
 });
+
+/**
+ * Reply-To routing contract.
+ *
+ * Every outbound Commit email shipped from "Commit <noreply@getcommit.dev>"
+ * (or any "noreply@") MUST set reply_to to a real human inbox. The send
+ * domain has no inbound MX — replies to noreply@ silently vanish. The
+ * highest-reply-intent moments (welcome email post-signup, paid-tier key
+ * delivery, weekly Pro digest) were the silent-loss surface before
+ * 2026-06-13 17:30Z.
+ *
+ * Policy:
+ *  - "Commit <noreply@...>" sends → reply_to: "pico@amdal.dev" (Pico
+ *    operates the Commit product, reads the inbox).
+ *  - "Håkon at Commit <noreply@...>" sends → reply_to:
+ *    "hawkaamdal@gmail.com" (personal Håkon touch — abandoned-checkout
+ *    follow-up). Exempt because the address is signed Håkon.
+ *
+ * Regression model: future email-sending code paths copy an existing
+ * send block as a template; if the template lacks reply_to, the silent-
+ * loss surface re-grows. This test pins every from-noreply send to the
+ * routing policy at text-of-worker.ts level.
+ */
+describe("reply-to routing on noreply@ sends", () => {
+  function findAllSendBlocks(): Array<{ from: string; replyTo: string | null; lineNo: number }> {
+    const blocks: Array<{ from: string; replyTo: string | null; lineNo: number }> = [];
+    const re = /from:\s*"([^"]*noreply@[^"]+)"/g;
+    let match;
+    while ((match = re.exec(WORKER_SOURCE)) !== null) {
+      // Look in the next ~400 chars for either a reply_to or a closing }),
+      const after = WORKER_SOURCE.slice(match.index, match.index + 600);
+      const closeIdx = after.indexOf("}),");
+      const window = closeIdx > -1 ? after.slice(0, closeIdx) : after;
+      const rt = window.match(/reply_to:\s*"([^"]+)"/);
+      const lineNo = WORKER_SOURCE.slice(0, match.index).split("\n").length;
+      blocks.push({ from: match[1], replyTo: rt ? rt[1] : null, lineNo });
+    }
+    return blocks;
+  }
+
+  const SEND_BLOCKS = findAllSendBlocks();
+
+  test("at least 6 noreply@ send blocks exist (regression guard — count should not silently shrink)", () => {
+    // 6 product sends (Commit) + 1 personal-Håkon (abandoned-checkout) = 7.
+    // If count drops below 6, a send was removed (intentional?) or pattern shifted.
+    expect(SEND_BLOCKS.length).toBeGreaterThanOrEqual(6);
+  });
+
+  test("every noreply@ send sets a reply_to", () => {
+    const missing = SEND_BLOCKS.filter((b) => b.replyTo === null);
+    if (missing.length > 0) {
+      const lines = missing.map((b) => `  line ${b.lineNo}: from=${b.from}`).join("\n");
+      throw new Error(
+        `noreply@ send(s) without reply_to (replies would vanish):\n${lines}\n` +
+          `Add reply_to: "pico@amdal.dev" (or "hawkaamdal@gmail.com" for "Håkon at Commit" sends).`
+      );
+    }
+    expect(missing).toHaveLength(0);
+  });
+
+  test("'Commit <noreply@...>' sends route to pico@amdal.dev", () => {
+    const commitSends = SEND_BLOCKS.filter((b) => b.from === "Commit <noreply@getcommit.dev>");
+    expect(commitSends.length).toBeGreaterThanOrEqual(6);
+    for (const block of commitSends) {
+      expect(block.replyTo).toBe("pico@amdal.dev");
+    }
+  });
+
+  test("'Håkon at Commit <noreply@...>' sends route to hawkaamdal@gmail.com (personal touch)", () => {
+    const hakonSends = SEND_BLOCKS.filter((b) => b.from === "Håkon at Commit <noreply@getcommit.dev>");
+    expect(hakonSends.length).toBeGreaterThanOrEqual(1);
+    for (const block of hakonSends) {
+      expect(block.replyTo).toBe("hawkaamdal@gmail.com");
+    }
+  });
+});
