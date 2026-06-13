@@ -34,6 +34,23 @@ jobs:
             echo "SKIP_PUBLISH=false" >> $GITHUB_ENV
           fi
 
+      - name: Docs ↔ CLI verb-parity gate
+        # Blocks publish when any doc file (landing pages, READMEs) advertises
+        # a CLI verb that the current npm-package/index.js doesn't recognize.
+        # Prevents the regression where an unknown verb is silently treated as
+        # a package name — scoring the wrong package and wasting user quota.
+        # Known regressions caught by this gate:
+        #   - v1.29.0: `npx proof-of-commitment audit` scored npmjs.com/audit
+        #   - 2026-06-12: `npx proof-of-commitment poc init` used `poc` as pkg arg
+        # Single source of truth: verbs derived from npm-package/index.js at runtime.
+        if: env.SKIP_PUBLISH == 'false'
+        run: |
+          # commit-landing-v2 may not be checked out in all CI setups — warn but don't block
+          bun scripts/check-advertised-commands.ts || {
+            echo "::warning::Docs ↔ CLI verb-parity gate failed — one or more advertised verbs are not recognized by the CLI."
+            exit 1
+          }
+
       - name: Funnel smoke gate
         # Blocks publish when any key funnel path is destination-broken.
         # Catches the same-class bug shipped in v1.20.0 (missing auth header → 0 conversions)
