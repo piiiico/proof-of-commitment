@@ -150,18 +150,29 @@ jobs:
           echo "server.json now at version ${VERSION}"
           cat server.json | grep version
 
+      - name: Check if already published to MCP Registry
+        # Uses the public registry API to skip if this version was already published
+        # (prevents false failures when a tag push triggers multiple workflow runs)
+        run: |
+          VERSION=$(node -e "console.log(require('./npm-package/package.json').version)")
+          SERVER_NAME=$(node -e "console.log(require('./server.json').name)")
+          ENCODED_NAME=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$SERVER_NAME")
+          URL="https://registry.modelcontextprotocol.io/v0.1/servers/${ENCODED_NAME}/versions/${VERSION}"
+          echo "Checking registry: $URL"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL")
+          echo "Registry HTTP status: ${HTTP_CODE}"
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "Version ${VERSION} already published to MCP Registry — skipping (not an error)"
+            echo "SKIP_MCP_PUBLISH=true" >> $GITHUB_ENV
+          else
+            echo "Version ${VERSION} not yet in MCP Registry — will publish"
+            echo "SKIP_MCP_PUBLISH=false" >> $GITHUB_ENV
+          fi
+
       - name: Validate server.json
+        if: env.SKIP_MCP_PUBLISH == 'false'
         run: mcp-publisher validate
 
       - name: Publish to MCP Registry
-        run: |
-          OUTPUT=$(mcp-publisher publish 2>&1)
-          EXIT_CODE=$?
-          echo "$OUTPUT"
-          if [ $EXIT_CODE -ne 0 ]; then
-            if echo "$OUTPUT" | grep -qi "duplicate version\|already published\|cannot publish duplicate"; then
-              echo "Version already published to MCP Registry — skipping (not an error)"
-              exit 0
-            fi
-            exit $EXIT_CODE
-          fi
+        if: env.SKIP_MCP_PUBLISH == 'false'
+        run: mcp-publisher publish
