@@ -1,0 +1,62 @@
+name: test
+
+# Runs the contract test suite on every push to main + every PR.
+#
+# Why this exists
+# ───────────────
+# Without this gate, contract tests in /test sat green on local machines
+# while quietly going red after commits to main. Concretely:
+#
+#   - 7 of 28 tests in keys-stats.test.ts went red on 2026-06-10 (commit
+#     39e1923) when DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS and threshold
+#     values changed in worker.ts without updating the test contract.
+#   - The breakage sat unnoticed for 3 days until a manual `bun test`
+#     run on 2026-06-13 surfaced it.
+#   - publish.yml only triggers on `tags: v*` and is npm-publish-only — it
+#     never runs `bun test`, so the publish path was not a safety net.
+#   - Same-day brittle version-pin tests in cli-soft-cta-gate.test.ts +
+#     cli-watch-seed-gate.test.ts went red when CLI bumped past their
+#     hardcoded version asserts — fixed alongside this workflow by
+#     replacing static pins with semver-gte + banner/package parity.
+#
+# What this gates
+# ───────────────
+# Every commit to main (and every PR proposing one) runs `bun test test/*.test.ts`
+# against the same files developers run locally. A red run blocks the
+# merge / surfaces the regression in the GitHub UI.
+#
+# Scope
+# ─────
+# Limited to test/*.test.ts so the irrelevant `contracts/lib/openzeppelin-*`
+# Hardhat tests (which require `hardhat` and aren't part of this project's
+# contract surface) don't false-fail CI.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  contract-tests:
+    name: bun test (contract suite)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        # Pulls in @types/bun + @types/chrome so the TypeScript test files
+        # type-check. The test runner itself is built into bun (`bun:test`).
+        run: bun install --frozen-lockfile || bun install
+
+      - name: Run contract tests
+        # Limited to test/*.test.ts intentionally — see header comment.
+        run: bun test test/*.test.ts

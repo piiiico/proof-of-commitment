@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.31.0
+ * proof-of-commitment CLI v1.31.1
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -878,7 +878,7 @@ async function inlineSignup(results, opts = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.31.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.31.1 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir

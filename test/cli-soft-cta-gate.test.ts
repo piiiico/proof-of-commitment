@@ -184,17 +184,45 @@ describe("Landing-page surface parity (get-started.astro)", () => {
 });
 
 describe("Version pin", () => {
-  test("package.json is at v1.29.2", () => {
-    const pkg = JSON.parse(
-      readFileSync(
-        join(import.meta.dir, "..", "npm-package", "package.json"),
-        "utf-8",
-      ),
-    );
-    expect(pkg.version).toBe("1.29.2");
+  // Parity-based pin: the contract was introduced at v1.29.2.
+  //   1) package.json must be ≥ v1.29.2 (contract still applies)
+  //   2) CLI banner version must equal package.json version (no banner drift)
+  // Replaces the static "must be exactly v1.29.2" pin that silently went red
+  // on every version bump and produced 3+ days of unnoticed red tests
+  // (see 2026-06-13 19:42 reflection — CI doesn't gate `bun test`).
+  const CONTRACT_INTRODUCED_AT = "1.29.2";
+
+  const pkg = JSON.parse(
+    readFileSync(
+      join(import.meta.dir, "..", "npm-package", "package.json"),
+      "utf-8",
+    ),
+  );
+
+  test("package.json is at or after v1.29.2 (contract still applies)", () => {
+    expect(semverGte(pkg.version, CONTRACT_INTRODUCED_AT)).toBe(true);
   });
 
-  test("CLI --help banner advertises v1.29.2", () => {
-    expect(CLI_SOURCE).toContain("proof-of-commitment')} v1.29.2");
+  test("CLI --help banner advertises the package.json version (no drift)", () => {
+    expect(CLI_SOURCE).toContain(
+      `proof-of-commitment')} v${pkg.version}`,
+    );
   });
 });
+
+/**
+ * Local semver-gte without pulling a dep. Handles the simple major.minor.patch
+ * shape used by this package. Pre-release / build tags are not supported here
+ * because this package has never used them; if that changes, swap for `semver`.
+ */
+function semverGte(a: string, b: string): boolean {
+  const pa = a.split(".").map((n) => parseInt(n, 10));
+  const pb = b.split(".").map((n) => parseInt(n, 10));
+  for (let i = 0; i < 3; i++) {
+    const ai = pa[i] ?? 0;
+    const bi = pb[i] ?? 0;
+    if (ai > bi) return true;
+    if (ai < bi) return false;
+  }
+  return true;
+}
