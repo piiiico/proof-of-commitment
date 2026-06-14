@@ -2954,8 +2954,18 @@ app.post("/api/keys/create", async (c) => {
   // 5th occurrence — npm-package release ships a new ref symbol, surfaces
   // downstream don't know about it until dogfood / next session catches it.
   const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade", "cli-soft-cta", "ci-annotation", "readme-monitoring", "npm-readme-monitoring"];
+  // 2026-06-14: per-blog refs (blog-snyk-comparison, blog-stripe-gcs,
+  // blog-drizzle-kit, …) appear in the slug-CTA of every comparison post and
+  // every package-watch CTA without a corresponding hardcoded VALID_SOURCES
+  // entry. Three live blog posts (snyk-vs-chalk top organic blog at 15 visits/7d
+  // per first-party /api/v1/visits/stats) leaked their attribution to source=web
+  // before this. Pattern-admit `blog-<slug>` shape so future comparison posts
+  // self-attribute without a backend deploy. Bounded charset + length keeps
+  // analytics labels well-shaped; the same regex is mirrored in
+  // commit-landing-v2 get-started.astro REF_TO_SOURCE fallthrough.
+  const BLOG_REF_RE = /^blog-[a-z0-9-]{1,40}$/;
   const rawSource = typeof body?.source === "string" ? body.source : "";
-  const source: string = VALID_SOURCES.includes(rawSource) ? rawSource : "web";
+  const source: string = VALID_SOURCES.includes(rawSource) || BLOG_REF_RE.test(rawSource) ? rawSource : "web";
 
   // 2026-06-11: auto-seed watchlist with packages the user just audited.
   // Proposition fix: pre-this, an audit-page signup got a key + welcome email
