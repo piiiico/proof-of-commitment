@@ -59,8 +59,15 @@ jobs:
         # path resolves to a SIBLING of $GITHUB_WORKSPACE — actions/checkout's
         # `path:` parameter is restricted to subpaths of the workspace.
         # Public repo so HTTPS clone needs no auth.
+        #
+        # Branch pin: `master` is the active branch on commit-landing (deploys
+        # come from there; the default `main` branch in GitHub's metadata is
+        # stale legacy and would clone get-started.astro from before the
+        # 78b9292 audit-cli-soft-cta HERO_BY_REF entry that this contract
+        # test pins to).
         run: |
-          git clone --depth=1 https://github.com/piiiico/commit-landing.git \
+          git clone --depth=1 --branch=master \
+            https://github.com/piiiico/commit-landing.git \
             "${GITHUB_WORKSPACE}/../commit-landing-v2"
 
       - name: Set up Bun
