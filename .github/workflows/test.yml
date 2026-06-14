@@ -47,6 +47,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Clone sibling commit-landing repo (cross-repo parity tests)
+        # Several contract tests verify text-level parity between this repo's
+        # CLI/worker source and the landing-page repo (commit-landing-v2 dir
+        # name in /workspace, repo = piiiico/commit-landing on GitHub). They
+        # read `test/../../commit-landing-v2/src/pages/get-started.astro` etc.
+        # at module load — if the file is missing the entire test file fails
+        # to load.
+        #
+        # Cloned via git directly (not actions/checkout) because the test
+        # path resolves to a SIBLING of $GITHUB_WORKSPACE — actions/checkout's
+        # `path:` parameter is restricted to subpaths of the workspace.
+        # Public repo so HTTPS clone needs no auth.
+        run: |
+          git clone --depth=1 https://github.com/piiiico/commit-landing.git \
+            "${GITHUB_WORKSPACE}/../commit-landing-v2"
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
