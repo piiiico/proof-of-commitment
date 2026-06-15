@@ -2976,8 +2976,24 @@ app.post("/api/keys/create", async (c) => {
   // DEVTO_REF_RE — so the next devto-* ref shipping outside parity will
   // surface at build time, not in production analytics weeks later.
   const DEVTO_REF_RE = /^devto-[a-z0-9-]{1,40}$/;
+  // 2026-06-15: outreach-<slug> pattern admit. Convex E1 (sent 11:15Z today)
+  // and e2b E1 (07:12Z) shipped ref=outreach-convex / ref=outreach-e2b in the
+  // /get-started CTA URL inside the cold-email body; without admission both
+  // coerced to source=web — attribution lost on the highest-intent revenue
+  // surface in the funnel (a recipient who clicked from a cold email already
+  // has buyer intent five steps deeper than a random visitor). 9th occurrence
+  // of the "new ref symbol ships, downstream gates do not know about it"
+  // pattern. Same shape as BLOG_REF_RE + DEVTO_REF_RE — readable analytics
+  // labels (api_keys.source = "outreach-convex", "outreach-workos", etc.),
+  // bounded charset, no per-recipient backend redeploy. Mirror in
+  // commit-landing-v2 get-started.astro: (a) form-submit OUTREACH_REF_RE
+  // (source pass-through) and (b) hero IIFE OUTREACH_HERO_FALLBACK
+  // (continuation-of-cold-email frame, not generic web hero). Parity gate
+  // (check-funnel-surface-parity.ts) asserts both sides have OUTREACH_REF_RE
+  // — next outreach ref shipping outside parity surfaces at build time.
+  const OUTREACH_REF_RE = /^outreach-[a-z0-9-]{1,40}$/;
   const rawSource = typeof body?.source === "string" ? body.source : "";
-  const source: string = VALID_SOURCES.includes(rawSource) || BLOG_REF_RE.test(rawSource) || DEVTO_REF_RE.test(rawSource) ? rawSource : "web";
+  const source: string = VALID_SOURCES.includes(rawSource) || BLOG_REF_RE.test(rawSource) || DEVTO_REF_RE.test(rawSource) || OUTREACH_REF_RE.test(rawSource) ? rawSource : "web";
 
   // 2026-06-11: auto-seed watchlist with packages the user just audited.
   // Proposition fix: pre-this, an audit-page signup got a key + welcome email
@@ -3285,8 +3301,16 @@ ${seedScoreLines}
   // instead of "Add a CI gate" (which contradicts a discovery-pitch reader).
   // Pairs with get-started.astro success-note (same fork via isDiscoverySource).
   const DEVTO_SOURCE_RE = /^devto-[a-z0-9-]{1,40}$/;
+  // 2026-06-15: outreach-<slug> sources share intent with blog-* / devto-* /
+  // README sources — recipient came from a discovery channel (cold email with
+  // a pre-seeded watchlist) and just landed on the success page. Welcome
+  // email step 2 routes through the same "score your tree, then watch" path
+  // instead of "Add a CI gate" (which contradicts the email-body promise of
+  // monitoring the packages the email already named). Pairs with
+  // get-started.astro success-note (same fork via isDiscoverySource).
+  const OUTREACH_SOURCE_RE = /^outreach-[a-z0-9-]{1,40}$/;
   const isDiscoverySource = (s: string) =>
-    README_SOURCES_WELCOME.has(s) || BLOG_SOURCE_RE.test(s) || DEVTO_SOURCE_RE.test(s);
+    README_SOURCES_WELCOME.has(s) || BLOG_SOURCE_RE.test(s) || DEVTO_SOURCE_RE.test(s) || OUTREACH_SOURCE_RE.test(s);
   // 2026-06-13: CLI users (audit-cli-429 / audit-baseline / cli / audit-cli /
   // cli-soft-cta) got the generic "Add a CI gate" step 2 in welcome email,
   // contradicting the success-note's CLI-frame `export COMMIT_API_KEY=…`.
