@@ -8107,7 +8107,7 @@ No pressure. A few common questions:
 
 If anything's blocking you, hit reply — I read every email.
 
-Pick up where you left off: https://getcommit.dev/pricing
+Pick up where you left off: https://getcommit.dev/pricing?email=${encodeURIComponent(email)}&utm_campaign=checkout-recovery&utm_source=email&utm_medium=recovery&tier=${tier}
 
 —
 Håkon Åmdal
