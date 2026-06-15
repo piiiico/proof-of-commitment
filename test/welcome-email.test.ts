@@ -516,3 +516,48 @@ describe("reply-to routing on noreply@ sends", () => {
     }
   });
 });
+
+describe("step 2 — blog-* sources route through discovery (not CI gate default)", () => {
+  // 2026-06-15: blog-<slug> sources (blog-aur-1579, blog-redhat-miasma,
+  // blog-ironworm, blog-snyk-comparison, …) come through the same /get-started
+  // ?watch=… funnel as README sources: discovery channel, "I read about an
+  // attack, I want to expand my coverage" intent, and step 1 already shows the
+  // pre-seeded watchlist. The default step 2 ("Add a CI gate") contradicts
+  // that framing — telling someone who just bought monitoring to instead set
+  // up gating misroutes them away from the path they signed up for. Blog
+  // sources must hit the README branch ("Score your tree, then watch the
+  // riskiest package") via the isDiscoverySource helper that unifies both.
+  test("isDiscoverySource helper unifies README + blog-* sources", () => {
+    expect(WORKER_SOURCE).toContain(
+      "const BLOG_SOURCE_RE = /^blog-[a-z0-9-]{1,40}$/",
+    );
+    expect(WORKER_SOURCE).toContain("const isDiscoverySource = (s: string) =>");
+    expect(WORKER_SOURCE).toMatch(
+      /isDiscoverySource\s*=\s*\(s:\s*string\)\s*=>\s*README_SOURCES_WELCOME\.has\(s\)\s*\|\|\s*BLOG_SOURCE_RE\.test\(s\)/,
+    );
+  });
+
+  test("step 2 ternary calls isDiscoverySource(source), not README_SOURCES_WELCOME.has(source)", () => {
+    // Anti-regression: previously the step 2 ternary checked
+    // README_SOURCES_WELCOME.has(source) directly. That left blog-* sources
+    // falling through to the default CI-gate branch. The helper must be the
+    // gate that routes both README and blog families to the same copy.
+    expect(WORKER_SOURCE).toContain(": isDiscoverySource(source)");
+    // The old direct check must NOT come back as the step 2 branch — checking
+    // README_SOURCES_WELCOME.has is only legal *inside* isDiscoverySource.
+    const step2Block = WORKER_SOURCE.slice(
+      WORKER_SOURCE.indexOf("const step2 = CI_SOURCES_WELCOME.has(source)"),
+      WORKER_SOURCE.indexOf("const emailBody = `Your Commit API key"),
+    );
+    expect(step2Block).not.toContain(": README_SOURCES_WELCOME.has(source)");
+  });
+
+  test("blog source regex pattern matches the rawSource validator (line 2966)", () => {
+    // Parity check: the regex used to gate isDiscoverySource must be the same
+    // shape the /api/keys/create validator uses to admit `body.source`.
+    // Drift here would let blog refs be accepted but never matched.
+    // Both should be /^blog-[a-z0-9-]{1,40}$/.
+    const matches = WORKER_SOURCE.match(/\/\^blog-\[a-z0-9-\]\{1,40\}\$\//g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(2);
+  });
+});

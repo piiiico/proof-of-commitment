@@ -3257,6 +3257,17 @@ ${seedScoreLines}
   const HOOK_SOURCES_WELCOME = new Set(["cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook"]);
   const MCP_SOURCES_WELCOME = new Set(["mcp-soft-cta"]);
   const README_SOURCES_WELCOME = new Set(["readme-monitoring", "npm-readme-monitoring"]);
+  // 2026-06-15: blog-<slug> sources (e.g. blog-aur-1579, blog-redhat-miasma,
+  // blog-snyk-comparison) share intent with README sources: the reader came
+  // through a content channel ("I read about an attack, I want to expand
+  // coverage") and just pre-seeded a watchlist via ?watch=… on /get-started.
+  // The default branch's "Add a CI gate" misroutes them — telling someone
+  // who just bought monitoring to instead set up gating contradicts the
+  // pre-seed framing in step 1. Route blog-* through the same "score your
+  // tree, then watch" path README uses. Pairs with get-started.astro's
+  // success-note (same source-aware fork).
+  const BLOG_SOURCE_RE = /^blog-[a-z0-9-]{1,40}$/;
+  const isDiscoverySource = (s: string) => README_SOURCES_WELCOME.has(s) || BLOG_SOURCE_RE.test(s);
   // 2026-06-13: CLI users (audit-cli-429 / audit-baseline / cli / audit-cli /
   // cli-soft-cta) got the generic "Add a CI gate" step 2 in welcome email,
   // contradicting the success-note's CLI-frame `export COMMIT_API_KEY=…`.
@@ -3283,7 +3294,7 @@ ${seedScoreLines}
    "COMMIT_API_KEY": "${apiKey}"
 
    Restart the client. The MCP server bumps to 200 audits/day, bound to you.`
-    : README_SOURCES_WELCOME.has(source)
+    : isDiscoverySource(source)
     ? `2) Score your tree, then watch the riskiest package:
    npx proof-of-commitment login ${apiKey}
    cd your-project
