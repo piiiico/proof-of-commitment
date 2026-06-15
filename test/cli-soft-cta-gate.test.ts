@@ -164,8 +164,9 @@ describe("Landing-page surface parity (get-started.astro)", () => {
   });
 
   test("CLI_SOURCES set includes 'cli-soft-cta' for post-signup view", () => {
+    // cli-watch was added after cli-soft-cta; check for full current set.
     expect(GET_STARTED_SOURCE).toContain(
-      "new Set(['audit-cli-429', 'audit-baseline', 'cli', 'audit-cli', 'cli-soft-cta'])",
+      "new Set(['audit-cli-429', 'audit-baseline', 'cli', 'audit-cli', 'cli-soft-cta', 'cli-watch'])",
     );
   });
 
