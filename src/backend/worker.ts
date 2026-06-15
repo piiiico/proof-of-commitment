@@ -2953,7 +2953,7 @@ app.post("/api/keys/create", async (c) => {
   // the ref needs its own gate against the canonical source list.
   // 5th occurrence — npm-package release ships a new ref symbol, surfaces
   // downstream don't know about it until dogfood / next session catches it.
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade", "cli-soft-cta", "ci-annotation", "readme-monitoring", "npm-readme-monitoring", "devto-npm-audit"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade", "cli-soft-cta", "ci-annotation", "readme-monitoring", "npm-readme-monitoring"];
   // 2026-06-14: per-blog refs (blog-snyk-comparison, blog-stripe-gcs,
   // blog-drizzle-kit, …) appear in the slug-CTA of every comparison post and
   // every package-watch CTA without a corresponding hardcoded VALID_SOURCES
@@ -2964,8 +2964,20 @@ app.post("/api/keys/create", async (c) => {
   // analytics labels well-shaped; the same regex is mirrored in
   // commit-landing-v2 get-started.astro REF_TO_SOURCE fallthrough.
   const BLOG_REF_RE = /^blog-[a-z0-9-]{1,40}$/;
+  // 2026-06-15: devto-<slug> pattern admit. First native dev.to article
+  // (devto-npm-audit, published 09:51Z) shipped with VALID_SOURCES literal
+  // entry "devto-npm-audit"; replaced with regex so future dev.to syndication
+  // (devto-mcp-skills, devto-supply-chain-2026, etc) self-attributes without
+  // a backend redeploy. Same shape as BLOG_REF_RE — readable analytics labels,
+  // bounded charset. Mirror in commit-landing-v2 get-started.astro:
+  // (a) form-submit DEVTO_REF_RE (source pass-through) and (b) hero IIFE
+  // DEVTO_HERO_FALLBACK (discovery-style hero matching article thesis).
+  // Parity gate (check-funnel-surface-parity.ts) asserts both sides have
+  // DEVTO_REF_RE — so the next devto-* ref shipping outside parity will
+  // surface at build time, not in production analytics weeks later.
+  const DEVTO_REF_RE = /^devto-[a-z0-9-]{1,40}$/;
   const rawSource = typeof body?.source === "string" ? body.source : "";
-  const source: string = VALID_SOURCES.includes(rawSource) || BLOG_REF_RE.test(rawSource) ? rawSource : "web";
+  const source: string = VALID_SOURCES.includes(rawSource) || BLOG_REF_RE.test(rawSource) || DEVTO_REF_RE.test(rawSource) ? rawSource : "web";
 
   // 2026-06-11: auto-seed watchlist with packages the user just audited.
   // Proposition fix: pre-this, an audit-page signup got a key + welcome email
@@ -3267,7 +3279,14 @@ ${seedScoreLines}
   // tree, then watch" path README uses. Pairs with get-started.astro's
   // success-note (same source-aware fork).
   const BLOG_SOURCE_RE = /^blog-[a-z0-9-]{1,40}$/;
-  const isDiscoverySource = (s: string) => README_SOURCES_WELCOME.has(s) || BLOG_SOURCE_RE.test(s);
+  // 2026-06-15: devto-<slug> sources share intent with blog-* + README sources:
+  // discovery channel where the reader came through external content. Welcome
+  // email step 2 routes through the same "score your tree, then watch" path
+  // instead of "Add a CI gate" (which contradicts a discovery-pitch reader).
+  // Pairs with get-started.astro success-note (same fork via isDiscoverySource).
+  const DEVTO_SOURCE_RE = /^devto-[a-z0-9-]{1,40}$/;
+  const isDiscoverySource = (s: string) =>
+    README_SOURCES_WELCOME.has(s) || BLOG_SOURCE_RE.test(s) || DEVTO_SOURCE_RE.test(s);
   // 2026-06-13: CLI users (audit-cli-429 / audit-baseline / cli / audit-cli /
   // cli-soft-cta) got the generic "Add a CI gate" step 2 in welcome email,
   // contradicting the success-note's CLI-frame `export COMMIT_API_KEY=…`.
