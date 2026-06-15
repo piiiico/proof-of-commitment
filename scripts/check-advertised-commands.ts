@@ -62,6 +62,9 @@ const AUDIT_EXAMPLES = new Set<string>([
   "cross-spawn",  // invisible-critical-packages.astro
   "mcp-remote",   // mcp-security-landscape.astro
   "event-stream", // historical supply-chain malware example
+  "atomic-lockfile", // atomic-arch-targets-bun.astro (AUR 1579 + bun typosquats)
+  "js-digest",       // atomic-arch-targets-bun.astro
+  "lockfile-js",     // atomic-arch-targets-bun.astro
   // Ecosystem prefix used as positional in some older examples
   // (e.g. `npx proof-of-commitment npm express`) — npm is treated as a
   // package name here, not a subcommand.
