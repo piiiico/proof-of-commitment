@@ -215,6 +215,21 @@ describe("welcome email shell (constant across both branches)", () => {
     expect(SHELL).toContain("30-day money-back guarantee");
   });
 
+  test("upgrade URL carries email + utm_campaign=welcome-upgrade (9th orphan-banner class)", () => {
+    // 2026-06-15: pre-fix, the pricing URL was bare — visitors landed on
+    // generic /pricing with no email pre-fill, no campaign tag. Banner stayed
+    // silent on the highest-volume re-engagement surface in the free-tier
+    // lifecycle. Same class as 2026-06-15 checkout-recovery (worker.ts:8110),
+    // 2026-06-15 04:35Z 6-banner batch, 2026-06-12 ci-annotation,
+    // 2026-06-10 audit-healthy-key. Pins email pre-fill + utm_campaign so
+    // CONTEXT_BY_CAMPAIGN['welcome-upgrade'] fires + paid signups attribute
+    // via VALID_PAID_SOURCE_RE (worker.ts:7923 Stripe webhook).
+    expect(SHELL).toContain("utm_campaign=welcome-upgrade");
+    expect(SHELL).toContain("utm_source=email");
+    expect(SHELL).toContain("utm_medium=welcome");
+    expect(SHELL).toContain("email=${encodeURIComponent(email)}");
+  });
+
   test("apiKey placeholder preserved (each user gets their key inline)", () => {
     expect(SHELL).toContain("${apiKey}");
   });

@@ -3372,7 +3372,7 @@ Your free tier:
 When you need more (batch API, daily scans, alerts):
   • Developer $15/mo — 1,000 audits/day, batch up to 5, unlimited CI repos, monitor 15 packages (daily scans)
   • Pro $29/mo — 10K audits/mo, batch up to 20, monitor 50 packages (~10 projects, daily scans + Slack/webhook alerts)
-  https://getcommit.dev/pricing
+  https://getcommit.dev/pricing?email=${encodeURIComponent(email)}&utm_campaign=welcome-upgrade&utm_source=email&utm_medium=welcome
   30-day money-back guarantee.
 
 —
