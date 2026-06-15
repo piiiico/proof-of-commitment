@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.31.1
+ * proof-of-commitment CLI v1.32.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -609,7 +609,22 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
   if (process.env.GITHUB_ACTIONS === 'true') {
     if (effectiveCritical > 0) {
       const critNames = results.filter(r => hasCritical(r.riskFlags)).slice(0, 5).map(r => r.name).join(', ');
-      console.error(`::warning title=Commit: ${effectiveCritical} CRITICAL package${effectiveCritical > 1 ? 's' : ''}::Sole npm publisher + >10M downloads/week: ${critNames}. Details: getcommit.dev/audit?packages=${encodeURIComponent(critNames)}&utm_source=cli&utm_medium=ci-annotation`);
+      // PR-check annotation is the single user-visible artifact outside the raw
+      // CI log. It must point at the conversion destination (/get-started with
+      // watchlist auto-seed), not the viewer (/audit). Pre-fix the annotation
+      // linked to /audit?packages= — same data the CI viewer already saw
+      // scrolled up in the log + an inline signup form one extra scroll away.
+      // Post-fix the link routes directly to /get-started?watch=…&eco=… which
+      // seeds the user's watchlist from this scan and arrives at an email
+      // capture as the primary form. Mirrors the same `?watch=…` URL contract
+      // (test/get-started-watch-param.test.ts) used by /audit's bottom CTA
+      // and the AUR-1579 / Snyk-comparison / Miasma / IronWorm blog posts.
+      // ref=cli-watch (not cli-ci-critical) because the latter is not in the
+      // backend's VALID_SOURCES and would get coerced to "web" — destroying
+      // attribution. cli-watch is already an accepted source.
+      const watchUrl = buildWatchUrl(results, 'cli-watch');
+      const ctaUrl = watchUrl || `https://getcommit.dev/audit?packages=${encodeURIComponent(critNames)}&utm_source=cli&utm_medium=ci-annotation`;
+      console.error(`::warning title=Commit: ${effectiveCritical} CRITICAL package${effectiveCritical > 1 ? 's' : ''}::Sole npm publisher + >10M downloads/week: ${critNames}. Watch + alert if scores change: ${ctaUrl}`);
     }
     if (compromisedCount > 0) {
       const compNames = results.filter(r => r.compromised).slice(0, 5).map(r => r.name).join(', ');
@@ -650,10 +665,21 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
       console.log(clr(c.dim, `\n  📊 Monitor ${effectiveCritical === 1 ? 'this package' : 'these packages'}: `) +
         clr(c.cyan, `poc watch ${results.find(r => hasCritical(r.riskFlags))?.name || results[0]?.name}`));
     } else if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      // Non-TTY (CI, piped): show one-step watch command since interactive prompt won't work
+      // Non-TTY (CI, piped): show both a clickable signup URL AND the one-step
+      // watch command. URL is for CI viewers reading log output in the browser
+      // (PR check tabs auto-link URLs); CLI command is for local-pipe / script
+      // contexts where copying a URL to a browser is friction. Two paths to
+      // the same outcome — see buildWatchUrl docstring for the rationale.
+      // Pre-fix this branch only emitted the CLI command, which requires the
+      // user to know the package name, run a second `npx`, and remember an
+      // email — a 3-decision ask in a CI log line that scrolls past.
       const watchPkg = results.find(r => hasCritical(r.riskFlags))?.name || results[0]?.name;
+      const watchUrl = buildWatchUrl(results, 'cli-watch');
       console.log(clr(c.dim, `\n  📊 Monitor ${effectiveCritical === 1 ? 'this' : 'these ' + effectiveCritical} CRITICAL ${effectiveCritical === 1 ? 'package' : 'packages'} — get alerted when scores change.`));
-      console.log(clr(c.dim, '     One step: ') + clr(c.cyan, `poc watch ${watchPkg} --email you@company.com`));
+      if (watchUrl) {
+        console.log(clr(c.dim, '     Web: ') + clr(c.cyan, watchUrl));
+      }
+      console.log(clr(c.dim, '     CLI: ') + clr(c.cyan, `poc watch ${watchPkg} --email you@company.com`));
       console.log(clr(c.dim, '     Free: 3 packages, weekly digest. Developer $15/mo: 15 packages, daily scans.'));
     }
     // else: TTY mode — inlineSignup() will prompt interactively after printTable
@@ -664,8 +690,17 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
     // text only in CI/piped output where interactive prompts can't fire.
     // ref=audit-baseline distinguishes this funnel from audit-cli-429
     // (rate-limit rescue) and from the static utm_source=cli help-line.
+    // Healthy-results non-TTY (CI, piped, no saved key) CTA. Mirror the
+    // CRITICAL branch's dual-path (Web + CLI). ref=audit-baseline keeps this
+    // funnel distinguishable from CRITICAL-driven cli-watch in api_keys.source
+    // breakdowns — important for measuring whether degradation-alert framing
+    // converts at all on clean results, separate from CRITICAL conversions.
+    const watchUrl = buildWatchUrl(results, 'audit-baseline');
     console.log(clr(c.dim, '\n  📊 Get alerted if any package degrades:'));
-    console.log(clr(c.dim, '     ') + clr(c.cyan, `poc watch ${results[0]?.name || '<package>'} --email you@company.com`) + clr(c.dim, '  (free: 3 packages, weekly digest)'));
+    if (watchUrl) {
+      console.log(clr(c.dim, '     Web: ') + clr(c.cyan, watchUrl));
+    }
+    console.log(clr(c.dim, '     CLI: ') + clr(c.cyan, `poc watch ${results[0]?.name || '<package>'} --email you@company.com`) + clr(c.dim, '  (free: 3 packages, weekly digest)'));
   }
   console.log();
 }
@@ -703,6 +738,35 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
  * Closes the second proposition-gap layer (CLI-side mirror of the
  * 2026-06-11 audit-page watchlist auto-seed at abe53f1/df8a8be).
  */
+/**
+ * Build a clickable /get-started URL that pre-seeds the watchlist from the
+ * scanned packages. Mirrors the `?watch=pkg1,pkg2,pkg3&eco=npm` URL contract
+ * pinned by test/get-started-watch-param.test.ts. The free-tier cap (3) is
+ * enforced via buildCliWatchSeeds(); /get-started.astro re-validates and the
+ * backend re-caps at PACKAGE_LIMITS.free (defense in depth across drift).
+ *
+ * Why this exists: the proven Snyk-comparison/AUR-1579 blog conversion pattern
+ * (mid-essay dual CTA + bottom dual CTA + `?watch=…` pre-seed) was sitting
+ * one repo over from the CLI for weeks. The CLI emits the highest-intent
+ * touchpoint after npm install — a CRITICAL finding in a real user's tree —
+ * but the only conversion paths it offered non-TTY users were a multi-token
+ * `poc watch X --email Y` CLI command (high friction) and a `getcommit.dev/
+ * audit?packages=…` link that drops users on the viewer page (not a converter).
+ * This helper produces the clickable conversion URL with packages pre-seeded.
+ *
+ * Returns null when no valid seeds exist (e.g. empty results, or all names
+ * fail the npm-name regex via buildCliWatchSeeds). Callers degrade gracefully
+ * to text-only CTAs without a URL.
+ */
+function buildWatchUrl(results, ref) {
+  const seeds = buildCliWatchSeeds(results);
+  if (seeds.length === 0) return null;
+  // All seeds from one scan share the same ecosystem; pick from the first.
+  const eco = seeds[0].ecosystem || 'npm';
+  const names = seeds.map(s => s.name).join(',');
+  return `https://getcommit.dev/get-started?watch=${encodeURIComponent(names)}&eco=${eco}&ref=${ref}&utm_source=cli`;
+}
+
 function buildCliWatchSeeds(results) {
   if (!Array.isArray(results) || results.length === 0) return [];
   const VALID_ECOS = new Set(['npm', 'pypi', 'cargo', 'golang']);
@@ -878,7 +942,7 @@ async function inlineSignup(results, opts = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.31.1 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.32.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
