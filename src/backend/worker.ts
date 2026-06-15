@@ -3273,7 +3273,15 @@ ${seedScoreLines}
   // contradicting the success-note's CLI-frame `export COMMIT_API_KEY=…`.
   // Email arrives later, possibly in a new terminal, so persistent `poc login`
   // is the right next-step (env-var binding only covers one shell).
-  const CLI_SOURCES_WELCOME = new Set(["audit-cli-429", "audit-baseline", "cli", "audit-cli", "cli-soft-cta"]);
+  // 2026-06-15: cli-watch added — npm-package v1.32.0 (shipped 05:14Z) emits
+  // this source via buildWatchUrl() for non-TTY CRITICAL upsells + the GH
+  // Actions PR-check annotation. Without this entry the welcome email\'s
+  // step 2 fell through to the generic "Add a CI gate" copy — contradicting
+  // step 1\'s "watching N CRITICAL packages" confirmation. Route through CLI
+  // login like every other CLI source (`poc login <key>` persists in
+  // ~/.commit/config so the CI/non-TTY context that emitted the link reads
+  // the key on the next run without env-var juggling).
+  const CLI_SOURCES_WELCOME = new Set(["audit-cli-429", "audit-baseline", "cli", "audit-cli", "cli-soft-cta", "cli-watch"]);
   const step2 = CI_SOURCES_WELCOME.has(source)
     ? `2) Bind the key in your repo so CI stops rate-limiting:
    gh secret set COMMIT_API_KEY --body ${apiKey}
