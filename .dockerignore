@@ -1,0 +1,37 @@
+node_modules
+dist
+.git
+.cursor
+.claude
+.env
+.env.*
+*.log
+
+# Local-only / extension / packaging artifacts the MCP container doesn't need.
+chrome-store
+npm-package
+claude-plugin
+example-reports
+knowledge
+test
+tools
+scripts
+migrations
+contracts
+data
+mcp-publisher
+awesome-cicd-security
+awesome-devops-mcp-servers
+
+# Tarballs / binaries from prior packaging runs.
+*.tgz
+*.tar.gz
+*.zip
+*.cast
+*.gif
+
+# Markdown / docs are not needed in the runtime image.
+*.md
+CONTRIBUTING.md
+LICENSE
+audit-*.md
