@@ -415,6 +415,11 @@ The LiteLLM attack (March 2026) and axios attack (March 30, 2026) followed the s
 
 Declarative signals (stars, README quality, CI badges) don't capture this risk. Behavioral commitment does.
 
+## Blog
+
+- [The LinkedIn Backdoor: Why npm audit Missed a 250-Line Attack](https://getcommit.dev/blog/linkedin-recruiter-npm-backdoor/) — A fake recruiter clone attack hid malware in test files and ran it via npm lifecycle scripts. npm audit: silent. What behavioral signals would have flagged.
+- [Axios Attack Prediction](https://getcommit.dev/blog/axios-attack-prediction/) — We flagged axios as CRITICAL (sole npm publisher, 113M downloads/week) before the March 30, 2026 token theft.
+
 ## Stack
 
 | Layer | Technology |
