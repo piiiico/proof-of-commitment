@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.32.0
+ * proof-of-commitment CLI v1.33.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -313,6 +313,40 @@ function hasCritical(flags) {
   return flags && flags.some(f => typeof f === 'string' && f.startsWith('CRITICAL'));
 }
 
+/**
+ * Footer-calibration helper — diagnoses when the CRITICAL count is so dense
+ * that the label has lost actionable meaning, and produces a reframe.
+ *
+ * Why this exists. Lockfile audits on real Node projects routinely report
+ * 40–60% of scanned packages as CRITICAL — the threshold (sole publisher +
+ * >10M weekly downloads) is structurally widespread in npm. When the footer
+ * says "157 CRITICAL packages found" without context, a new user reads it as
+ * either alarmist noise (close the tab) or as an unbounded ask (157 things
+ * to investigate — uninstall the tool). Both kill activation.
+ *
+ * The dogfood signal: 2026-06-16 commit-landing-v2 lockfile, authenticated,
+ * 326 scanned, 157 CRITICAL (48%). Reflection: "label loses meaning when
+ * half the tree is red." Calibration reframes 157-of-326 as "typical npm
+ * baseline; act on the top 3-5 by impact" — preserves the data and gives
+ * the user a concrete next step. Threshold 20% chosen because that's the
+ * point at which per-package action stops being feasible.
+ *
+ * Returns null when calibration shouldn't fire (low ratio, no scan total,
+ * trivially small scan). Returns a `{ ratio, percent, baseline }` object
+ * otherwise — caller decides how to render it.
+ */
+function summarizeCriticalConcentration(criticalCount, totalScanned) {
+  if (!totalScanned || totalScanned < 10) return null;
+  if (!criticalCount || criticalCount <= 0) return null;
+  const ratio = criticalCount / totalScanned;
+  if (ratio < 0.20) return null;
+  return {
+    ratio,
+    percent: Math.round(ratio * 100),
+    baseline: true,
+  };
+}
+
 function riskColor(flags, score) {
   if (hasCritical(flags)) return c.red + c.bold;
   if (score < 40) return c.yellow + c.bold;
@@ -592,9 +626,22 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
 
   const effectiveCritical = totalCritical !== undefined ? totalCritical : criticalInDisplay;
   if (effectiveCritical > 0) {
-    const suffix = totalScanned ? ` (in ${totalScanned} packages scanned)` : '';
-    console.log('\n' + clr(c.red + c.bold, `⚠  ${effectiveCritical} CRITICAL package${effectiveCritical > 1 ? 's' : ''} found${suffix}.`));
-    console.log(clr(c.dim, '   CRITICAL = sole npm publisher + >10M weekly downloads (publish-access concentration risk)'));
+    const conc = summarizeCriticalConcentration(effectiveCritical, totalScanned);
+    if (conc) {
+      // High-density reframe: at ≥20% CRITICAL the per-package alarm framing
+      // loses meaning (the user can't audit a third of their tree). Recast as
+      // ecosystem baseline + actionable shortlist. Pinned by
+      // test/cli-critical-concentration.test.ts.
+      console.log('\n' + clr(c.red + c.bold, `⚠  ${effectiveCritical} CRITICAL packages (${conc.percent}% of ${totalScanned} scanned).`));
+      console.log(clr(c.dim, '   CRITICAL = sole npm publisher + >10M weekly downloads.'));
+      console.log(clr(c.dim, '   At this density you\'re seeing npm\'s baseline — most popular packages have'));
+      console.log(clr(c.dim, '   one publisher. Watch the top 3-5 above (highest impact); pin your lockfile'));
+      console.log(clr(c.dim, '   and audit deltas for the rest — concentration you can\'t avoid per-dep.'));
+    } else {
+      const suffix = totalScanned ? ` (in ${totalScanned} packages scanned)` : '';
+      console.log('\n' + clr(c.red + c.bold, `⚠  ${effectiveCritical} CRITICAL package${effectiveCritical > 1 ? 's' : ''} found${suffix}.`));
+      console.log(clr(c.dim, '   CRITICAL = sole npm publisher + >10M weekly downloads (publish-access concentration risk)'));
+    }
     if (provenanceCount > 0 && provenanceCount < results.length) {
       console.log(clr(c.cyan, `   🔐 ${provenanceCount}/${results.length} use Trusted Publishing (OIDC provenance) — partial mitigation`));
     }
@@ -942,7 +989,7 @@ async function inlineSignup(results, opts = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.32.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.33.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
