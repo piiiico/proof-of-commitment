@@ -3257,8 +3257,8 @@ ${seedScoreLines}
    Watch the riskiest 3 — free cap:
    npx proof-of-commitment watch <package-name>
 
-   Or audit online — https://getcommit.dev/audit — sign up there and we
-   auto-seed your watchlist with the riskiest 3 from that scan.
+   Or use the web audit — https://getcommit.dev/audit — paste any package.json
+   and we auto-seed your watchlist with the riskiest 3 from that scan.
 
    Mondays we email you when any watched score drops a tier.`;
 
