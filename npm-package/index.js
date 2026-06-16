@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.33.0
+ * proof-of-commitment CLI v1.34.0
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -90,14 +90,49 @@ async function handle429(res) {
     // Non-JSON fallback — leave data as {}
   }
 
+  const partial = Array.isArray(data.packages_already_scored)
+    ? data.packages_already_scored
+    : [];
+
+  // Forward-compat: if backend returns partial scoring on 429,
+  // print what we have BEFORE the rescue message. Falls back to JSON
+  // dump if the row shape isn't a complete table row.
+  // (auditBatched aggregates across batches and prints its own table — it
+  // calls renderRescueCta() directly, skipping this block.)
+  if (partial.length > 0) {
+    try {
+      console.log();
+      console.log(clr(c.dim, `  Partial results scored before the limit hit (${partial.length}):`));
+      printTable(partial, { totalScanned: partial.length });
+    } catch {
+      console.log(JSON.stringify(partial, null, 2));
+    }
+  }
+
+  await renderRescueCta(data);
+}
+
+/**
+ * Render the rate-limit rescue CTA from a parsed 429 response body.
+ * Separated from handle429() so auditBatched can aggregate partials across
+ * 17 parallel batches, print ONE combined table, then surface ONE rescue
+ * CTA — instead of letting the first batch to land kill the process with
+ * only 3 of N*3 partials visible (where N = #batches hitting overshoot).
+ *
+ * Exit semantics preserved: this function ALWAYS process.exit(1) at the
+ * tail, so any caller that's reached the rescue CTA leaves the program.
+ *
+ * The shape mirrors `data` from a 429 JSON response:
+ *   { message?, instant_key_url?, upgrade_url?, retry_after_seconds?,
+ *     retry_after?, overshoot?, tier_suggestion?, upgrade?, tier?,
+ *     shared_ip_hint? }
+ */
+async function renderRescueCta(data) {
   const message = data.message || 'Daily free audit limit reached on this network IP.';
   const instantKeyUrl =
     data.instant_key_url ||
     data.upgrade_url ||
     'https://getcommit.dev/get-started?ref=audit-cli-429';
-  const partial = Array.isArray(data.packages_already_scored)
-    ? data.packages_already_scored
-    : [];
   // Authenticated keys: retry_after (seconds, used by worker auth-middleware quota path).
   // Anonymous IPs: retry_after_seconds (legacy / overshoot rescue path).
   // Read both so both paths surface a reset-time hint.
@@ -133,19 +168,6 @@ async function handle429(res) {
     typeof data.upgrade.plan === 'string' &&
     typeof data.tier === 'string' &&
     data.tier !== 'anonymous';
-
-  // Forward-compat: if backend ever returns partial scoring on 429,
-  // print what we have BEFORE the rescue message. Falls back to JSON
-  // dump if the row shape isn't a complete table row.
-  if (partial.length > 0) {
-    try {
-      console.log();
-      console.log(clr(c.dim, `  Partial results scored before the limit hit (${partial.length}):`));
-      printTable(partial, { totalScanned: partial.length });
-    } catch {
-      console.log(JSON.stringify(partial, null, 2));
-    }
-  }
 
   console.error('');
   console.error(clr(c.yellow + c.bold, `⚠  ${message}`));
@@ -989,7 +1011,7 @@ async function inlineSignup(results, opts = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.33.0 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.34.0 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir
@@ -1416,27 +1438,81 @@ async function auditBatched(packages, ecosystem, { onProgress } = {}) {
   let batchedCta = null;
   // Resolve auth once so all parallel batches share the same key lookup.
   const headers = await auditHeaders();
-  const results = await Promise.all(
+
+  // Use Promise.allSettled so a single rate-limit hit on one batch doesn't
+  // discard the work the other batches successfully completed. Pre-fix
+  // (2026-06-16 dogfood): backend in overshoot returns 429 with
+  // RATE_LIMIT_TASTE=3 packages_already_scored on EVERY parallel batch
+  // (each batch increments the IP counter, all see auditCount > limit,
+  // each gets trimmed to 3 + 429). The first batch's 429 to land called
+  // handle429() which process.exit(1)'d — discarding the OTHER 16 batches'
+  // 3-package partials (16×3=48 packages of scored value silently dropped).
+  //
+  // Post-fix: aggregate 200 results AND 429 partials across all batches.
+  // User sees up to N×3 packages instead of 3 when fully overshoot, and
+  // (16×20)+(1×3)=323 packages instead of 0 when limit hits mid-scan.
+  // Rescue CTA is surfaced ONCE at the end via _rescue (handed to
+  // renderRescueCta in the calling path), not per-batch via handle429.
+  const settled = await Promise.allSettled(
     batches.map(async (batch) => {
       const res = await fetch(API, {
         method: 'POST',
         headers,
         body: JSON.stringify({ packages: batch, ecosystem }),
       });
-      if (!res.ok) {
-        if (res.status === 429) await handle429(res);
-        const text = await res.text();
-        throw new Error(`API error ${res.status}: ${text}`);
-      }
-      const data = await res.json();
-      if (data._cta) batchedCta = data._cta;
+      let data = {};
+      try { data = await res.json(); } catch {}
       completed += batch.length;
       if (onProgress) onProgress(completed, packages.length);
-      return data.results || [];
+      if (res.ok) {
+        return { kind: 'ok', data };
+      }
+      if (res.status === 429) {
+        return { kind: '429', data };
+      }
+      return { kind: 'error', status: res.status, data };
     })
   );
 
-  const all = results.flat();
+  const aggregated = [];
+  let rescue = null;
+  let nonRateErrorMsg = null;
+  for (const r of settled) {
+    if (r.status === 'rejected') {
+      nonRateErrorMsg = nonRateErrorMsg || String(r.reason && r.reason.message || r.reason || 'unknown');
+      continue;
+    }
+    const v = r.value;
+    if (v.kind === 'ok') {
+      if (v.data._cta) batchedCta = v.data._cta;
+      aggregated.push(...(v.data.results || []));
+    } else if (v.kind === '429') {
+      // First 429's payload carries the rescue metadata; later 429s'
+      // metadata is interchangeable (same overshoot/upgrade context),
+      // so we don't need to merge it.
+      if (!rescue) rescue = v.data;
+      aggregated.push(...(Array.isArray(v.data.packages_already_scored) ? v.data.packages_already_scored : []));
+    } else if (v.kind === 'error') {
+      const errMsg = (v.data && v.data.error) ? v.data.error : `API error ${v.status}`;
+      nonRateErrorMsg = nonRateErrorMsg || errMsg;
+    }
+  }
+
+  // Hard failure: zero packages scored AND a non-rate-limit error fired.
+  // (If rescue is set but aggregated is empty, fall through — the caller
+  // will render the rescue CTA and exit; no need to throw.)
+  if (aggregated.length === 0 && !rescue && nonRateErrorMsg) {
+    throw new Error(nonRateErrorMsg);
+  }
+
+  // Dedup by name+ecosystem — defensive against any backend echoing.
+  const seen = new Set();
+  const all = aggregated.filter((p) => {
+    const k = `${p && p.name}:${p && p.ecosystem}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 
   // Sort: CRITICAL first, then by score ascending
   all.sort((a, b) => {
@@ -1446,7 +1522,7 @@ async function auditBatched(packages, ecosystem, { onProgress } = {}) {
     return (a.score || 100) - (b.score || 100);
   });
 
-  return { results: all, _cta: batchedCta };
+  return { results: all, _cta: batchedCta, _rescue: rescue };
 }
 
 /** Parse --fail-on=<level>. Returns one of 'critical' | 'risky' | 'none'. */
@@ -2930,6 +3006,7 @@ async function main() {
     if (!structuredOutput) process.stdout.write(clr(c.dim, `Scanning ${packages.length} packages (${batches} batches in parallel)...`));
 
     let lastPct = 0;
+    let batchRescue = null;
     try {
       const batchResult = await auditBatched(packages, ecosystem, {
         onProgress: (done, total) => {
@@ -2942,6 +3019,7 @@ async function main() {
       });
       allResults = batchResult.results;
       apiCta = batchResult._cta;
+      batchRescue = batchResult._rescue || null;
     } catch (err) {
       console.error(`\nError: ${err.message}`);
       process.exit(1);
@@ -2964,6 +3042,7 @@ async function main() {
         criticalCount,
         provenanceCount,
         failOn,
+        rateLimited: !!batchRescue,
         results: allResults,
       }, null, 2));
       process.exit(shouldFail(allResults, failOn) ? 1 : 0);
@@ -2975,6 +3054,28 @@ async function main() {
     const criticalTotal = allResults.filter(r => hasCritical(r.riskFlags)).length;
     printTable(displayed, { totalScanned: allResults.length, totalCritical: criticalTotal, lockfile: true });
     if (apiCta) console.log(clr(c.dim + c.cyan, `\n  ${apiCta}`));
+    // Rate-limit aggregation (2026-06-16 fix): if ANY batch hit 429, the
+    // aggregated table above ALREADY includes packages_already_scored from
+    // every 429'd batch (auditBatched flattens 200 + 429 results). Surface
+    // ONE rescue CTA here that ALSO short-circuits the normal inlineSignup
+    // path — the rescue CTA itself runs the TTY email→key prompt for free
+    // tier users (overshoot/keyUpgrade branches print upgrade URL and exit).
+    // renderRescueCta() always process.exit(1)s at its tail, so this is the
+    // terminal path for any rate-limited scan.
+    if (batchRescue) {
+      // Override the per-batch "Scored 3 of 20 packages" message with
+      // an aggregate-aware one before rendering. Pre-fix: user sent 326,
+      // saw a "3 of 20" rescue message that referenced one batch's slice.
+      // Post-fix: reflect what the user actually saw in the aggregated table.
+      const isOvershoot = batchRescue.overshoot === true || batchRescue.tier_suggestion === 'developer';
+      const rescueWithAggregate = {
+        ...batchRescue,
+        message: isOvershoot
+          ? `Scored ${allResults.length} of ${packages.length} packages — you're past the free-tier daily limit on this IP. A free key gives 200/day but a ${packages.length}-package lockfile would burn through it; Developer ($15/mo) gives 1,000/day + batch API.`
+          : `Scored ${allResults.length} of ${packages.length} packages — free-tier daily limit reached on this IP (often shared via corporate NAT / CI / dev container). A free API key in 30 seconds lifts the limit to 200/day.`,
+      };
+      await renderRescueCta(rescueWithAggregate); // exits 1
+    }
     await inlineSignup(displayed, { engagementSignal: !!apiCta });
     if (shouldFail(allResults, failOn)) {
       console.error(clr(c.red + c.bold, `\n✗ --fail-on=${failOn} threshold met. Exit 1.`));
