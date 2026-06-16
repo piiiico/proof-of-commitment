@@ -3016,15 +3016,37 @@ app.post("/api/keys/create", async (c) => {
   type WatchSeed = { name: string; ecosystem: string };
   const rawWatch: unknown = body?.watch;
   const watchSeeds: WatchSeed[] = [];
+  // Permissive format (2026-06-16): also accept bare strings ["lodash", "axios"]
+  // — default ecosystem to "npm". Previously: API users hitting /api/keys/create
+  // with stringified package names got `ok:true, watched_packages:[]` (silent
+  // skip on `typeof raw !== "object"`) and concluded the watch endpoint was
+  // broken. Verified live: a dogfood probe sending `watch: ["lodash","axios",
+  // "node-ipc"]` succeeded the email-delivery side but the welcome email said
+  // "Your watchlist already contains 0 packages" — exact opposite of the
+  // proposition the audit page sells. Audit-page UI sends correct {name,
+  // ecosystem} objects so this never triggered there; the cost lands on
+  // developers evaluating the API directly (the paid-tier prospect audience).
+  // Net-subtractive: removes a silent-failure mode without breaking any caller.
   if (Array.isArray(rawWatch)) {
     for (const raw of rawWatch) {
-      if (typeof raw !== "object" || raw === null) continue;
-      const rawName = (raw as { name?: unknown }).name;
-      if (typeof rawName !== "string") continue;
-      const name = rawName.trim();
-      if (!name || name.length > 214) continue; // npm package name max
-      const rawEco = (raw as { ecosystem?: unknown }).ecosystem;
-      const eco = (typeof rawEco === "string" ? rawEco : "npm").toLowerCase();
+      let name: string | undefined;
+      let eco: string | undefined;
+      if (typeof raw === "string") {
+        const trimmed = raw.trim();
+        if (!trimmed || trimmed.length > 214) continue;
+        name = trimmed;
+        eco = "npm";
+      } else if (typeof raw === "object" && raw !== null) {
+        const rawName = (raw as { name?: unknown }).name;
+        if (typeof rawName !== "string") continue;
+        const trimmedName = rawName.trim();
+        if (!trimmedName || trimmedName.length > 214) continue;
+        name = trimmedName;
+        const rawEco = (raw as { ecosystem?: unknown }).ecosystem;
+        eco = (typeof rawEco === "string" ? rawEco : "npm").toLowerCase();
+      } else {
+        continue;
+      }
       if (!ECOSYSTEMS.has(eco)) continue;
       // Dedupe by (name, ecosystem)
       if (watchSeeds.some((w) => w.name === name && w.ecosystem === eco)) continue;
