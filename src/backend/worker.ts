@@ -1198,8 +1198,18 @@ app.post("/api/audit", async (c) => {
 
     const baseRescueMessage =
       `Scored ${results.length} of ${totalRequested} packages — free-tier daily limit reached on this IP (likely shared via corporate NAT, CI runner, or dev container). Get a free API key in 30 seconds — no credit card — to lift the limit to 200/day.`;
+    // Framing note: rate limits are per-IP, not per-user. The backend cannot
+    // distinguish a new visitor on shared infra from a heavy individual user;
+    // saying "you've hit X audits" is false for any IP shared via CGNAT, a CI
+    // runner, a dev container, or a corporate proxy — and a NEW visitor who
+    // landed via a blog CTA sees that message as accusatory. (Discovered
+    // 2026-06-17 dogfooding /audit?packages=… from the mastra blog post: the
+    // container's shared IP showed 1334 audits/day; one fresh request hit
+    // overshoot and saw the "you've hit 1334 audits" message on first
+    // interaction.) The baseRescueMessage above already names the shared-IP
+    // case correctly; the overshoot variant now parallels that framing.
     const overshootRescueMessage =
-      `Scored ${results.length} of ${totalRequested} packages — you've hit ${auditCount} audits today, well past the free-tier limit. A free key gives 200/day but you'd burn through it in minutes. Developer ($15/mo) gives 1,000/day + batch API up to 5 packages; 30-day money-back.`;
+      `Scored ${results.length} of ${totalRequested} packages — this IP has hit ${auditCount} audits today (likely shared via corporate NAT, CI runner, or dev container; not all from one user). Free key gives 200/day · Developer ($15/mo) gives 1,000/day + batch API up to 5 packages; 30-day money-back.`;
     const rescueMessage = isOvershoot ? overshootRescueMessage : baseRescueMessage;
 
     const acceptHeader = (c.req.header("Accept") || "").toLowerCase();
