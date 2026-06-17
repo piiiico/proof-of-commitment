@@ -396,7 +396,7 @@ describe("watchSeed validation (request shape)", () => {
   });
 
   test("caps name length at 214 (npm package name max)", () => {
-    expect(WATCH_SEED).toContain("name.length > 214");
+    expect(WATCH_SEED).toContain("trimmedName.length > 214");
   });
 
   test("dedupes by (name, ecosystem)", () => {
