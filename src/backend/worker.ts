@@ -2760,7 +2760,7 @@ app.get("/badge/pypi/*", async (c) => {
 //
 // Shorthand npm-only trust badge for README embedding.
 // Label: "Commit Trust"   Value: "{score} | {grade}"
-// Grades: OK (≥75, green) · WARNING (40-74, orange) · CRITICAL (<40 or solo+10M+, red)
+// Grades: OK (≥70, green) · WARNING (40-69, orange) · CRITICAL (<40 or solo+10M+, red)
 // Cache: 1 hour
 //
 // Usage: ![Commit Trust](https://poc-backend.amdal-dev.workers.dev/badge/chalk)
@@ -2806,7 +2806,7 @@ app.get("/badge/*", async (c) => {
   } else if (isCritical || score < 40) {
     value = fullLabel ? `${score} | CRITICAL` : `${score}`;
     color = "#e05d44"; // red
-  } else if (score < 75) {
+  } else if (score < 70) {
     value = fullLabel ? `${score} | WARNING` : `${score}`;
     color = "#fe7d37"; // orange
   } else {
