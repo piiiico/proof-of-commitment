@@ -1153,7 +1153,19 @@ app.post("/api/audit", async (c) => {
             else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole npm publisher + >1M/wk");
             if (profile.ageYears < 1 && wdl > 100_000) riskFlags.push("HIGH: new package (<1yr) + high downloads");
             if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
-            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown };
+            // Dormant publisher detection (Mastra attack pattern, June 2026):
+            // Historical publishers who haven't shipped in 12+ months but may
+            // still hold scope access tokens. npm does not expire publish permissions
+            // on inactivity — stale credentials are live attack surface.
+            const lc = profile.publisherLifecycle;
+            if (lc && lc.dormantWithAccess > 0) {
+              const dormantNames = lc.dormantDetails
+                .filter(d => d.hasCurrentAccess)
+                .map(d => `${d.name} (${d.monthsInactive}mo inactive)`)
+                .join(", ");
+              riskFlags.push(`WARN: ${lc.dormantWithAccess} dormant publisher${lc.dormantWithAccess > 1 ? "s" : ""} with current scope access — ${dormantNames}`);
+            }
+            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown, publisherLifecycle: lc ?? undefined };
           }
         } catch (err) {
           return { name: pkg, ecosystem: useGolang ? "golang" : useCargo ? "cargo" : usePypi ? "pypi" : "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };

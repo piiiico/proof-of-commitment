@@ -32,6 +32,7 @@ interface NpmPackage {
   versions: Record<string, {
     repository?: { type: string; url: string };
     dist?: { attestations?: unknown; [key: string]: unknown };
+    _npmUser?: { name: string; email?: string };
   }>;
   time: Record<string, string>; // ISO timestamps per version + "created"/"modified"
   maintainers?: { name: string; email?: string }[];
@@ -174,6 +175,28 @@ export async function bulkFetchNpmWeeklyDownloads(
   return result;
 }
 
+/** Publisher lifecycle: who published, when, and are they still active? */
+export interface PublisherLifecycle {
+  /** Count of unique npm usernames that published at least one version */
+  totalHistoricalPublishers: number;
+  /** Publishers who published within the last 12 months */
+  activePublishers: number;
+  /** Publishers who haven't published in 12+ months AND still appear in maintainers (current scope access) */
+  dormantWithAccess: number;
+  /** Publishers who haven't published in 12+ months but were removed from maintainers (revoked) */
+  dormantRevoked: number;
+  /** Fraction of current maintainers that have published in the last 12 months */
+  activeRatio: number;
+  /** Details on dormant publishers who STILL have scope access (highest risk, sorted longest-inactive first) */
+  dormantDetails: Array<{
+    name: string;
+    lastPublish: string; // ISO date
+    monthsInactive: number;
+    versionCount: number;
+    hasCurrentAccess: boolean;
+  }>;
+}
+
 export interface NpmCommitmentProfile {
   name: string;
   description: string | null;
@@ -190,6 +213,9 @@ export interface NpmCommitmentProfile {
   downloadTrend: "growing" | "stable" | "declining" | null;
   daysSinceLastPublish: number;
   repositoryUrl: string | null;
+
+  // Publisher lifecycle (new: dormant publisher detection)
+  publisherLifecycle: PublisherLifecycle | null;
 
   // Build integrity signals (separate from behavioral/commitment scoring)
   hasProvenance: boolean | null; // npm SLSA provenance attestation (null = check failed/skipped)
@@ -230,6 +256,95 @@ function parseRepoUrl(url: string | undefined): string | null {
     .replace(/\.git$/, "");
   if (normalized.includes("github.com")) return normalized;
   return null;
+}
+
+/**
+ * Analyze publisher lifecycle from per-version _npmUser metadata.
+ *
+ * npm's registry response includes _npmUser on each version object,
+ * identifying who pushed each release. This lets us distinguish packages
+ * where all publishers are active from those carrying dormant credentials
+ * that remain valid scope-access vectors (the Mastra attack pattern,
+ * June 2026 — a contributor dormant since 2024 with never-revoked access).
+ *
+ * "GitHub Actions" / OIDC publishers are excluded — they're automation,
+ * not human credential risk.
+ */
+function analyzePublisherLifecycle(
+  pkg: NpmPackage,
+): PublisherLifecycle | null {
+  const now = Date.now();
+  const TWELVE_MONTHS_MS = 365.25 * 24 * 3600 * 1000;
+
+  // Collect per-publisher stats from version _npmUser fields
+  const publisherMap = new Map<string, { lastPublish: number; count: number }>();
+  for (const [version, meta] of Object.entries(pkg.versions)) {
+    const user = meta._npmUser;
+    if (!user?.name) continue;
+    // Skip automation accounts — not human credential risk
+    if (user.name === "GitHub Actions" || user.email?.includes("npm-oidc")) continue;
+
+    const ts = pkg.time[version];
+    if (!ts) continue;
+    const publishTime = new Date(ts).getTime();
+    if (isNaN(publishTime)) continue;
+
+    const existing = publisherMap.get(user.name);
+    if (!existing) {
+      publisherMap.set(user.name, { lastPublish: publishTime, count: 1 });
+    } else {
+      existing.count++;
+      if (publishTime > existing.lastPublish) existing.lastPublish = publishTime;
+    }
+  }
+
+  // Need at least 1 human publisher to produce lifecycle data
+  if (publisherMap.size === 0) return null;
+
+  // Build set of current maintainer names for cross-referencing
+  const currentMaintainers = new Set(
+    (pkg.maintainers ?? []).map((m) => m.name.toLowerCase()),
+  );
+
+  let activeCount = 0;
+  let dormantWithAccess = 0;
+  let dormantRevoked = 0;
+  const dormantDetails: PublisherLifecycle["dormantDetails"] = [];
+
+  for (const [name, data] of publisherMap) {
+    const msSincePublish = now - data.lastPublish;
+    if (msSincePublish < TWELVE_MONTHS_MS) {
+      activeCount++;
+    } else {
+      const hasAccess = currentMaintainers.has(name.toLowerCase());
+      if (hasAccess) dormantWithAccess++;
+      else dormantRevoked++;
+      dormantDetails.push({
+        name,
+        lastPublish: new Date(data.lastPublish).toISOString().slice(0, 10),
+        monthsInactive: Math.round(msSincePublish / (30.44 * 24 * 3600 * 1000)),
+        versionCount: data.count,
+        hasCurrentAccess: hasAccess,
+      });
+    }
+  }
+
+  // Sort: current-access dormant first (highest risk), then by longest-inactive
+  dormantDetails.sort((a, b) => {
+    if (a.hasCurrentAccess !== b.hasCurrentAccess) return a.hasCurrentAccess ? -1 : 1;
+    return b.monthsInactive - a.monthsInactive;
+  });
+
+  const total = publisherMap.size;
+  // activeRatio based on historical publishers, not current maintainers
+  return {
+    totalHistoricalPublishers: total,
+    activePublishers: activeCount,
+    dormantWithAccess,
+    dormantRevoked,
+    activeRatio: total > 0 ? activeCount / total : 1,
+    dormantDetails,
+  };
 }
 
 function scoreLongevity(ageYears: number): number {
@@ -284,12 +399,32 @@ function scoreReleases(
   return Math.min(20, base + recency);
 }
 
-function scoreMaintainers(count: number): number {
-  if (count >= 5) return 15;
-  if (count >= 3) return 11;
-  if (count >= 2) return 7;
-  if (count === 1) return 4;
-  return 0;
+function scoreMaintainers(
+  count: number,
+  lifecycle: PublisherLifecycle | null,
+): number {
+  // Base score from maintainer count (unchanged)
+  let base: number;
+  if (count >= 5) base = 15;
+  else if (count >= 3) base = 11;
+  else if (count >= 2) base = 7;
+  else if (count === 1) base = 4;
+  else base = 0;
+
+  // Lifecycle adjustment: dormant publishers who STILL have scope access
+  // reduce effective depth. Only penalize for dormantWithAccess — publishers
+  // who were removed from maintainers are already revoked (no risk).
+  // This is the Mastra pattern: ehindero was dormant since 2024 but still
+  // had scope access in June 2026.
+  if (lifecycle && lifecycle.dormantWithAccess > 0) {
+    // Penalty: -2 points per dormant-with-access publisher, capped at 40% of base.
+    // A single dormant maintainer is a moderate risk; three is severe.
+    const rawPenalty = lifecycle.dormantWithAccess * 2;
+    const maxPenalty = Math.round(base * 0.4);
+    base = Math.max(0, base - Math.min(rawPenalty, maxPenalty));
+  }
+
+  return base;
 }
 
 /**
@@ -420,6 +555,9 @@ export async function buildNpmCommitmentProfile(
 
   // Maintainers
   const maintainerCount = pkg.maintainers?.length ?? 1;
+
+  // Publisher lifecycle: active vs dormant publishers (from per-version _npmUser)
+  const publisherLifecycle = analyzePublisherLifecycle(pkg);
 
   // Trusted Publishing (npm OIDC provenance) — detected via dist.attestations field
   const trustedPublishing = !!(
@@ -630,7 +768,7 @@ export async function buildNpmCommitmentProfile(
   const longevity = scoreLongevity(ageYears);
   const downloadMomentum = scoreDownloads(avg7d, trend);
   const releaseConsistency = scoreReleases(versionCount, daysSinceLastPublish);
-  const maintainerDepth = scoreMaintainers(maintainerCount);
+  const maintainerDepth = scoreMaintainers(maintainerCount, publisherLifecycle);
   const trustedPublishingScore = trustedPublishing ? 2 : 0;
   const commitmentScore = Math.min(
     100,
@@ -690,7 +828,7 @@ export async function buildNpmCommitmentProfile(
     `  Longevity:            ${longevity}/25 (${ageStr} old)`,
     `  Download momentum:    ${downloadMomentum}/25 (${dlStr})`,
     `  Release consistency:  ${releaseConsistency}/20 (${versionCount} versions)`,
-    `  Publisher depth:      ${maintainerDepth}/15 (${maintainerCount} npm publisher${maintainerCount !== 1 ? "s" : ""})`,
+    `  Publisher depth:      ${maintainerDepth}/15 (${maintainerCount} npm publisher${maintainerCount !== 1 ? "s" : ""}${publisherLifecycle && publisherLifecycle.dormantWithAccess > 0 ? ` — ${publisherLifecycle.dormantWithAccess} dormant with access` : ""})`,
     `  GitHub backing:       ${githubBacking}/15${githubScore !== null ? ` (GitHub score: ${githubScore}/100)` : " (no linked repo)"}`,
     `  Trusted Publishing:   ${trustedPublishingScore}/2 (${trustedPublishing ? "OIDC provenance detected" : "no provenance"})`,
   ]
@@ -711,6 +849,7 @@ export async function buildNpmCommitmentProfile(
     downloadTrend: trend,
     daysSinceLastPublish,
     repositoryUrl: repoUrl,
+    publisherLifecycle,
     hasProvenance,
     scorecardScore,
     hasDangerousWorkflow,
