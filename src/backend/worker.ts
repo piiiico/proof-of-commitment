@@ -2628,6 +2628,9 @@ app.get("/api/graph/npm/*", async (c) => {
 
 app.get("/badge/npm/*", async (c) => {
   const packageName = decodeURIComponent(c.req.path.replace("/badge/npm/", ""));
+  // ?label=full preserves legacy verbose suffix ("88/100 CRITICAL", black bg).
+  // Default is embed-friendly: score-only, color-coded — README-safe for maintainers.
+  const fullLabel = c.req.query("label") === "full";
 
   if (!packageName) {
     const svg = generateBadge("commitment", "unknown", "#9f9f9f");
@@ -2657,8 +2660,8 @@ app.get("/badge/npm/*", async (c) => {
     value = "unknown";
     color = "#9f9f9f"; // grey
   } else if (isCritical) {
-    value = `${score}/100 CRITICAL`;
-    color = "#222222"; // black
+    value = fullLabel ? `${score}/100 CRITICAL` : `${score}/100`;
+    color = fullLabel ? "#222222" : "#e05d44"; // black in full mode, red in default
   } else if (score < 40) {
     value = `${score}/100`;
     color = "#e05d44"; // red
@@ -2692,6 +2695,9 @@ app.get("/badge/npm/*", async (c) => {
 
 app.get("/badge/pypi/*", async (c) => {
   const packageName = decodeURIComponent(c.req.path.replace("/badge/pypi/", ""));
+  // ?label=full preserves legacy verbose suffix ("88/100 CRITICAL", black bg).
+  // Default is embed-friendly: score-only, color-coded — README-safe for maintainers.
+  const fullLabel = c.req.query("label") === "full";
 
   if (!packageName) {
     const svg = generateBadge("commitment", "unknown", "#9f9f9f");
@@ -2721,8 +2727,8 @@ app.get("/badge/pypi/*", async (c) => {
     value = "unknown";
     color = "#9f9f9f"; // grey
   } else if (isCritical) {
-    value = `${score}/100 CRITICAL`;
-    color = "#222222"; // black
+    value = fullLabel ? `${score}/100 CRITICAL` : `${score}/100`;
+    color = fullLabel ? "#222222" : "#e05d44"; // black in full mode, red in default
   } else if (score < 40) {
     value = `${score}/100`;
     color = "#e05d44"; // red
@@ -2764,6 +2770,11 @@ app.get("/badge/*", async (c) => {
   // Strip leading "/badge/" and optional trailing ".svg"
   let packageName = decodeURIComponent(c.req.path.replace(/^\/badge\//, ""));
   packageName = packageName.replace(/\.svg$/, "");
+  // ?label=full preserves legacy verbose suffix ("80 | CRITICAL/WARNING/OK").
+  // Default is embed-friendly: score-only, color-coded — README-safe for maintainers.
+  // High-score packages with concentration risk (lodash@80, axios@88) no longer
+  // get a scary "CRITICAL" word burnt into their public README badge.
+  const fullLabel = c.req.query("label") === "full";
 
   if (!packageName) {
     const svg = generateBadge("Commit Trust", "invalid package", "#9f9f9f");
@@ -2793,13 +2804,13 @@ app.get("/badge/*", async (c) => {
     value = "not found";
     color = "#9f9f9f";
   } else if (isCritical || score < 40) {
-    value = `${score} | CRITICAL`;
+    value = fullLabel ? `${score} | CRITICAL` : `${score}`;
     color = "#e05d44"; // red
   } else if (score < 75) {
-    value = `${score} | WARNING`;
+    value = fullLabel ? `${score} | WARNING` : `${score}`;
     color = "#fe7d37"; // orange
   } else {
-    value = `${score} | OK`;
+    value = fullLabel ? `${score} | OK` : `${score}`;
     color = "#44cc11"; // green
   }
 
