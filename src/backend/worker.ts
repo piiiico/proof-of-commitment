@@ -5551,6 +5551,8 @@ Examples: "vercel/next.js", "facebook/react", "https://github.com/piiiico/proof-
     "lookup_npm_package",
     `Get a behavioral commitment profile for any npm package. Returns real signals that prove genuine investment: package age, download volume and trend (growing/stable/declining), release consistency, npm publisher count, GitHub contributor count, and linked GitHub activity.
 
+Also returns publisherLifecycle — cross-referencing current maintainers against per-version publish history to flag dormant publishers who still hold npm scope access. The Mastra incident (June 2026) exploited exactly this: a contributor dormant since 2024 with never-revoked scope access.
+
 Why behavioral signals matter: download counts, stars, and READMEs can be gamed. Download *trend* consistency and publisher depth over years are harder to fake. Supply chain attacks often target packages with low publisher depth (few people with npm publish access).
 
 Useful for: vetting dependencies before installation, due diligence on open-source packages, identifying abandonware, checking if a package is actively maintained.
@@ -5597,6 +5599,7 @@ Examples: "langchain", "@anthropic-ai/sdk", "express", "litellm"`,
                   trustedPublishing: profile.trustedPublishing,
                   commitmentScore: profile.commitmentScore,
                   scoreBreakdown: profile.scoreBreakdown,
+                  publisherLifecycle: profile.publisherLifecycle,
                 },
                 null,
                 2
@@ -5838,7 +5841,8 @@ Examples: "github.com/gin-gonic/gin", "golang.org/x/crypto", "github.com/spf13/c
 Risk flags:
 - CRITICAL: single publisher + >10M weekly downloads (publish-access concentration risk)
 - HIGH: new package (<1yr) + high downloads (unproven, rapid adoption = supply chain risk)
-- WARN: low publisher count + high downloads
+- WARN: no release in 12+ months (potential abandonware)
+- WARN: dormant publishers with current scope access — contributors who stopped publishing but retain npm tokens (Mastra-incident vector, June 2026)
 
 Perfect for auditing a full package.json, requirements.txt, Cargo.toml, or go.mod — paste your dependency list and get a prioritized risk report.
 
