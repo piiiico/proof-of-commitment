@@ -364,6 +364,8 @@ server.tool(
   "lookup_npm_package",
   `Get a behavioral commitment profile for any npm package. Returns real signals: package age, download volume and trend (growing/stable/declining), release consistency, npm publisher count, GitHub contributor count, and linked GitHub activity.
 
+Also returns publisherLifecycle — cross-referencing current maintainers against per-version publish history to flag dormant publishers who still hold npm scope access. The Mastra incident (June 2026) exploited exactly this: a contributor dormant since 2024 with never-revoked scope access.
+
 Supply chain attacks target packages with low publisher depth (few people with npm publish access). Behavioral signals reveal what download counts hide.
 
 Useful for: vetting dependencies, identifying abandonware, due diligence on open-source packages.
@@ -408,6 +410,7 @@ Examples: "langchain", "@anthropic-ai/sdk", "express", "litellm"`,
                 githubScore: profile.githubScore,
                 commitmentScore: profile.commitmentScore,
                 scoreBreakdown: profile.scoreBreakdown,
+                publisherLifecycle: profile.publisherLifecycle,
               },
               null,
               2
@@ -577,6 +580,7 @@ Risk flags:
 - CRITICAL: single npm publisher + >10M weekly downloads (publish-access concentration risk)
 - HIGH: new package (<1yr) + high downloads (unproven, rapid adoption = supply chain risk)
 - WARN: no release in 12+ months (potential abandonware)
+- WARN: dormant publishers with current scope access — contributors who stopped publishing but retain npm tokens (the Mastra incident vector, June 2026)
 
 Perfect for auditing a full package.json or requirements.txt — paste your dependency list and get a prioritized risk report.
 
@@ -669,6 +673,18 @@ Examples: score all deps in a project, compare two similar packages, identify ab
                 riskFlags.push("HIGH: new package (<1yr) + high downloads");
               if (profile.daysSinceLastPublish > 365)
                 riskFlags.push("WARN: no release in 12+ months");
+              // Dormant publishers with stale scope access (Mastra-incident vector)
+              const lc = profile.publisherLifecycle;
+              if (lc && lc.dormantWithAccess > 0) {
+                const dormantNames = lc.dormantDetails
+                  .filter((d) => d.hasCurrentAccess)
+                  .slice(0, 3)
+                  .map((d) => `${d.name} (${d.monthsInactive}mo inactive)`)
+                  .join(", ");
+                riskFlags.push(
+                  `WARN: ${lc.dormantWithAccess} dormant publisher${lc.dormantWithAccess > 1 ? "s" : ""} with current scope access — ${dormantNames}`
+                );
+              }
               return {
                 name: pkg,
                 score: profile.commitmentScore,
@@ -677,6 +693,7 @@ Examples: score all deps in a project, compare two similar packages, identify ab
                 ageYears: Math.round(profile.ageYears * 10) / 10,
                 trend: profile.downloadTrend,
                 riskFlags,
+                publisherLifecycle: lc ?? undefined,
               };
             }
           } catch (err) {
