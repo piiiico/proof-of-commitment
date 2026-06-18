@@ -642,6 +642,12 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
           );
       console.log(breakdown);
     }
+
+    // Show WARN-level risk flags inline (dormant publishers, stale releases, etc.)
+    const warnFlags = (pkg.riskFlags || []).filter(f => f.startsWith('WARN:'));
+    for (const flag of warnFlags) {
+      console.log(clr(c.yellow, `  ⚠ ${flag}`));
+    }
   }
 
   console.log(divider);
