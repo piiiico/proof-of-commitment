@@ -1361,17 +1361,69 @@ app.post("/api/audit", async (c) => {
 });
 
 /**
+ * Pick HTML vs JSON for a request based on the Accept header.
+ * Returns true only when text/html is strictly at least as preferred as
+ * application/json. Browsers send `text/html,...,application/xhtml+xml,...`
+ * with no application/json entry, so html beats the missing json (q=0).
+ * curl and node fetch send `*\/*` which leaves htmlQ=0 → returns false.
+ *
+ * Used by `/api/score/npm/*` (a URL pattern that ships in blog posts,
+ * dev.to articles, and the public PostCSS thread) to forward browser
+ * visitors to the /scan/?pkg= score-card page instead of raw JSON.
+ */
+export function prefersHtmlOverJson(acceptHeader: string | null | undefined): boolean {
+  if (!acceptHeader) return false;
+  const accept = acceptHeader.toLowerCase();
+  if (!accept.includes("text/html")) return false;
+  let htmlQ = 0;
+  let jsonQ = 0;
+  for (const raw of accept.split(",")) {
+    const part = raw.trim();
+    if (!part) continue;
+    const [type, ...params] = part.split(";").map((s) => s.trim());
+    const qParam = params.find((p) => p.startsWith("q="));
+    const q = qParam ? parseFloat(qParam.slice(2)) : 1.0;
+    if (Number.isNaN(q)) continue;
+    if (type === "text/html") htmlQ = Math.max(htmlQ, q);
+    else if (type === "application/json") jsonQ = Math.max(jsonQ, q);
+  }
+  return htmlQ > 0 && htmlQ >= jsonQ;
+}
+
+/**
  * GET /api/score/npm/:package{.+}
  * Single-package npm commitment profile with trustedPublishing signal.
- * Returns the full NpmCommitmentProfile JSON.
+ * Returns the full NpmCommitmentProfile JSON for API consumers, or
+ * redirects browser visitors (Accept: text/html) to the /scan/?pkg=
+ * score-card page so URLs shared in blog posts / public threads /
+ * dev.to articles render the visual card instead of raw JSON.
+ *
+ * Overrides:
+ *   ?format=json — always JSON (for browsers exploring the API)
+ *   ?format=html — always redirect (for clients without a sensible Accept)
  */
 app.get("/api/score/npm/*", async (c) => {
   const packageName = decodeURIComponent(c.req.path.replace("/api/score/npm/", ""));
   if (!packageName) return c.json({ error: "package name required" }, 400);
+
+  const formatQuery = (c.req.query("format") || "").toLowerCase();
+  const wantsHtml =
+    formatQuery === "html" ||
+    (formatQuery !== "json" && prefersHtmlOverJson(c.req.header("Accept")));
+  if (wantsHtml) {
+    return c.redirect(
+      `https://getcommit.dev/scan/?pkg=${encodeURIComponent(packageName)}&utm_source=api-share`,
+      302,
+    );
+  }
+
   try {
     const profile = await buildNpmCommitmentProfile(packageName);
     if (!profile) return c.json({ error: "not found" }, 404);
-    return c.json(profile, 200, { "Cache-Control": "max-age=300, s-maxage=300" });
+    return c.json(profile, 200, {
+      "Cache-Control": "max-age=300, s-maxage=300",
+      Vary: "Accept",
+    });
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : "error" }, 500);
   }
