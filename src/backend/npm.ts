@@ -24,6 +24,12 @@ import {
 const NPM_REGISTRY = "https://registry.npmjs.org";
 const NPM_DOWNLOADS = "https://api.npmjs.org/downloads/range";
 const NPM_DOWNLOADS_POINT = "https://api.npmjs.org/downloads/point";
+const GH_API = "https://api.github.com";
+const GH_HEADERS = {
+  Accept: "application/vnd.github+json",
+  "User-Agent": "proof-of-commitment-mcp/1.0",
+  "X-GitHub-Api-Version": "2022-11-28",
+};
 
 interface NpmPackage {
   name: string;
@@ -221,6 +227,7 @@ export interface NpmCommitmentProfile {
   hasProvenance: boolean | null; // npm SLSA provenance attestation (null = check failed/skipped)
   scorecardScore: number | null; // OpenSSF Scorecard 0–10 (null = no GitHub repo or not indexed)
   hasDangerousWorkflow: boolean | null; // true = Dangerous-Workflow Scorecard check failed (null = no Scorecard data)
+  hasStagedPublishing: boolean | null; // npm Staged Publishing (GA May 2026): human 2FA approval before release (null = inconclusive)
 
   // Trust signals
   trustedPublishing: boolean;
@@ -234,6 +241,7 @@ export interface NpmCommitmentProfile {
     maintainerDepth: number;
     githubBacking: number;
     trustedPublishing: number;
+    stagedPublishing: number;
   };
   githubScore: number | null;
 
@@ -509,6 +517,96 @@ async function checkNpmProvenance(
 }
 
 /**
+ * Detect npm Staged Publishing adoption for a package.
+ *
+ * npm Staged Publishing (GA May 2026) adds a mandatory human 2FA approval step
+ * between CI publishing a version and that version becoming the default install
+ * target (i.e. what you get with `npm install <pkg>`). This is a stronger signal
+ * than OIDC provenance alone for sole-publisher packages — validated by PostCSS
+ * maintainer Andrey Sitnik (postcss/postcss#2096) and the TanStack Shai-Hulud /
+ * Red Hat @redhat-cloud-services incidents (June 2026), where valid SLSA provenance
+ * was present but the CI pipeline itself was compromised.
+ *
+ * Detection (two-tier):
+ *  1. dist-tags.stage present — active staged version pending promotion (free: already in registry metadata)
+ *  2. GitHub Actions workflow file scan — finds `npm stage` or `@npm/staged-publish` patterns
+ *     (costs 1 + up to 3 GitHub API calls; only runs when a linked repo is available)
+ *
+ * @returns true if detected, false if definitively not found, null if inconclusive.
+ */
+async function checkStagedPublishing(
+  pkg: NpmPackage,
+  repoUrl: string | null
+): Promise<boolean | null> {
+  // Tier 1: active stage dist-tag (zero extra requests — already in registry response)
+  if (pkg["dist-tags"]["stage"]) {
+    return true;
+  }
+
+  // Tier 2: GitHub Actions workflow inspection
+  if (repoUrl) {
+    const parsed = parseGitHubInput(repoUrl);
+    if (parsed) {
+      const { owner, repo } = parsed;
+      try {
+        // List .github/workflows — one unauthenticated request (rate limit: 60/hr shared)
+        const listRes = await fetch(
+          `${GH_API}/repos/${owner}/${repo}/contents/.github/workflows`,
+          {
+            headers: GH_HEADERS,
+            // @ts-ignore CF fetch cache hint
+            cf: { cacheEverything: true, cacheTtl: 3600 },
+            signal: AbortSignal.timeout(4000),
+          }
+        );
+        if (!listRes.ok) return false;
+
+        const files = (await listRes.json()) as Array<{
+          name: string;
+          download_url: string | null;
+        }>;
+
+        // Prioritize workflow files that typically contain publish steps
+        const candidates = files
+          .filter(
+            (f) =>
+              /\.(yml|yaml)$/.test(f.name) &&
+              /publish|release|deploy|npm/i.test(f.name)
+          )
+          .slice(0, 3); // Limit to 3 content fetches to cap API usage
+
+        for (const file of candidates) {
+          if (!file.download_url) continue;
+          try {
+            const contentRes = await fetch(file.download_url, {
+              // @ts-ignore CF fetch cache hint
+              cf: { cacheEverything: true, cacheTtl: 3600 },
+              signal: AbortSignal.timeout(3000),
+            });
+            if (!contentRes.ok) continue;
+            const content = await contentRes.text();
+            // Detect npm Staged Publishing patterns:
+            //   npm stage           — npm CLI command (npm stage promote, npm stage ls, etc.)
+            //   @npm/staged-publish — official GitHub Action (if/when published)
+            //   staged-publish      — common action/script name in ecosystem
+            if (/\bnpm\s+stage\b|@npm\/staged-publish|staged-publish/i.test(content)) {
+              return true;
+            }
+          } catch {
+            // Non-fatal — try next file
+          }
+        }
+        return false;
+      } catch {
+        return null; // GitHub API unavailable — inconclusive
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
  * Build a behavioral commitment profile for an npm package.
  * @param preloadedWeekly  Optional pre-fetched weekly download count (from bulkFetchNpmWeeklyDownloads).
  *   Pass a positive number to skip the individual download API call (batch mode).
@@ -732,15 +830,16 @@ export async function buildNpmCommitmentProfile(
     }
   }
 
-  // 3. GitHub backing + provenance (concurrent, both optional, best-effort)
+  // 3. GitHub backing + provenance + staged publishing (concurrent, all optional, best-effort)
   let githubScore: number | null = null;
   let githubBacking = 0;
   let githubContributors: number | null = null;
   let hasProvenance: boolean | null = null;
   let scorecardScore: number | null = null;
   let hasDangerousWorkflow: boolean | null = null;
+  let hasStagedPublishing: boolean | null = null;
 
-  const [ghResult, provenanceResult] = await Promise.allSettled([
+  const [ghResult, provenanceResult, stagedPublishingResult] = await Promise.allSettled([
     // GitHub commitment profile (includes Scorecard internally)
     (async () => {
       if (!repoUrl) return null;
@@ -750,6 +849,8 @@ export async function buildNpmCommitmentProfile(
     })(),
     // SLSA provenance attestation check
     checkNpmProvenance(packageName, latestVersion),
+    // Staged Publishing detection (dist-tags + GitHub workflow scan)
+    checkStagedPublishing(pkg, repoUrl),
   ]);
 
   if (ghResult.status === "fulfilled" && ghResult.value) {
@@ -763,6 +864,9 @@ export async function buildNpmCommitmentProfile(
   if (provenanceResult.status === "fulfilled") {
     hasProvenance = provenanceResult.value;
   }
+  if (stagedPublishingResult.status === "fulfilled") {
+    hasStagedPublishing = stagedPublishingResult.value;
+  }
 
   // 4. Compute scores
   const longevity = scoreLongevity(ageYears);
@@ -770,9 +874,12 @@ export async function buildNpmCommitmentProfile(
   const releaseConsistency = scoreReleases(versionCount, daysSinceLastPublish);
   const maintainerDepth = scoreMaintainers(maintainerCount, publisherLifecycle);
   const trustedPublishingScore = trustedPublishing ? 2 : 0;
+  // Staged Publishing: +2 pts — human approval gate before version becomes default install target.
+  // Mitigates sole-publisher concentration risk when CI pipeline is compromised (TanStack, Red Hat Jun 2026).
+  const stagedPublishingScore = hasStagedPublishing === true ? 2 : 0;
   const commitmentScore = Math.min(
     100,
-    longevity + downloadMomentum + releaseConsistency + maintainerDepth + githubBacking + trustedPublishingScore,
+    longevity + downloadMomentum + releaseConsistency + maintainerDepth + githubBacking + trustedPublishingScore + stagedPublishingScore,
   );
 
   // 5. Build summary
@@ -803,6 +910,13 @@ export async function buildNpmCommitmentProfile(
       ? "⚠️  No SLSA provenance (use `npm audit signatures` to verify build integrity)"
       : null; // null = check failed, don't surface
 
+  const stagedPublishingStr =
+    hasStagedPublishing === true
+      ? "✅ Staged Publishing enabled (human 2FA approval required before release)"
+      : hasStagedPublishing === false
+      ? "⚠️  No Staged Publishing (versions go live from CI without human approval gate)"
+      : null; // null = inconclusive, don't surface
+
   const scorecardStr =
     scorecardScore !== null
       ? `OpenSSF Scorecard: ${scorecardScore}/10`
@@ -823,6 +937,7 @@ export async function buildNpmCommitmentProfile(
       : null,
     scorecardStr,
     provenanceStr,
+    stagedPublishingStr,
     ``,
     `Commitment Score: ${commitmentScore}/100`,
     `  Longevity:            ${longevity}/25 (${ageStr} old)`,
@@ -831,6 +946,7 @@ export async function buildNpmCommitmentProfile(
     `  Publisher depth:      ${maintainerDepth}/15 (${maintainerCount} npm publisher${maintainerCount !== 1 ? "s" : ""}${publisherLifecycle && publisherLifecycle.dormantWithAccess > 0 ? ` — ${publisherLifecycle.dormantWithAccess} dormant with access` : ""})`,
     `  GitHub backing:       ${githubBacking}/15${githubScore !== null ? ` (GitHub score: ${githubScore}/100)` : " (no linked repo)"}`,
     `  Trusted Publishing:   ${trustedPublishingScore}/2 (${trustedPublishing ? "OIDC provenance detected" : "no provenance"})`,
+    `  Staged Publishing:    ${stagedPublishingScore}/2 (${hasStagedPublishing === true ? "human approval gate detected" : hasStagedPublishing === false ? "not detected" : "inconclusive"})`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -853,6 +969,7 @@ export async function buildNpmCommitmentProfile(
     hasProvenance,
     scorecardScore,
     hasDangerousWorkflow,
+    hasStagedPublishing,
     trustedPublishing,
     commitmentScore,
     scoreBreakdown: {
@@ -862,6 +979,7 @@ export async function buildNpmCommitmentProfile(
       maintainerDepth,
       githubBacking,
       trustedPublishing: trustedPublishingScore,
+      stagedPublishing: stagedPublishingScore,
     },
     githubScore,
     summary: lines,
