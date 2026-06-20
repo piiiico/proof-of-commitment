@@ -491,6 +491,7 @@ function formatSarif(results, { filePath, ecosystem, version } = {}) {
         weeklyDownloads: pkg.weeklyDownloads,
         ageYears: pkg.ageYears,
         hasProvenance: pkg.hasProvenance || false,
+        hasStagedPublishing: pkg.hasStagedPublishing ?? null,
         riskFlags: pkg.riskFlags || [],
       },
     });
@@ -619,6 +620,15 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
     if (hasCritical(pkg.riskFlags) && pkg.githubContributors && pkg.githubContributors > 1) {
       const ghCount = pkg.githubContributors === 35 ? '30+' : pkg.githubContributors;
       console.log(clr(c.dim, `  ↳ ${ghCount} GitHub contributors — publish-access concentration risk despite active community`));
+    }
+
+    // Show Staged Publishing status for CRITICAL npm packages
+    if (hasCritical(pkg.riskFlags) && (pkg.ecosystem || 'npm') === 'npm') {
+      if (pkg.hasStagedPublishing) {
+        console.log(clr(c.green, `  🛡️ Staged Publishing — compromised token can't push to latest`));
+      } else if (pkg.hasStagedPublishing === false) {
+        console.log(clr(c.dim, `  ↳ No Staged Publishing — npm stage publish would add a 2FA gate`));
+      }
     }
 
     // Recently compromised warning
@@ -3043,10 +3053,12 @@ async function main() {
     if (jsonOutput) {
       const criticalCount = allResults.filter(r => hasCritical(r.riskFlags)).length;
       const provenanceCount = allResults.filter(r => r.hasProvenance).length;
+      const stagedPublishingCount = allResults.filter(r => r.hasStagedPublishing === true).length;
       console.log(JSON.stringify({
         totalScanned: allResults.length,
         criticalCount,
         provenanceCount,
+        stagedPublishingCount,
         failOn,
         rateLimited: !!batchRescue,
         results: allResults,
