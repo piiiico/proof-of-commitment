@@ -1056,6 +1056,7 @@ app.post("/api/audit", async (c) => {
     trend: string | null;
     daysSinceLastPublish: number | null;
     hasProvenance: boolean | null;
+    hasStagedPublishing?: boolean | null;
     scorecardScore: number | null;
     hasDangerousWorkflow: boolean | null;
     riskFlags: string[];
@@ -1165,7 +1166,7 @@ app.post("/api/audit", async (c) => {
                 .join(", ");
               riskFlags.push(`WARN: ${lc.dormantWithAccess} dormant publisher${lc.dormantWithAccess > 1 ? "s" : ""} with current scope access — ${dormantNames}`);
             }
-            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown, publisherLifecycle: lc ?? undefined };
+            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, hasStagedPublishing: profile.hasStagedPublishing, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown, publisherLifecycle: lc ?? undefined };
           }
         } catch (err) {
           return { name: pkg, ecosystem: useGolang ? "golang" : useCargo ? "cargo" : usePypi ? "pypi" : "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
@@ -6083,6 +6084,8 @@ Examples: score all deps in a project, compare two similar packages, identify ab
                   weeklyDownloads: profile.recentWeeklyDownloads,
                   ageYears: Math.round(profile.ageYears * 10) / 10,
                   trend: profile.downloadTrend,
+                  hasProvenance: profile.hasProvenance,
+                  hasStagedPublishing: profile.hasStagedPublishing,
                   riskFlags,
                 };
               }
