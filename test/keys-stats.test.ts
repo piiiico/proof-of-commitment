@@ -390,6 +390,10 @@ describe("buildOrganicMcpKeyStats", () => {
       "*@example.com",
       "*@example.invalid",
       "hawkaamdal@gmail.com",
+      "hawkaa+commit-tier-verify@gmail.com",
+      "hawkaa+mcp-test@gmail.com",
+      "hakon@test.com",
+      "test@test.com",
     ]);
   });
 
@@ -443,7 +447,7 @@ describe("buildOrganicMcpKeyStats", () => {
     // wildcarding gmail.com would open the /api/keys/create rate-limit bypass
     // to any attacker with a Gmail account.
     expect(DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS).toBe(
-      "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com"
+      "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com"
     );
   });
 
