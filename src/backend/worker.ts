@@ -5053,6 +5053,14 @@ interface McpCtx {
   env: Bindings;
   ip: string;
   hasApiKey: boolean;
+  // Populated only when hasApiKey is true and the api_keys row was fetched.
+  // Drives free-tier soft-CTA injection in withMcpRateLimit — without these
+  // fields a free-key holder would silently bypass all conversion pressure
+  // (the 149-keys-0-paying gap diagnosed 2026-06-20: free-key MCP traffic
+  // never bumped any counter, never saw any upgrade prompt, dashboard always
+  // showed 0/200 even after hundreds of MCP calls).
+  tier?: "free" | "developer" | "pro" | "enterprise";
+  keyEmail?: string;
 }
 
 function todayUtcDate(): string {
@@ -5089,6 +5097,51 @@ function mcpHardBlockText(count: number): string {
     `→ ${MCP_SIGNUP_URL}    (30s, no card)`,
     "",
     `Then set Authorization: Bearer sk_commit_… on this MCP server.`,
+  ].join("\n");
+}
+
+// Soft-CTA threshold for FREE-tier API key holders on MCP.
+// Different from anon MCP_SOFT_CTA_AT (5) because keyed-free users are a
+// warmer audience — they already opted in, so the upgrade conversation
+// can start later, after sustained usage proves the channel is valuable.
+// 10 = 2× anon threshold; calibrated against the 149-keys-0-paying gap
+// where ZERO upgrade pressure was visible to free-key MCP users.
+export const MCP_FREE_KEY_SOFT_CTA_AT = 10;
+export const MCP_FREE_KEY_STRONG_CTA_AT = 25;
+
+/**
+ * Value-positive soft-CTA appended to MCP tool results for FREE-tier API
+ * key holders past usage milestones. No hard limit and no "running out"
+ * language — the pricing page promises "unlimited with free API key" and
+ * we keep that promise. The CTA frames Developer ($15/mo) as additive
+ * (CI/CD GitHub Action, instant alerts, batch API, 50 repo audits/month),
+ * not as a cap reliever. Email pre-fills the /pricing checkout modal so
+ * the click → buy path is 2 fewer fields. medium=mcp-free-key tags this
+ * funnel separately from anon mcp-soft-cta in /api/admin analytics.
+ */
+export function mcpFreeKeyCtaText(count: number, email: string | undefined): string {
+  const upgradeUrl = buildUpgradeUrl(email, { medium: "mcp-free-key" });
+  if (count >= MCP_FREE_KEY_STRONG_CTA_AT) {
+    return [
+      "",
+      "─────────────────────────────────────────────────",
+      `Commit MCP — ${count} audits today (free key, unlimited).`,
+      `You're using this every day. Developer ($15/mo) adds:`,
+      `  • Auto-trigger GitHub Action on every PR`,
+      `  • Instant email alerts (vs free weekly digest)`,
+      `  • 50 GitHub repo audits / month`,
+      `  • Batch API — up to 5 packages per call`,
+      `→ ${upgradeUrl}`,
+      "─────────────────────────────────────────────────",
+    ].join("\n");
+  }
+  return [
+    "",
+    "─────────────────────────────────────────────────",
+    `Commit MCP — ${count} audits today on free key (unlimited).`,
+    `Running this in CI? Developer ($15/mo) auto-triggers on every PR + instant alerts:`,
+    `→ ${upgradeUrl}`,
+    "─────────────────────────────────────────────────",
   ].join("\n");
 }
 
@@ -5322,20 +5375,54 @@ async function bumpMcpCount(env: Bindings, ip: string): Promise<number> {
 
 /**
  * Wrap an MCP tool handler with rate-limit + soft-CTA logic.
- * API-key holders pass through untouched. Anonymous IPs:
- *   - count incremented before handler runs
- *   - >MCP_HARD_LIMIT → return hard-block message (isError)
- *   - ≥MCP_SOFT_CTA_AT → append CTA to result content
+ *
+ * Three populations, three paths:
+ *
+ * 1. Anonymous (no API key):
+ *    - bump per-IP counter; >MCP_HARD_LIMIT (15) → hard block + signup CTA
+ *    - ≥MCP_SOFT_CTA_AT (5) → append generic free-key signup CTA
+ *
+ * 2. Free-tier API key:
+ *    - bump per-IP counter (same table — no schema change)
+ *    - NO hard limit (pricing page promises "unlimited with free key")
+ *    - ≥MCP_FREE_KEY_SOFT_CTA_AT (10) → append value-positive Developer CTA
+ *      with email-prefilled /pricing URL (medium=mcp-free-key for funnel
+ *      attribution). Closes the 149-keys-0-paying gap where free-key MCP
+ *      traffic saw ZERO upgrade pressure.
+ *
+ * 3. Paid tiers (developer/pro/enterprise):
+ *    - pass through untouched. No counter bump, no CTA — they paid.
  */
 function withMcpRateLimit<A>(
   ctx: McpCtx,
   handler: (args: A) => Promise<McpToolResult>,
 ): (args: A) => Promise<McpToolResult> {
   return async (args: A) => {
-    if (ctx.hasApiKey) return handler(args);
+    // Paid tiers: no friction, no instrumentation. They paid.
+    if (ctx.hasApiKey && ctx.tier && ctx.tier !== "free") {
+      return handler(args);
+    }
 
     const count = await bumpMcpCount(ctx.env, ctx.ip);
 
+    // Free-tier API key holders: no hard limit (offering promise kept),
+    // but soft-CTA milestones surface Developer-tier value at sustained
+    // usage. Email pre-fills the /pricing modal.
+    if (ctx.hasApiKey && ctx.tier === "free") {
+      const result = await handler(args);
+      if (count >= MCP_FREE_KEY_SOFT_CTA_AT) {
+        return {
+          ...result,
+          content: [
+            ...result.content,
+            { type: "text" as const, text: mcpFreeKeyCtaText(count, ctx.keyEmail) },
+          ],
+        };
+      }
+      return result;
+    }
+
+    // Anonymous: existing hard-limit + soft-CTA behavior.
     if (count > MCP_HARD_LIMIT) {
       return {
         content: [{ type: "text" as const, text: mcpHardBlockText(count) }],
@@ -6508,14 +6595,24 @@ app.all("/mcp", async (c) => {
     "unknown";
 
   let hasApiKey = false;
+  let keyTier: "free" | "developer" | "pro" | "enterprise" | undefined;
+  let keyEmail: string | undefined;
   const auth = c.req.header("Authorization");
   if (auth?.startsWith("Bearer sk_commit_")) {
     try {
       const tokenHash = await sha256Hex(auth.slice(7));
+      // Fetch tier + email so withMcpRateLimit can branch on free vs paid
+      // and pre-fill the /pricing checkout modal for free-tier soft-CTAs.
+      // Same SELECT shape as the api-key middleware (line ~490) — keep in
+      // sync if either grows columns.
       const row = await c.env.DB.prepare(
-        `SELECT id FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL LIMIT 1`
-      ).bind(tokenHash).first<{ id: string }>();
+        `SELECT id, tier, email FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL LIMIT 1`
+      ).bind(tokenHash).first<{ id: string; tier: string; email: string }>();
       hasApiKey = !!row;
+      if (row) {
+        keyTier = (row.tier as typeof keyTier) || "free";
+        keyEmail = row.email;
+      }
     } catch {
       // fail open — anonymous treatment
     }
@@ -6524,7 +6621,7 @@ app.all("/mcp", async (c) => {
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless
   });
-  const mcp = createMcpServer({ env: c.env, ip, hasApiKey });
+  const mcp = createMcpServer({ env: c.env, ip, hasApiKey, tier: keyTier, keyEmail });
   await mcp.connect(transport);
   return transport.handleRequest(targetReq);
 });
