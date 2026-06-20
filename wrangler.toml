@@ -23,6 +23,18 @@ ENVIRONMENT = "production"
 #   hawkaamdal@gmail.com — Håkon's personal Gmail (LITERAL — cannot wildcard
 #                          gmail.com; any other Håkon Gmail address needs to be
 #                          added explicitly).
+#   hawkaa+commit-tier-verify@gmail.com,
+#   hawkaa+mcp-test@gmail.com — Pico dogfood tags (LITERAL — addresses
+#                          historically used to verify tier/MCP flows; not
+#                          wildcarded to `hawkaa+*@gmail.com` because we cannot
+#                          prove ownership of hawkaa@gmail.com as a third-party
+#                          domain — bypassing rate limits there could let
+#                          whoever owns it create unlimited keys).
+#   hakon@test.com, test@test.com — Placeholder addresses on Verisign-owned
+#                          test.com (not RFC 2606 but functionally a reserved
+#                          testing domain — no one registers users on
+#                          test.com). LITERAL only; `*@test.com` would open
+#                          rate-limit bypass to anyone delivering there.
 # Do NOT use `*@*` or `*@gmail.com` — an attacker could spoof emails on a
 # third-party domain to bypass the rate limit. Operator-owned-domain anchors
 # close that hole.
@@ -34,7 +46,16 @@ ENVIRONMENT = "production"
 # hakon@, hawkaamdal@gmail.com, every *@getcommit.dev / *@pico.amdal.dev /
 # *@example.invalid were counted as organic. Widening collapses organic to its
 # true value (≤5 — bounded above by test.com + any non-Håkon gmail).
-INTERNAL_TEST_EMAIL_PATTERNS = "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com"
+# 2026-06-20 phantom-organic correction: post-2026-06-13 widening, /api/keys/stats
+# kept reporting "4 organic" — but D1 query showed those 4 ARE
+# {test@test.com, hakon@test.com, hawkaa+commit-tier-verify@gmail.com,
+# hawkaa+mcp-test@gmail.com}, all dogfood, all with requests_this_period=0
+# and last_used_at=NULL. Every session was strategizing acquisition based on
+# the lie of "4 external users". Adding the 4 phantoms as literals collapses
+# organic to TRUE 0. The 4 keys themselves are also retroactively revoked in
+# D1 so the count drops at the WHERE revoked_at IS NULL filter, not just the
+# pattern bucket. See worker.ts DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS.
+INTERNAL_TEST_EMAIL_PATTERNS = "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com"
 
 [[d1_databases]]
 binding = "DB"

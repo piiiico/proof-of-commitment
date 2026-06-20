@@ -3783,9 +3783,20 @@ export const DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS =
   //   *@getcommit.dev      — Håkon-owned via Cloudflare Email Routing
   //   *@example.com        — RFC 2606 reserved (cannot be registered)
   //   *@example.invalid    — RFC 2606 reserved
-  // Specific Håkon-controlled third-party literal (cannot wildcard gmail.com):
+  // Specific third-party literals (cannot wildcard gmail.com / test.com):
   //   hawkaamdal@gmail.com — Håkon's personal Gmail (per workspace standing facts)
-  "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com";
+  //   hawkaa+commit-tier-verify@gmail.com, hawkaa+mcp-test@gmail.com
+  //                        — Pico dogfood addresses surfaced 2026-06-20 during
+  //                          a phantom-organic audit; kept literal because we
+  //                          can't prove ownership of hawkaa@gmail.com.
+  //   hakon@test.com, test@test.com
+  //                        — placeholders on Verisign-owned test.com; literal
+  //                          only, never *@test.com (rate-limit-bypass risk).
+  // 2026-06-20: 4 phantom literals added after /api/keys/stats kept reading
+  // "4 organic" when D1 showed those 4 emails were all dogfood with 0
+  // requests and NULL last_used_at — every session was strategizing on the
+  // lie of "4 external users". The 4 backing keys are also revoked retroactively.
+  "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com";
 
 export type McpTrafficStats = {
   today: {
