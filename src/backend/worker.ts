@@ -225,6 +225,33 @@ registerAttack("npm", ["@cap-js/*"], {
   url: "https://getcommit.dev/blog/may-2026-npm-attacks-roundup/",
 });
 
+// Sapphire Sleet — Mastra AI framework credential theft via phished maintainer (Jun 17 2026)
+// North Korean state actor (MSFT attribution). Injected easy-day-js typosquat (dayjs clone)
+// into 141 @mastra packages in 88 minutes. PowerShell backdoor + crypto wallet harvester
+// targeting 166 browser-extension IDs. C2: 23.254.164.92, maskasd.com
+// Sources: Microsoft Threat Intelligence (Jun 17), Mastra incident report #18061
+registerAttack("npm", [
+  "@mastra/*",
+  "mastra",
+  "easy-day-js",
+], {
+  attack: "Sapphire Sleet (Mastra)",
+  date: "2026-06-17",
+  url: "https://getcommit.dev/blog/mastra-dormant-publisher-attack/",
+});
+
+// Mini Shai-Hulud — @antv visualization ecosystem (May 20 2026)
+// Compromised @antv npm packages enable CI/CD credential theft.
+// Same worm family as TanStack (May 11) and UiPath (May 11).
+// Source: Microsoft Threat Intelligence
+registerAttack("npm", [
+  "@antv/*",
+], {
+  attack: "Mini Shai-Hulud",
+  date: "2026-05-20",
+  url: "https://getcommit.dev/blog/may-2026-npm-attacks-roundup/",
+});
+
 // axios credential theft (Mar 30 2026)
 registerAttack("npm", ["axios"], {
   attack: "axios token theft",
