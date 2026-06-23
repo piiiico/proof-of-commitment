@@ -64,6 +64,52 @@ function hasValidDownloads(candidate: DownloadRange): boolean {
 }
 
 /**
+ * Detect when an npm package's weeklyDownloads result is almost certainly
+ * a transient fetch failure rather than legitimate zero traffic.
+ *
+ * Background (2026-06-23 dogfood, 1st batch of an audit-page session): a
+ * fresh /api/audit call for ["express","axios","lodash","chalk","zod","react",
+ * "next","webpack","typescript","tailwindcss"] returned weeklyDownloads=0 for
+ * EVERY package, with no CRITICAL flags (which depend on wdl>10M) and scores
+ * 50-72 (downloadMomentum=0 component). All subsequent same-IP calls returned
+ * correct data. Root cause is the documented CF colo cache poisoning path
+ * (npm sets Cache-Control: max-age=300; one degraded npm-edge response sticks
+ * to the colo for ~5 min, defeats bulk + per-package rescue + slow-path retry
+ * because they all hit the same colo). User-visible symptom: scoring axios
+ * at 68 with "0/wk" downloads next to lodash at 58 with "0/wk" — a hard
+ * credibility hit on first interaction (the moment the conversion decision
+ * gets made). Blog post 2026-06-23 ("978 downloads, zero signups") frames
+ * 0-organic-conversions as a post-signup-value problem, but the audit
+ * surface lying about downloads is a *pre-signup credibility* problem that
+ * needs its own gate.
+ *
+ * Heuristic: any npm package with 30+ published versions AND 1+ year of
+ * registry age that comes back with weeklyDownloads=0 is almost certainly
+ * a fetch failure. Mature, multi-version packages essentially never have
+ * literal zero downloads — even unmaintained ones get legacy installs.
+ * False-positive risk: ~0. False-negative risk: bug still slips through
+ * for newer (<1y) or sparsely-versioned (<30 versions) packages, but those
+ * have lower baseline scoring weight from downloads anyway.
+ *
+ * When this returns true, callers should report weeklyDownloads as `null`
+ * (data unavailable) rather than 0 (definite zero), and may surface
+ * `downloadDataMissing: true` so the UI can show "—" with a discreet
+ * "fetching failed, retry" affordance instead of a confident-but-wrong
+ * "0/wk" cell.
+ */
+export function isSuspiciouslyZeroDownloads(
+  weeklyDownloads: number | null | undefined,
+  versionCount: number | null | undefined,
+  ageYears: number | null | undefined,
+): boolean {
+  return (
+    weeklyDownloads === 0 &&
+    typeof versionCount === "number" && versionCount >= 30 &&
+    typeof ageYears === "number" && ageYears >= 1
+  );
+}
+
+/**
  * Bulk-fetch WEEKLY download totals for multiple npm packages in ONE API call.
  * Uses the point API (/downloads/point/last-week) which is simpler and more reliable
  * than the range API — avoids the concurrent-request race condition that causes zeros.

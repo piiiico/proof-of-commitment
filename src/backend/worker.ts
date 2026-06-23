@@ -27,7 +27,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import { buildCommitmentProfile, searchAndProfile } from "./brreg.ts";
 import { buildGitHubCommitmentProfile, parseGitHubInput } from "./github.ts";
-import { buildNpmCommitmentProfile, bulkFetchNpmWeeklyDownloads } from "./npm.ts";
+import { buildNpmCommitmentProfile, bulkFetchNpmWeeklyDownloads, isSuspiciouslyZeroDownloads } from "./npm.ts";
 import { buildPyPICommitmentProfile } from "./pypi.ts";
 import { buildCargoCommitmentProfile } from "./cargo.ts";
 import { buildGolangCommitmentProfile } from "./golang.ts";
@@ -1089,6 +1089,7 @@ app.post("/api/audit", async (c) => {
     riskFlags: string[];
     compromised?: { attack: string; date: string; url: string };
     scoreBreakdown: { longevity: number; downloadMomentum: number; releaseConsistency: number; maintainerDepth: number; githubBacking: number } | null;
+    downloadDataMissing?: boolean;
     error?: string;
   }> = [];
 
@@ -1193,7 +1194,15 @@ app.post("/api/audit", async (c) => {
                 .join(", ");
               riskFlags.push(`WARN: ${lc.dormantWithAccess} dormant publisher${lc.dormantWithAccess > 1 ? "s" : ""} with current scope access — ${dormantNames}`);
             }
-            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: profile.recentWeeklyDownloads ?? null, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, hasStagedPublishing: profile.hasStagedPublishing, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown, publisherLifecycle: lc ?? undefined };
+            // Sanity-zero gate (see isSuspiciouslyZeroDownloads in npm.ts):
+            // a popular, mature package with 0 downloads is almost certainly a
+            // transient fetch failure, not real data. Report null + flag so the
+            // UI shows "—" instead of a confident-but-wrong "0/wk" cell on the
+            // first interaction (the moment conversion decisions get made).
+            const wdRaw = profile.recentWeeklyDownloads ?? null;
+            const downloadDataMissing = isSuspiciouslyZeroDownloads(wdRaw, profile.versionCount, profile.ageYears);
+            const wdReport = downloadDataMissing ? null : wdRaw;
+            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: wdReport, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, hasStagedPublishing: profile.hasStagedPublishing, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown, publisherLifecycle: lc ?? undefined, downloadDataMissing: downloadDataMissing || undefined };
           }
         } catch (err) {
           return { name: pkg, ecosystem: useGolang ? "golang" : useCargo ? "cargo" : usePypi ? "pypi" : "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
