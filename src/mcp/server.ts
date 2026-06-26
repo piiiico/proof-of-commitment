@@ -665,10 +665,11 @@ Examples: score all deps in a project, compare two similar packages, identify ab
                   error: "not found",
                 };
               const riskFlags: string[] = [];
-              if (profile.maintainerCount <= 1 && profile.recentWeeklyDownloads > 10_000_000)
-                riskFlags.push("CRITICAL: sole publisher + >10M/wk");
-              else if (profile.maintainerCount <= 1 && profile.recentWeeklyDownloads > 1_000_000)
-                riskFlags.push("HIGH: sole publisher + >1M/wk");
+              const effPub = profile.activePublisherCount ?? profile.maintainerCount;
+              if (effPub <= 1 && profile.recentWeeklyDownloads > 10_000_000)
+                riskFlags.push("CRITICAL: sole active publisher + >10M/wk");
+              else if (effPub <= 1 && profile.recentWeeklyDownloads > 1_000_000)
+                riskFlags.push("HIGH: sole active publisher + >1M/wk");
               if (profile.ageYears < 1 && profile.recentWeeklyDownloads > 100_000)
                 riskFlags.push("HIGH: new package (<1yr) + high downloads");
               if (profile.daysSinceLastPublish > 365)

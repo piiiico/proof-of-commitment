@@ -260,6 +260,10 @@ export interface NpmCommitmentProfile {
   ageYears: number;
   versionCount: number;
   maintainerCount: number;
+  /** Publishers who have published at least once in the last 12 months. Use this for
+   *  supply-chain risk assessment — 3 dormant publishers with valid scope access are
+   *  NOT effective depth (ws pattern: 4 total, 1 active, 220M dl/wk → CRITICAL). */
+  activePublisherCount: number;
   githubContributors: number | null;
   recentWeeklyDownloads: number;
   downloadTrend: "growing" | "stable" | "declining" | null;
@@ -457,22 +461,26 @@ function scoreMaintainers(
   count: number,
   lifecycle: PublisherLifecycle | null,
 ): number {
-  // Base score from maintainer count (unchanged)
+  // Use active publisher count when lifecycle data is available.
+  // Dormant publishers with valid scope access are NOT effective depth —
+  // they are attack surface. ws pattern: 4 total publishers, but 3 haven't
+  // published in 10-13 years; effective depth is 1, not 4.
+  // Falls back to maintainerCount when lifecycle data is unavailable.
+  const effectiveCount = lifecycle !== null ? lifecycle.activePublishers : count;
+
   let base: number;
-  if (count >= 5) base = 15;
-  else if (count >= 3) base = 11;
-  else if (count >= 2) base = 7;
-  else if (count === 1) base = 4;
+  if (effectiveCount >= 5) base = 15;
+  else if (effectiveCount >= 3) base = 11;
+  else if (effectiveCount >= 2) base = 7;
+  else if (effectiveCount === 1) base = 4;
   else base = 0;
 
-  // Lifecycle adjustment: dormant publishers who STILL have scope access
-  // reduce effective depth. Only penalize for dormantWithAccess — publishers
-  // who were removed from maintainers are already revoked (no risk).
+  // Additional penalty for dormant publishers who STILL have scope access
+  // (credential risk on top of low effective depth).
   // This is the Mastra pattern: ehindero was dormant since 2024 but still
   // had scope access in June 2026.
   if (lifecycle && lifecycle.dormantWithAccess > 0) {
     // Penalty: -2 points per dormant-with-access publisher, capped at 40% of base.
-    // A single dormant maintainer is a moderate risk; three is severe.
     const rawPenalty = lifecycle.dormantWithAccess * 2;
     const maxPenalty = Math.round(base * 0.4);
     base = Math.max(0, base - Math.min(rawPenalty, maxPenalty));
@@ -702,6 +710,13 @@ export async function buildNpmCommitmentProfile(
 
   // Publisher lifecycle: active vs dormant publishers (from per-version _npmUser)
   const publisherLifecycle = analyzePublisherLifecycle(pkg);
+
+  // Active publisher count: publishers who published in the last 12 months.
+  // This is the effective depth for supply-chain risk — dormant publishers with
+  // valid scope access are attack surface, not depth (ws: 4 total, 1 active).
+  const activePublisherCount = publisherLifecycle !== null
+    ? publisherLifecycle.activePublishers
+    : maintainerCount;
 
   // Trusted Publishing (npm OIDC provenance) — detected via dist.attestations field
   const trustedPublishing = !!(
@@ -974,7 +989,7 @@ export async function buildNpmCommitmentProfile(
     `Age: ${ageStr}`,
     `Versions published: ${versionCount} | Last: ${recentStr}`,
     `Downloads: ${dlStr}`,
-    `npm publishers: ${maintainerCount}${githubContributors !== null ? ` | GitHub contributors: ${githubContributors >= 30 ? "30+" : githubContributors}` : ""}`,
+    `npm publishers: ${maintainerCount}${publisherLifecycle && activePublisherCount < maintainerCount ? ` (${activePublisherCount} active, ${maintainerCount - activePublisherCount} dormant)` : ""}${githubContributors !== null ? ` | GitHub contributors: ${githubContributors >= 30 ? "30+" : githubContributors}` : ""}`,
     `Trusted Publishing: ${trustedPublishing ? "yes (OIDC provenance)" : "no"}`,
     repoUrl ? `Repository: ${repoUrl}` : "No linked repository",
     pkg.license ? `License: ${pkg.license}` : "No license specified",
@@ -989,7 +1004,7 @@ export async function buildNpmCommitmentProfile(
     `  Longevity:            ${longevity}/25 (${ageStr} old)`,
     `  Download momentum:    ${downloadMomentum}/25 (${dlStr})`,
     `  Release consistency:  ${releaseConsistency}/20 (${versionCount} versions)`,
-    `  Publisher depth:      ${maintainerDepth}/15 (${maintainerCount} npm publisher${maintainerCount !== 1 ? "s" : ""}${publisherLifecycle && publisherLifecycle.dormantWithAccess > 0 ? ` — ${publisherLifecycle.dormantWithAccess} dormant with access` : ""})`,
+    `  Publisher depth:      ${maintainerDepth}/15 (${activePublisherCount}/${maintainerCount} active npm publisher${maintainerCount !== 1 ? "s" : ""}${publisherLifecycle && publisherLifecycle.dormantWithAccess > 0 ? ` — ${publisherLifecycle.dormantWithAccess} dormant with scope access` : ""})`,
     `  GitHub backing:       ${githubBacking}/15${githubScore !== null ? ` (GitHub score: ${githubScore}/100)` : " (no linked repo)"}`,
     `  Trusted Publishing:   ${trustedPublishingScore}/2 (${trustedPublishing ? "OIDC provenance detected" : "no provenance"})`,
     `  Staged Publishing:    ${stagedPublishingScore}/2 (${hasStagedPublishing === true ? "human approval gate detected" : hasStagedPublishing === false ? "not detected" : "inconclusive"})`,
@@ -1006,6 +1021,7 @@ export async function buildNpmCommitmentProfile(
     ageYears,
     versionCount,
     maintainerCount,
+    activePublisherCount,
     githubContributors,
     recentWeeklyDownloads: avg7d * 7,
     downloadTrend: trend,

@@ -1178,8 +1178,12 @@ app.post("/api/audit", async (c) => {
             if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
             const riskFlags: string[] = [];
             const wdl = profile.recentWeeklyDownloads ?? 0;
-            if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole npm publisher + >10M/wk");
-            else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole npm publisher + >1M/wk");
+            // Use activePublisherCount (publishers who published in last 12mo) for
+            // CRITICAL/HIGH checks — dormant publishers with valid scope access are
+            // attack surface, not effective depth (ws: 4 total, 1 active, 220M/wk).
+            const effectivePubCount = profile.activePublisherCount ?? profile.maintainerCount;
+            if (effectivePubCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole active npm publisher + >10M/wk");
+            else if (effectivePubCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole active npm publisher + >1M/wk");
             if (profile.ageYears < 1 && wdl > 100_000) riskFlags.push("HIGH: new package (<1yr) + high downloads");
             if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
             // Dormant publisher detection (Mastra attack pattern, June 2026):
@@ -1805,8 +1809,9 @@ app.post("/api/audit/github", async (c) => {
               if (!profile) return { name: pkg, ecosystem, score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
               const wdl = profile.recentWeeklyDownloads ?? 0;
               const riskFlags: string[] = [];
-              if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
-              else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH");
+              const effPub = profile.activePublisherCount ?? profile.maintainerCount;
+              if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+              else if (effPub <= 1 && wdl > 1_000_000) riskFlags.push("HIGH");
               if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
               return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: wdl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
             }
@@ -1949,7 +1954,8 @@ app.get("/api/badge/:ecosystem/*", async (c) => {
       if (profile) {
         score = profile.commitmentScore;
         const wdl = profile.recentWeeklyDownloads ?? 0;
-        if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+        const effPub = profile.activePublisherCount ?? profile.maintainerCount;
+        if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
       }
     } else {
       const profile = await buildPyPICommitmentProfile(packageName);
@@ -2392,8 +2398,9 @@ async function scoreNpmNode(pkg: string, depth: number): Promise<GraphNode> {
     }
     const wdl = profile.recentWeeklyDownloads ?? 0;
     const riskFlags: string[] = [];
-    if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole publisher + >10M/wk");
-    else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole publisher + >1M/wk");
+    const effPub = profile.activePublisherCount ?? profile.maintainerCount;
+    if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole active publisher + >10M/wk");
+    else if (effPub <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole active publisher + >1M/wk");
     if (profile.ageYears < 1 && wdl > 100_000) riskFlags.push("HIGH: new package (<1yr) + high downloads");
     if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
     return {
@@ -2758,7 +2765,8 @@ app.get("/badge/npm/*", async (c) => {
     if (profile) {
       score = profile.commitmentScore;
       const wdl = profile.recentWeeklyDownloads ?? 0;
-      if (profile.maintainerCount === 1 && wdl > 10_000_000) isCritical = true;
+      const effPub = profile.activePublisherCount ?? profile.maintainerCount;
+      if (effPub <= 1 && wdl > 10_000_000) isCritical = true;
     }
   } catch {
     // Fall through to "unknown" badge
@@ -2902,7 +2910,8 @@ app.get("/badge/*", async (c) => {
     if (profile) {
       score = profile.commitmentScore;
       const wdl = profile.recentWeeklyDownloads ?? 0;
-      if (profile.maintainerCount === 1 && wdl > 10_000_000) isCritical = true;
+      const effPub = profile.activePublisherCount ?? profile.maintainerCount;
+      if (effPub <= 1 && wdl > 10_000_000) isCritical = true;
     }
   } catch {
     // Fall through to error badge
@@ -3330,7 +3339,8 @@ app.post("/api/keys/create", async (c) => {
       }
       const wdl = profile.recentWeeklyDownloads ?? 0;
       const riskFlags: string[] = [];
-      if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+      const effPub = profile.activePublisherCount ?? profile.maintainerCount;
+      if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
       else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
       else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
       seedScores.push({
@@ -4632,7 +4642,8 @@ app.post("/api/subscribe", async (c) => {
           if (!profile) return { name: pkg, score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] };
           const wdl = profile.recentWeeklyDownloads ?? 0;
           const riskFlags: string[] = [];
-          if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+          const effPub = profile.activePublisherCount ?? profile.maintainerCount;
+          if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
           else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
           else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
           return { name: profile.name, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: wdl, riskFlags };
@@ -6392,8 +6403,9 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
                   if (!profile) return { name: pkg, ecosystem: eco, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
                   const wdl = profile.recentWeeklyDownloads ?? 0;
                   const riskFlags: string[] = [];
-                  if (profile.maintainerCount <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole npm publisher + >10M/wk");
-                  else if (profile.maintainerCount <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole npm publisher + >1M/wk");
+                  const effPub = profile.activePublisherCount ?? profile.maintainerCount;
+                  if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole active npm publisher + >10M/wk");
+                  else if (effPub <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole active npm publisher + >1M/wk");
                   if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
                   return { name: profile.name, ecosystem: eco, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: wdl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
                 }
@@ -6748,7 +6760,8 @@ async function runWeeklyDigest(env: Bindings): Promise<{ sent: number; skipped: 
         }
         const wdl = profile.recentWeeklyDownloads ?? 0;
         const riskFlags: string[] = [];
-        if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+        const effPub = profile.activePublisherCount ?? profile.maintainerCount;
+        if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
         else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
         else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
         scoreCache.set(pkg, {
@@ -6949,7 +6962,8 @@ Unsubscribe: ${unsubLink}`;
         }
         const wdl = profile.recentWeeklyDownloads ?? 0;
         const riskFlags: string[] = [];
-        if (profile.maintainerCount === 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
+        const effPub = profile.activePublisherCount ?? profile.maintainerCount;
+        if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
         else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
         else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
         scoreCache.set(pkg, {
