@@ -352,8 +352,11 @@ describe("seeded-branch scoring (2026-06-11 welcome-scores)", () => {
     expect(WORKER_SOURCE).toMatch(/score: null, maintainers: null, weeklyDownloads: null, riskFlags: \[\]/);
   });
 
-  test("CRITICAL = sole maintainer + 10M+/wk (matches digest + /api/subscribe logic)", () => {
-    expect(WORKER_SOURCE).toMatch(/profile\.maintainerCount === 1 && wdl > 10_000_000/);
+  test("CRITICAL = sole active publisher + 10M+/wk (matches digest + /api/subscribe logic)", () => {
+    // Dormant publishers with valid npm scope access are attack surface, not
+    // effective depth — use activePublisherCount (last 12mo) as the signal.
+    expect(WORKER_SOURCE).toMatch(/activePublisherCount \?\? profile\.maintainerCount/);
+    expect(WORKER_SOURCE).toMatch(/effPub <= 1 && wdl > 10_000_000/);
   });
 
   test("scoring failures are swallowed (seed flow stays best-effort)", () => {
