@@ -3084,7 +3084,7 @@ app.post("/api/keys/create", async (c) => {
   // the ref needs its own gate against the canonical source list.
   // 5th occurrence — npm-package release ships a new ref symbol, surfaces
   // downstream don't know about it until dogfood / next session catches it.
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade", "cli-soft-cta", "ci-annotation", "readme-monitoring", "npm-readme-monitoring"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "pkg-monitor", "pkg-alert-critical", "pkg-alert-compromised", "cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade", "cli-soft-cta", "ci-annotation", "readme-monitoring", "npm-readme-monitoring"];
   // 2026-06-14: per-blog refs (blog-snyk-comparison, blog-stripe-gcs,
   // blog-drizzle-kit, …) appear in the slug-CTA of every comparison post and
   // every package-watch CTA without a corresponding hardcoded VALID_SOURCES
