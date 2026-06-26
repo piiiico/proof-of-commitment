@@ -55,7 +55,7 @@ ENVIRONMENT = "production"
 # organic to TRUE 0. The 4 keys themselves are also retroactively revoked in
 # D1 so the count drops at the WHERE revoked_at IS NULL filter, not just the
 # pattern bucket. See worker.ts DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS.
-INTERNAL_TEST_EMAIL_PATTERNS = "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com"
+INTERNAL_TEST_EMAIL_PATTERNS = "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com,hakon*@protonmail.com"
 
 [[d1_databases]]
 binding = "DB"

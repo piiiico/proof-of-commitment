@@ -376,12 +376,13 @@ describe("buildOrganicMcpKeyStats", () => {
     insert.run("k7", "hawkaamdal@gmail.com");                 // internal — literal Håkon Gmail
     insert.run("k8", "noreply@getcommit.dev");                // internal — Håkon-owned domain
     insert.run("k9", "anyone@example.invalid");               // internal — RFC 2606 reserved
+    insert.run("k10", "hakon.dogfood-test-123@protonmail.com"); // internal — hakon*@protonmail.com
 
     const db = d1Shim(sqlite) as Parameters<typeof buildOrganicMcpKeyStats>[0];
     const stats = await buildOrganicMcpKeyStats(db, undefined);
 
-    expect(stats.total_with_source_mcp).toBe(9);
-    expect(stats.internal_test).toBe(7);
+    expect(stats.total_with_source_mcp).toBe(10);
+    expect(stats.internal_test).toBe(8);
     expect(stats.organic).toBe(2); // k4 stranger.com + k5 evil.com
     expect(stats.internal_test_patterns).toEqual([
       "*@amdal.dev",
@@ -394,6 +395,7 @@ describe("buildOrganicMcpKeyStats", () => {
       "hawkaa+mcp-test@gmail.com",
       "hakon@test.com",
       "test@test.com",
+      "hakon*@protonmail.com",
     ]);
   });
 
@@ -445,9 +447,10 @@ describe("buildOrganicMcpKeyStats", () => {
     // Domain-anchored — every wildcard pattern targets an operator-owned or
     // RFC 2606 reserved domain. The single gmail.com entry is a LITERAL —
     // wildcarding gmail.com would open the /api/keys/create rate-limit bypass
-    // to any attacker with a Gmail account.
+    // to any attacker with a Gmail account. hakon*@protonmail.com is local-part
+    // anchored (only "hakon..." prefix) — protonmail.com as a domain stays open.
     expect(DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS).toBe(
-      "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com"
+      "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com,hakon*@protonmail.com"
     );
   });
 
@@ -470,6 +473,10 @@ describe("buildOrganicMcpKeyStats", () => {
     expect(isInternalTestEmail("noreply@getcommit.dev", pats)).toBe(true);
     expect(isInternalTestEmail("anything@pico.amdal.dev", pats)).toBe(true);
     expect(isInternalTestEmail("anyone@example.invalid", pats)).toBe(true);
+    // Protonmail dogfood — hakon-prefixed matches, others don't
+    expect(isInternalTestEmail("hakon.dogfood-test-123@protonmail.com", pats)).toBe(true);
+    expect(isInternalTestEmail("hakon@protonmail.com", pats)).toBe(true);
+    expect(isInternalTestEmail("realuser@protonmail.com", pats)).toBe(false);
     // Cross-domain spoof — must NOT match (rate-limit bypass guard)
     expect(isInternalTestEmail("pico+x@evil.com", pats)).toBe(false);
     expect(isInternalTestEmail("pico+anything@gmail.com", pats)).toBe(false);

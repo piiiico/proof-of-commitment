@@ -3838,11 +3838,14 @@ export const DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS =
   //   hakon@test.com, test@test.com
   //                        — placeholders on Verisign-owned test.com; literal
   //                          only, never *@test.com (rate-limit-bypass risk).
+  //   hakon*@protonmail.com — Håkon dogfood via protonmail (surfaced 2026-06-26:
+  //                          hakon.dogfood-test-*@protonmail.com read as
+  //                          "1 organic" — same phantom-organic class as 2026-06-20).
   // 2026-06-20: 4 phantom literals added after /api/keys/stats kept reading
   // "4 organic" when D1 showed those 4 emails were all dogfood with 0
   // requests and NULL last_used_at — every session was strategizing on the
   // lie of "4 external users". The 4 backing keys are also revoked retroactively.
-  "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com";
+  "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com,hakon*@protonmail.com";
 
 export type McpTrafficStats = {
   today: {
