@@ -3125,7 +3125,7 @@ app.post("/api/keys/create", async (c) => {
   // the ref needs its own gate against the canonical source list.
   // 5th occurrence — npm-package release ships a new ref symbol, surfaces
   // downstream don't know about it until dogfood / next session catches it.
-  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "pkg-monitor", "pkg-alert-critical", "pkg-alert-compromised", "cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade", "cli-soft-cta", "ci-annotation", "readme-monitoring", "npm-readme-monitoring"];
+  const VALID_SOURCES = ["web", "cli", "api", "mcp-soft-cta", "mcp-inline-key", "audit-cli-429", "audit-web-429", "audit-baseline", "audit-web", "audit-web-critical", "audit-web-healthy", "audit-web-compromised", "audit-web-inline", "web-pricing", "pkg-profile", "pkg-monitor", "pkg-alert-critical", "pkg-alert-compromised", "cursor-hook-429", "claude-code-hook-429", "windsurf-hook-429", "poc-hook", "audit-overshoot", "cli-watch", "key-upgrade", "cli-soft-cta", "ci-annotation", "readme-monitoring", "npm-readme-monitoring"];
   // 2026-06-14: per-blog refs (blog-snyk-comparison, blog-stripe-gcs,
   // blog-drizzle-kit, …) appear in the slug-CTA of every comparison post and
   // every package-watch CTA without a corresponding hardcoded VALID_SOURCES
@@ -5165,8 +5165,8 @@ function mcpCtaText(count: number): string {
       "",
       "─────────────────────────────────────────────────",
       `⚠ Commit MCP — ${count}/${MCP_HARD_LIMIT} free queries today (${remaining} left).`,
-      `   Lock in alerts on packages you query — before the wall:`,
-      `   → ${MCP_SIGNUP_URL}    (free key, 30s, no card)`,
+      `   Get a free key now: call get_api_key({ email: "you@co.com" })`,
+      `   Or sign up at: ${MCP_SIGNUP_URL}`,
       "─────────────────────────────────────────────────",
     ].join("\n");
   }
@@ -5174,8 +5174,8 @@ function mcpCtaText(count: number): string {
     "",
     "─────────────────────────────────────────────────",
     `Commit MCP — ${count}/${MCP_HARD_LIMIT} free queries used today.`,
-    `Get notified if any package you queried gets worse — free key, no card:`,
-    `→ ${MCP_SIGNUP_URL}`,
+    `Get notified when packages you queried get worse — call get_api_key with your email,`,
+    `or sign up at: ${MCP_SIGNUP_URL}`,
     "─────────────────────────────────────────────────",
   ].join("\n");
 }
@@ -5184,10 +5184,10 @@ function mcpHardBlockText(count: number): string {
   return [
     `Daily free MCP limit reached (${count}/${MCP_HARD_LIMIT}). Resets at 00:00 UTC.`,
     "",
-    `Free key lifts the wall + alerts you when packages get worse (200/day):`,
-    `→ ${MCP_SIGNUP_URL}    (30s, no card)`,
+    `Get a free API key right here — call the get_api_key tool with your email.`,
+    `Or sign up at: ${MCP_SIGNUP_URL}    (30s, no card)`,
     "",
-    `Then set Authorization: Bearer sk_commit_… on this MCP server.`,
+    `A free key gives you 200 audits/day + weekly alerts when your packages get riskier.`,
   ].join("\n");
 }
 
@@ -6635,6 +6635,197 @@ Use this when someone asks:
       };
     }
   ));
+
+  // Tool: get_api_key
+  // Zero-friction in-chat API key creation. Users hit rate limits in Claude
+  // Desktop / Cursor and see a CTA to visit getcommit.dev — but they never
+  // leave the chat. This tool lets them create a key without leaving the
+  // conversation. The 7-step website journey becomes 1 tool call.
+  // Deliberately bypasses withMcpRateLimit — the user calls this BECAUSE
+  // they hit the limit. IP-based 3/day anti-abuse still applies.
+  mcp.tool(
+    "get_api_key",
+    `Create a free Commit API key instantly — no browser required.
+
+When you've hit the daily free query limit (or just want faster access), call this tool with your email to get an API key returned directly in the chat. The key lifts the rate limit to 200 audits/day and enables package monitoring (weekly alerts when your dependencies get riskier).
+
+After creating the key, configure your MCP client to pass it:
+  Authorization: Bearer sk_commit_<your-key>
+
+Example: get_api_key({ email: "dev@company.com" })
+
+One key per email. 3 keys per IP per day (anti-abuse).`,
+    {
+      email: z
+        .string()
+        .email()
+        .describe("Your email address — used for alert delivery and key recovery. One key per email."),
+    },
+    // No withMcpRateLimit wrapper — this tool must work even when rate-limited.
+    async ({ email: rawEmail }) => {
+      const email = rawEmail.trim().toLowerCase();
+
+      // Validate email format
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return {
+          content: [{ type: "text" as const, text: "Invalid email address. Please provide a valid email." }],
+          isError: true,
+        };
+      }
+
+      // Check if email already has a key
+      const existingKey = await ctx.env.DB.prepare(
+        `SELECT key_prefix, tier FROM api_keys WHERE email = ? AND revoked_at IS NULL LIMIT 1`
+      ).bind(email).first<{ key_prefix: string; tier: string }>();
+
+      if (existingKey) {
+        const upgradeUrl = buildUpgradeUrl(email, { medium: "mcp-inline-existing" });
+        const lines = [
+          `You already have a Commit API key (${existingKey.key_prefix}…, ${existingKey.tier} tier).`,
+          ``,
+          `To use it, set the Authorization header on your MCP client:`,
+          `  Authorization: Bearer sk_commit_<your-key>`,
+          ``,
+          `Lost your key? Check the welcome email from noreply@getcommit.dev.`,
+          ``,
+          existingKey.tier === "free"
+            ? `Upgrade to Developer ($15/mo) for CI integration + instant alerts:\n→ ${upgradeUrl}`
+            : `Manage your account at https://getcommit.dev/dashboard`,
+        ];
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      }
+
+      // IP rate limit: 3 key creations per IP per day (same as /api/keys/create)
+      const internalTestPatterns = parseEmailPatterns(
+        ctx.env.INTERNAL_TEST_EMAIL_PATTERNS ?? DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS
+      );
+      const isInternal = isInternalTestEmail(email, internalTestPatterns);
+
+      if (!isInternal) {
+        const now = new Date();
+        const ipRow = await ctx.env.DB.prepare(
+          `SELECT count, reset_at FROM key_creation_rate_limits WHERE ip = ? LIMIT 1`
+        ).bind(ctx.ip).first<{ count: number; reset_at: string }>();
+
+        let ipCount = 0;
+        if (ipRow && new Date(ipRow.reset_at) > now) {
+          ipCount = ipRow.count;
+        }
+
+        if (ipCount >= 3) {
+          return {
+            content: [{ type: "text" as const, text: "Rate limit: max 3 API keys per IP per day. Try again tomorrow." }],
+            isError: true,
+          };
+        }
+
+        // Bump IP counter
+        const tomorrowIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
+        await ctx.env.DB.prepare(
+          `INSERT INTO key_creation_rate_limits (ip, count, reset_at)
+           VALUES (?, 1, ?)
+           ON CONFLICT(ip) DO UPDATE SET
+             count = CASE WHEN reset_at <= datetime('now') THEN 1 ELSE count + 1 END,
+             reset_at = CASE WHEN reset_at <= datetime('now') THEN ? ELSE reset_at END`
+        ).bind(ctx.ip, tomorrowIso, tomorrowIso).run();
+      }
+
+      // Generate API key
+      const rawBytes = new Uint8Array(16);
+      crypto.getRandomValues(rawBytes);
+      const randomHex = Array.from(rawBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+      const apiKey = `sk_commit_${randomHex}`;
+      const keyHash = await sha256Hex(apiKey);
+      const keyPrefix = apiKey.slice(0, 19);
+
+      // Generate ID
+      const idBytes = new Uint8Array(8);
+      crypto.getRandomValues(idBytes);
+      const id = Array.from(idBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+      const periodResetAt = nextResetAt("daily");
+
+      // Insert key
+      await ctx.env.DB.prepare(
+        `INSERT INTO api_keys (id, key_hash, key_prefix, email, tier, requests_this_period, period_reset_at, source, created_at)
+         VALUES (?, ?, ?, ?, 'free', 0, ?, 'mcp-inline-key', datetime('now'))`
+      ).bind(id, keyHash, keyPrefix, email, periodResetAt).run();
+
+      // Send welcome email (best-effort, non-blocking for the MCP response)
+      if (ctx.env.RESEND_API_KEY) {
+        try {
+          await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${ctx.env.RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              from: "Commit <noreply@getcommit.dev>",
+              reply_to: "pico@amdal.dev",
+              to: [email],
+              subject: "Your Commit API Key",
+              text: [
+                `Your Commit API key: ${apiKey}`,
+                ``,
+                `You created this key via the MCP server — it's already active.`,
+                ``,
+                `What you get (free tier):`,
+                `  • 200 audits/day (up from 15 anonymous)`,
+                `  • Monitor 3 packages — weekly alerts when scores degrade`,
+                `  • CLI: poc watch axios — adds a package to your watchlist`,
+                ``,
+                `Set up monitoring:`,
+                `  npm install -g proof-of-commitment`,
+                `  poc watch axios --email ${email}`,
+                ``,
+                `Upgrade to Developer ($15/mo) for CI integration + instant alerts:`,
+                `  ${buildUpgradeUrl(email, { medium: "mcp-inline-key-welcome" })}`,
+                ``,
+                `—`,
+                `Commit · supply-chain risk scoring · getcommit.dev`,
+              ].join("\n"),
+            }),
+          });
+        } catch {
+          // Non-fatal — key is already active
+        }
+      }
+
+      const upgradeUrl = buildUpgradeUrl(email, { medium: "mcp-inline-key" });
+      const lines = [
+        `✅ API key created: ${apiKey}`,
+        ``,
+        `Your key is active now — 200 audits/day, 3-package monitoring, weekly alerts.`,
+        `A backup copy was sent to ${email}.`,
+        ``,
+        `To use this key with Commit MCP, add it to your MCP client config:`,
+        ``,
+        `Claude Desktop (~/.config/claude/claude_desktop_config.json):`,
+        `  "commit": {`,
+        `    "type": "streamable-http",`,
+        `    "url": "https://poc-backend.amdal-dev.workers.dev/mcp",`,
+        `    "headers": { "Authorization": "Bearer ${apiKey}" }`,
+        `  }`,
+        ``,
+        `Cursor (~/.cursor/mcp.json):`,
+        `  "commit": {`,
+        `    "type": "streamable-http",`,
+        `    "url": "https://poc-backend.amdal-dev.workers.dev/mcp",`,
+        `    "headers": { "Authorization": "Bearer ${apiKey}" }`,
+        `  }`,
+        ``,
+        `Set up package monitoring:`,
+        `  npm install -g proof-of-commitment`,
+        `  poc watch axios --email ${email}`,
+        ``,
+        `Need CI integration + instant alerts? Developer tier ($15/mo):`,
+        `→ ${upgradeUrl}`,
+      ];
+
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    }
+  );
 
   return mcp;
 }

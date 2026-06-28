@@ -350,7 +350,7 @@ curl https://poc-backend.amdal-dev.workers.dev/api/audit \
 }
 ```
 
-## 11 MCP tools
+## 12 MCP tools
 
 | Tool | Description |
 |------|-------------|
@@ -365,6 +365,7 @@ curl https://poc-backend.amdal-dev.workers.dev/api/audit \
 | `lookup_business` | Norwegian business register — operating years, employees, financials |
 | `lookup_business_by_org` | Same, by org number |
 | `query_commitment` | Browser extension behavioral data (unique verified visitors, repeat rate) |
+| `get_api_key` | Create a free API key in-chat — no browser needed, key returned instantly |
 
 Anonymous: 15 requests/IP/UTC day across both `/mcp` and `/api/audit`. Free key (no card, 30s signup at https://getcommit.dev/get-started): 200/day. Higher tiers at https://getcommit.dev/pricing.
 
