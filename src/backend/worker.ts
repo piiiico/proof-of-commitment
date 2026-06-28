@@ -252,6 +252,47 @@ registerAttack("npm", [
   url: "https://getcommit.dev/blog/may-2026-npm-attacks-roundup/",
 });
 
+// Miasma — LeoPlatform + Go ecosystem expansion (Jun 24 2026)
+// codfish/semantic-release-action force-pushed → 1442 dependent repos compromised.
+// binding.gyp bypass, Bun payload staging, AI IDE persistence hooks.
+// Campaign marker: RevokeAndItGoesKaboom
+// First Go module compromise in the Shai-Hulud family.
+// Source: socket.dev (Jun 25)
+registerAttack("npm", [
+  "leo-auth", "leo-aws", "leo-cache", "leo-cdk-lib", "leo-cli",
+  "leo-config", "leo-connector-elasticsearch", "leo-connector-mongo",
+  "leo-connector-mysql", "leo-connector-oracle", "leo-connector-redshift",
+  "leo-cron", "leo-logger", "leo-sdk", "leo-streams",
+  "rstreams-metrics", "rstreams-shard-util",
+  "hexo-deployer-wrangler", "hexo-shoka-swiper", "prism-silq",
+  "serverless-convention", "serverless-leo", "solo-nav",
+], {
+  attack: "Miasma (LeoPlatform)",
+  date: "2026-06-24",
+  url: "https://socket.dev/blog/miasma-mini-shai-hulud-hits-leoplatform-npm-packages-go-ecosystem",
+});
+registerAttack("golang", [
+  "github.com/verana-labs/verana-blockchain",
+], {
+  attack: "Miasma (LeoPlatform)",
+  date: "2026-06-24",
+  url: "https://socket.dev/blog/miasma-mini-shai-hulud-hits-leoplatform-npm-packages-go-ecosystem",
+});
+
+// Miasma — ImmobiliareLabs/Backstage (Jun 26 2026)
+// codfish/semantic-release-action hijack → compromised CI/CD release pipelines.
+// 22 @immobiliarelabs Backstage plugins (GitLab, LDAP auth).
+// binding.gyp bypass, AES-128-GCM payload, Bun execution.
+// Campaign marker: thebeautifulsnadsoftime
+// Source: socket.dev (Jun 26)
+registerAttack("npm", [
+  "@immobiliarelabs/*",
+], {
+  attack: "Miasma (ImmobiliareLabs/Backstage)",
+  date: "2026-06-26",
+  url: "https://socket.dev/blog/miasma-mini-shai-hulud-hits-immobiliarelabs-npm-packages",
+});
+
 // axios credential theft (Mar 30 2026)
 registerAttack("npm", ["axios"], {
   attack: "axios token theft",
