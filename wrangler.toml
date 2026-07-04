@@ -18,6 +18,9 @@ ENVIRONMENT = "production"
 #   *@pico.amdal.dev     — subdomain of amdal.dev.
 #   *@getcommit.dev      — Håkon-owned via Cloudflare Email Routing (catch-all
 #                          → pico@amdal.dev as of 2026-06-03).
+#   *@hawkaa.net         — Håkon-owned dogfood domain (hawkaa = hawkaamdal GitHub
+#                          handle; catch-all). dogfood-watch+* pattern surfaced
+#                          2026-07-03 as phantom-organic; domain added 2026-07-04.
 #   *@example.com        — RFC 2606 reserved.
 #   *@example.invalid    — RFC 2606 reserved.
 #   hawkaamdal@gmail.com — Håkon's personal Gmail (LITERAL — cannot wildcard
@@ -55,7 +58,11 @@ ENVIRONMENT = "production"
 # organic to TRUE 0. The 4 keys themselves are also retroactively revoked in
 # D1 so the count drops at the WHERE revoked_at IS NULL filter, not just the
 # pattern bucket. See worker.ts DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS.
-INTERNAL_TEST_EMAIL_PATTERNS = "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com,hakon*@protonmail.com"
+# 2026-07-04 phantom-organic #2: dogfood-watch+1782554632@hawkaa.net counted as
+# organic because *@hawkaa.net was not in the exclusion list. hawkaa.net is Håkon's
+# dogfood domain (hawkaa = hawkaamdal GitHub handle, catch-all). Added *@hawkaa.net
+# to cover ALL dogfood-watch+* and future dogfood addresses on this domain.
+INTERNAL_TEST_EMAIL_PATTERNS = "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@hawkaa.net,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com,hakon*@protonmail.com"
 
 [[d1_databases]]
 binding = "DB"

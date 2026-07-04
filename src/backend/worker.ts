@@ -3868,25 +3868,32 @@ export const DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS =
   //   *@amdal.dev          — Pico-owned via Migadu (catch-all → pico@amdal.dev)
   //   *@pico.amdal.dev     — subdomain of amdal.dev (same ownership)
   //   *@getcommit.dev      — Håkon-owned via Cloudflare Email Routing
+  //   *@hawkaa.net         — Håkon-owned dogfood domain; dogfood-watch+* pattern
+  //                          surfaced 2026-07-03 (dogfood-watch+1782554632@hawkaa.net
+  //                          counted as organic despite being an audit probe).
+  //                          hawkaa = Håkon Åmdal's handle; domain is catch-all.
   //   *@example.com        — RFC 2606 reserved (cannot be registered)
   //   *@example.invalid    — RFC 2606 reserved
-  // Specific third-party literals (cannot wildcard gmail.com / test.com):
+  // Specific third-party literals (cannot wildcard gmail.com / test.com / protonmail.com):
   //   hawkaamdal@gmail.com — Håkon's personal Gmail (per workspace standing facts)
   //   hawkaa+commit-tier-verify@gmail.com, hawkaa+mcp-test@gmail.com
   //                        — Pico dogfood addresses surfaced 2026-06-20 during
   //                          a phantom-organic audit; kept literal because we
   //                          can't prove ownership of hawkaa@gmail.com.
-  //   hakon@test.com, test@test.com
-  //                        — placeholders on Verisign-owned test.com; literal
-  //                          only, never *@test.com (rate-limit-bypass risk).
   //   hakon*@protonmail.com — Håkon dogfood via protonmail (surfaced 2026-06-26:
   //                          hakon.dogfood-test-*@protonmail.com read as
   //                          "1 organic" — same phantom-organic class as 2026-06-20).
+  //   hakon@test.com, test@test.com
+  //                        — placeholders on Verisign-owned test.com; literal
+  //                          only, never *@test.com (rate-limit-bypass risk).
   // 2026-06-20: 4 phantom literals added after /api/keys/stats kept reading
   // "4 organic" when D1 showed those 4 emails were all dogfood with 0
   // requests and NULL last_used_at — every session was strategizing on the
   // lie of "4 external users". The 4 backing keys are also revoked retroactively.
-  "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com,hakon*@protonmail.com";
+  // 2026-07-04: *@hawkaa.net added — dogfood-watch+1782554632@hawkaa.net was the
+  // organic 1 count; source now in sync with deployed (protonmail was added to
+  // deployed worker before this source sync).
+  "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@hawkaa.net,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com,hakon*@protonmail.com";
 
 export type McpTrafficStats = {
   today: {
