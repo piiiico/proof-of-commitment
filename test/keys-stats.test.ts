@@ -388,6 +388,7 @@ describe("buildOrganicMcpKeyStats", () => {
       "*@amdal.dev",
       "*@pico.amdal.dev",
       "*@getcommit.dev",
+      "*@hawkaa.net",
       "*@example.com",
       "*@example.invalid",
       "hawkaamdal@gmail.com",
@@ -450,7 +451,7 @@ describe("buildOrganicMcpKeyStats", () => {
     // to any attacker with a Gmail account. hakon*@protonmail.com is local-part
     // anchored (only "hakon..." prefix) — protonmail.com as a domain stays open.
     expect(DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS).toBe(
-      "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com,hakon*@protonmail.com"
+      "*@amdal.dev,*@pico.amdal.dev,*@getcommit.dev,*@hawkaa.net,*@example.com,*@example.invalid,hawkaamdal@gmail.com,hawkaa+commit-tier-verify@gmail.com,hawkaa+mcp-test@gmail.com,hakon@test.com,test@test.com,hakon*@protonmail.com"
     );
   });
 
