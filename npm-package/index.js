@@ -713,12 +713,12 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
     }
     if (compromisedCount > 0) {
       const compNames = results.filter(r => r.compromised).slice(0, 5).map(r => r.name).join(', ');
-      console.error(`::error title=Commit: ${compromisedCount} compromised package${compromisedCount > 1 ? 's' : ''}::Recently attacked in supply chain incidents: ${compNames}. Verify you are on clean versions.`);
+      console.error(`::error title=Commit: ${compromisedCount} compromised package${compromisedCount > 1 ? 's' : ''}::Documented supply chain incidents: ${compNames}. Verify you are on clean versions.`);
     }
   }
 
   if (compromisedCount > 0) {
-    console.log(clr(c.red + c.bold, `\n⚠  ${compromisedCount} package${compromisedCount > 1 ? 's' : ''} recently compromised in supply chain attacks.`));
+    console.log(clr(c.red + c.bold, `\n⚠  ${compromisedCount} package${compromisedCount > 1 ? 's' : ''} with documented supply chain incidents.`));
     console.log(clr(c.dim, '   Verify you are on clean versions. See URLs above for incident details.'));
   }
 
