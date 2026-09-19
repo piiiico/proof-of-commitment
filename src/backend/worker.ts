@@ -307,7 +307,7 @@ registerAttack("pypi", ["litellm"], {
   url: "https://getcommit.dev/blog/python-supply-chain-risk/",
 });
 
-function lookupCompromised(name: string, ecosystem: string): AttackRecord | null {
+export function lookupCompromised(name: string, ecosystem: string): AttackRecord | null {
   // Exact match first
   const exact = KNOWN_ATTACKS.get(`${ecosystem}:${name}`);
   if (exact) return exact;
@@ -316,6 +316,30 @@ function lookupCompromised(name: string, ecosystem: string): AttackRecord | null
     if (eco === ecosystem && name.startsWith(prefix)) return record;
   }
   return null;
+}
+
+/**
+ * Attach known supply-chain incident history to scored results, in place.
+ *
+ * Deliberately age-blind. See the call site in /api/audit for the 2026-09-19
+ * measurement that killed the previous 90-day cutoff. Exported so the
+ * no-expiry invariant is testable without booting the worker.
+ */
+export function enrichWithAttackHistory<T extends { name: string; ecosystem: string }>(
+  results: T[],
+): T[] {
+  for (const r of results) {
+    const record = lookupCompromised(r.name, r.ecosystem);
+    if (record) {
+      (r as any).compromised = { attack: record.attack, date: record.date, url: record.url };
+    }
+  }
+  return results;
+}
+
+/** Registered attack records, for coverage/health gates. */
+export function allAttackRecords(): AttackRecord[] {
+  return [...KNOWN_ATTACKS.values(), ...KNOWN_ATTACK_PREFIXES.map((p) => p.record)];
 }
 
 // ── World ID JWT Verification ────────────────────────────────────────
@@ -812,6 +836,12 @@ app.use("/api/*", async (c, next) => {
 // Health check (same path as server.ts)
 app.get("/", (c) => c.json({ status: "ok", service: "proof-of-commitment" }));
 
+// Serve-check: proves this build is serving at the edge, not just stored.
+// Deploy stamps __SOURCE_STAMP__ → sha256(worker.ts)[0:12] before wrangler compiles.
+// Pattern from sjekk-worker — a deploy-200 + CF script-GET both report stored code,
+// not what the edge actually runs (measured 2026-08-06).
+app.get("/health", (c) => c.json({ ok: true, service: "proof-of-commitment", stamp: "__SOURCE_STAMP__", ts: Date.now() }));
+
 
 /**
  * POST /api/commit
@@ -1259,14 +1289,20 @@ app.post("/api/audit", async (c) => {
 
   results.sort((a, b) => (a.score ?? -1) - (b.score ?? -1));
 
-  // Enrich with known attack history (last 90 days)
-  const cutoff = Date.now() - 90 * 86_400_000;
-  for (const r of results) {
-    const record = lookupCompromised(r.name, r.ecosystem);
-    if (record && new Date(record.date).getTime() > cutoff) {
-      (r as any).compromised = { attack: record.attack, date: record.date, url: record.url };
-    }
-  }
+  // Enrich with known attack history. NO recency cutoff, deliberately: a documented
+  // supply-chain incident is a permanent fact about a package, and malicious versions
+  // stay pinned in lockfiles for years after the registry is cleaned. The incident
+  // `date` travels with every record so consumers render recency themselves.
+  //
+  // This used to carry a 90-day rolling cutoff. It was a time bomb: correct the day it
+  // was written, silently a no-op later. Measured 2026-09-19 — 8 of 10 registered
+  // attacks had aged out, including every attack named in our own agent card and
+  // marketing (axios, LiteLLM, Miasma), and the last 2 were 3 days from expiry. The
+  // live API returned NO compromised field for fpjson-lang (IronWorm), @cap-js/sqlite
+  // and node-ipc, so the CLI printed "No CRITICAL packages found" over known-malicious
+  // packages. CI gating never keyed on this field (see shouldFail(): riskFlags + score
+  // only), so always-attaching changes no exit code — it only restores information.
+  enrichWithAttackHistory(results);
 
   // --- Rate-limit taste: return 429 WITH partial results ---
   // The user sees real value (up to RATE_LIMIT_TASTE packages scored)
@@ -5339,8 +5375,11 @@ function auditCtaText(count: number, results?: AuditResultForCta[]): string {
     const criticalFlag = worst.riskFlags?.find((f) => f.startsWith("CRITICAL"));
     if (criticalFlag) {
       const reason = criticalFlag.replace(/^CRITICAL:\s*/, "").trim();
+      // Don't compare a package to itself: for axios this rendered
+      // "axios is CRITICAL — … Same attack profile as axios (Mar 2026)".
+      const profileRef = worst.name === "axios" ? "" : " Same attack profile as axios (Mar 2026).";
       return firstTouch
-        ? `⚠ ${worst.name} is CRITICAL — ${reason}. Same attack profile as axios (Mar 2026). Monitor it — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`
+        ? `⚠ ${worst.name} is CRITICAL — ${reason}.${profileRef} Monitor it — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`
         : `⚠ ${worst.name} scored CRITICAL — ${reason}. Free tier — ${count}/${AUDIT_HARD_LIMIT} audits today (${remaining} left). Get alerted when ${worst.name}'s score worsens — free key, 30s, no card: ${AUDIT_SIGNUP_URL}`;
     }
     const highFlag = worst.riskFlags?.find((f) => f.startsWith("HIGH"));
