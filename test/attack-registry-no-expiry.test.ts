@@ -8,8 +8,9 @@
  *   const cutoff = Date.now() - 90 * 86_400_000;
  *   if (record && new Date(record.date).getTime() > cutoff) { ...attach... }
  *
- * Correct the day it was written. A silent no-op later. By 2026-09-19, 8 of the
- * 10 registered attack waves had aged out — including every attack named in our
+ * Correct the day it was written. A silent no-op later. By 2026-09-19, 11 of the
+ * 13 distinct registered attack waves had aged out (17 registerAttack calls,
+ * 13 unique attack/date pairs) — including every attack named in our
  * own agent card ("Catches the ... axios (March 30 2026), LiteLLM (March 27
  * 2026), and Miasma (June 2026) supply chain attacks") — and the 2 survivors
  * were 3 and 5 days from expiry. The whole registry was days from dark.

@@ -1295,9 +1295,12 @@ app.post("/api/audit", async (c) => {
   // `date` travels with every record so consumers render recency themselves.
   //
   // This used to carry a 90-day rolling cutoff. It was a time bomb: correct the day it
-  // was written, silently a no-op later. Measured 2026-09-19 — 8 of 10 registered
-  // attacks had aged out, including every attack named in our own agent card and
-  // marketing (axios, LiteLLM, Miasma), and the last 2 were 3 days from expiry. The
+  // was written, silently a no-op later. Measured 2026-09-19 — 11 of 13 distinct
+  // registered attack waves had aged out (17 registerAttack calls collapse to 13
+  // attack/date pairs), including every attack named in our own agent card and
+  // marketing (axios, LiteLLM, Miasma), and the 2 survivors were 3 and 5 days from
+  // expiry. Re-derived from allAttackRecords(), NOT from reading the file: a
+  // hand-transcribed first pass said "8 of 10" and had missed three waves. The
   // live API returned NO compromised field for fpjson-lang (IronWorm), @cap-js/sqlite
   // and node-ipc, so the CLI printed "No CRITICAL packages found" over known-malicious
   // packages. CI gating never keyed on this field (see shouldFail(): riskFlags + score
