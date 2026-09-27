@@ -283,7 +283,7 @@ reqwest     — score 85, 1 owner,   8M/week  ⚑ HIGH
 
 ## Why behavioral signals
 
-The LiteLLM attack (March 2026) and axios attack (March 30, 2026) followed the same pattern: stolen credentials → malicious package pushed → 97M+ machines exposed. Both packages scored CRITICAL by these metrics *before* the attacks.
+The LiteLLM attack (March 2026) and axios attack (March 30, 2026) followed the same pattern: stolen credentials → malicious package pushed → 97M+ machines exposed. Both packages flag CRITICAL by these metrics today, on the single-account condition the attackers used. The scores were computed after the attacks: a retrodiction, not a prediction.
 
 Declarative signals (stars, README quality, CI badges) don't capture this risk. Behavioral commitment does.
 
