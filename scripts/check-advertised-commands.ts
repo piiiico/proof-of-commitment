@@ -56,6 +56,7 @@ const AUDIT_EXAMPLES = new Set<string>([
   "hono",
   "zod",
   "minimatch",
+  "nanoid",
   "openai",
   "clsx",
   "glob",         // invisible-critical-packages.astro
