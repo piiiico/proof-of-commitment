@@ -104,8 +104,12 @@ jobs:
           echo "::endgroup::"
 
           if [ -n "$WHOAMI_FAILED" ]; then
-            echo "::error::NPM_TOKEN is invalid (whoami returned non-200). Regenerate at https://www.npmjs.com/settings/<user>/tokens with publish permission on proof-of-commitment, then update the NPM_TOKEN repo secret."
-            exit 1
+            # Granular tokens expire (90d). Fall through to npm Trusted Publishing (OIDC):
+            # works once npmjs.com → proof-of-commitment → Settings → Trusted Publisher
+            # names piiiico/proof-of-commitment + publish.yml. No token to rotate after that.
+            echo "::warning::NPM_TOKEN invalid (401 whoami) — publishing via Trusted Publishing (OIDC) instead."
+            echo "NPM_USE_OIDC=true" >> $GITHUB_ENV
+            exit 0
           fi
 
           echo "::group::npm access list packages (which packages can this token write?)"
@@ -131,6 +135,12 @@ jobs:
         if: env.SKIP_PUBLISH == 'false'
         working-directory: ./npm-package
         run: |
+          if [ "$NPM_USE_OIDC" = "true" ]; then
+            npm install -g npm@latest >/dev/null 2>&1   # OIDC needs npm >= 11.5.1; Node 20 ships 10.x
+            unset NODE_AUTH_TOKEN
+            npm publish --provenance --access public
+            exit $?
+          fi
           # --provenance requires OIDC + granular token with provenance scope.
           # Automation tokens cause E404 when combined with --provenance.
           # Try with provenance first; fall back to plain publish.
