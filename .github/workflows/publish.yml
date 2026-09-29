@@ -136,7 +136,7 @@ jobs:
         working-directory: ./npm-package
         run: |
           if [ "$NPM_USE_OIDC" = "true" ]; then
-            npm install -g npm@latest   # OIDC needs npm >= 11.5.1; Node 20 ships 10.x
+            npm install -g npm@^11.5.1   # OIDC needs >= 11.5.1; npm 12 drops Node 20
             npm --version
             unset NODE_AUTH_TOKEN
             npm publish --provenance --access public
