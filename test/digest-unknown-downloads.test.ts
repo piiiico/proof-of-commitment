@@ -31,3 +31,10 @@ test("unknown downloads still carry WARN for a stale package", () => {
   expect(flags).toEqual(["UNKNOWN", "WARN"]);
   expect(digestFlagLabel(flags, 50)).toBe("? UNKNOWN");
 });
+
+test("absent downloads (null/undefined fetch result) read UNKNOWN, never 0", () => {
+  for (const w of [null, undefined, NaN]) {
+    expect(flagWeeklyDownloads({ ...axios, recentWeeklyDownloads: w as any })).toBeNull();
+    expect(digestRiskFlags({ ...axios, recentWeeklyDownloads: w as any })).toContain("UNKNOWN");
+  }
+});
