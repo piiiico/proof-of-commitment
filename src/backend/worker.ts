@@ -4772,6 +4772,7 @@ app.post("/api/subscribe", async (c) => {
 
 ${critical.length > 0
   ? `${critical.length} CRITICAL package${critical.length > 1 ? "s" : ""} detected (${critDLStr}/wk at risk from single-publisher exposure):`
+  : auditResults.some((x) => x.riskFlags.includes("UNKNOWN")) ? "Some packages could not be fully checked this run (npm download data unavailable) — see UNKNOWN rows."
   : "Your watched packages look healthy today."}
 
 ${pkgLines || "(No packages scored yet)"}
@@ -7144,6 +7145,7 @@ async function runWeeklyDigest(env: Bindings): Promise<{ sent: number; skipped: 
 
 ${critical.length > 0
   ? `${critical.length} CRITICAL package${critical.length > 1 ? "s" : ""} detected in your watchlist:`
+  : results.some((x) => x.riskFlags.includes("UNKNOWN")) ? "Some packages could not be fully checked this run (npm download data unavailable) — see UNKNOWN rows."
   : "Your watched packages look healthy this week."}
 
 ${pkgLines}
@@ -7317,6 +7319,7 @@ Unsubscribe: ${unsubLink}`;
 
 ${critical.length > 0
   ? `${critical.length} CRITICAL package${critical.length > 1 ? "s" : ""} detected in your watchlist:`
+  : results.some((x) => x.riskFlags.includes("UNKNOWN")) ? "Some packages could not be fully checked this run (npm download data unavailable) — see UNKNOWN rows."
   : "Your watched packages look healthy this week."}
 
 ${pkgLines}
