@@ -7023,11 +7023,18 @@ async function runWeeklyDigest(env: Bindings): Promise<{ sent: number; skipped: 
   // Score in batches of 5 (same limit as /api/subscribe)
   const pkgList = [...allPackages];
   const MAX_CONCURRENT = 5;
+  // One bulk download call instead of N point calls: the 09-27 run lost
+  // downloads for 20 of 36 packages to per-package npm throttling.
+  const preloadWeekly = async (pkgs: string[]) => {
+    const bulk = await bulkFetchNpmWeeklyDownloads(pkgs.filter((p) => !p.startsWith("@"))).catch(() => new Map<string, number | null>());
+    return (pkg: string) => { const v = bulk.get(pkg); return v != null && v > 0 ? v : undefined; };
+  };
+  const digestWeekly = await preloadWeekly(pkgList);
   for (let i = 0; i < pkgList.length; i += MAX_CONCURRENT) {
     const batch = pkgList.slice(i, i + MAX_CONCURRENT);
     await Promise.all(batch.map(async (pkg) => {
       try {
-        const profile = await buildNpmCommitmentProfile(pkg);
+        const profile = await buildNpmCommitmentProfile(pkg, digestWeekly(pkg));
         if (!profile) {
           scoreCache.set(pkg, { score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] });
           return;
@@ -7220,11 +7227,12 @@ Unsubscribe: ${unsubLink}`;
 
   // Score new packages (same MAX_CONCURRENT pattern as above)
   const newFreePkgList = [...newFreePackages];
+  const freeWeekly = await preloadWeekly(newFreePkgList);
   for (let i = 0; i < newFreePkgList.length; i += MAX_CONCURRENT) {
     const batch = newFreePkgList.slice(i, i + MAX_CONCURRENT);
     await Promise.all(batch.map(async (pkg) => {
       try {
-        const profile = await buildNpmCommitmentProfile(pkg);
+        const profile = await buildNpmCommitmentProfile(pkg, freeWeekly(pkg));
         if (!profile) {
           scoreCache.set(pkg, { score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] });
           return;
