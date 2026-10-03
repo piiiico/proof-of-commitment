@@ -27,7 +27,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import { buildCommitmentProfile, searchAndProfile } from "./brreg.ts";
 import { buildGitHubCommitmentProfile, parseGitHubInput } from "./github.ts";
-import { buildNpmCommitmentProfile, bulkFetchNpmWeeklyDownloads, isSuspiciouslyZeroDownloads } from "./npm.ts";
+import { buildNpmCommitmentProfile, bulkFetchNpmWeeklyDownloads, flagWeeklyDownloads, digestRiskFlags, digestFlagLabel } from "./npm.ts";
 import { buildPyPICommitmentProfile } from "./pypi.ts";
 import { buildCargoCommitmentProfile } from "./cargo.ts";
 import { buildGolangCommitmentProfile } from "./golang.ts";
@@ -1248,7 +1248,9 @@ app.post("/api/audit", async (c) => {
             const profile = await buildNpmCommitmentProfile(pkg, preloadedWeekly);
             if (!profile) return { name: pkg, ecosystem: "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
             const riskFlags: string[] = [];
-            const wdl = profile.recentWeeklyDownloads ?? 0;
+            const wdReport = flagWeeklyDownloads(profile);
+            const wdl = wdReport ?? 0;
+            if (wdReport === null) riskFlags.push("UNKNOWN: npm download data unavailable — CRITICAL/HIGH not evaluated");
             // Use activePublisherCount (publishers who published in last 12mo) for
             // CRITICAL/HIGH checks — dormant publishers with valid scope access are
             // attack surface, not effective depth (ws: 4 total, 1 active, 220M/wk).
@@ -1274,9 +1276,7 @@ app.post("/api/audit", async (c) => {
             // transient fetch failure, not real data. Report null + flag so the
             // UI shows "—" instead of a confident-but-wrong "0/wk" cell on the
             // first interaction (the moment conversion decisions get made).
-            const wdRaw = profile.recentWeeklyDownloads ?? null;
-            const downloadDataMissing = isSuspiciouslyZeroDownloads(wdRaw, profile.versionCount, profile.ageYears);
-            const wdReport = downloadDataMissing ? null : wdRaw;
+            const downloadDataMissing = wdReport === null;
             return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: wdReport, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, hasStagedPublishing: profile.hasStagedPublishing, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown, publisherLifecycle: lc ?? undefined, downloadDataMissing: downloadDataMissing || undefined };
           }
         } catch (err) {
@@ -1887,13 +1887,14 @@ app.post("/api/audit/github", async (c) => {
             } else {
               const profile = await buildNpmCommitmentProfile(pkg);
               if (!profile) return { name: pkg, ecosystem, score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: "not found" };
-              const wdl = profile.recentWeeklyDownloads ?? 0;
+              const wdl = flagWeeklyDownloads(profile) ?? 0;
               const riskFlags: string[] = [];
+              if (flagWeeklyDownloads(profile) === null) riskFlags.push("UNKNOWN");
               const effPub = profile.activePublisherCount ?? profile.maintainerCount;
               if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
               else if (effPub <= 1 && wdl > 1_000_000) riskFlags.push("HIGH");
               if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-              return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: wdl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
+              return { name: profile.name, ecosystem, score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: flagWeeklyDownloads(profile), ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, riskFlags, scoreBreakdown: profile.scoreBreakdown };
             }
           } catch (err) {
             return { name: pkg, ecosystem, score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
@@ -2033,7 +2034,7 @@ app.get("/api/badge/:ecosystem/*", async (c) => {
       const profile = await buildNpmCommitmentProfile(packageName);
       if (profile) {
         score = profile.commitmentScore;
-        const wdl = profile.recentWeeklyDownloads ?? 0;
+        const wdl = flagWeeklyDownloads(profile) ?? 0;
         const effPub = profile.activePublisherCount ?? profile.maintainerCount;
         if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
       }
@@ -2395,7 +2396,7 @@ app.get("/og/:ecosystem/*", async (c) => {
         score = profile.commitmentScore;
         maintainerCount = profile.maintainerCount ?? null;
         weeklyDownloads = profile.recentWeeklyDownloads ?? null;
-        if (profile.maintainerCount === 1 && (profile.recentWeeklyDownloads ?? 0) > 10_000_000) isCritical = true;
+        if (profile.maintainerCount === 1 && (flagWeeklyDownloads(profile) ?? 0) > 10_000_000) isCritical = true;
       }
     } else if (ecosystem === "pypi") {
       const profile = await buildPyPICommitmentProfile(packageName);
@@ -2476,8 +2477,9 @@ async function scoreNpmNode(pkg: string, depth: number): Promise<GraphNode> {
     if (!profile) {
       return { name: pkg, score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], depth, error: "not found" };
     }
-    const wdl = profile.recentWeeklyDownloads ?? 0;
+    const wdl = flagWeeklyDownloads(profile) ?? 0;
     const riskFlags: string[] = [];
+    if (flagWeeklyDownloads(profile) === null) riskFlags.push("UNKNOWN");
     const effPub = profile.activePublisherCount ?? profile.maintainerCount;
     if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole active publisher + >10M/wk");
     else if (effPub <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole active publisher + >1M/wk");
@@ -2488,7 +2490,7 @@ async function scoreNpmNode(pkg: string, depth: number): Promise<GraphNode> {
       score: profile.commitmentScore,
       maintainers: profile.maintainerCount,
       githubContributors: profile.githubContributors,
-      weeklyDownloads: wdl,
+      weeklyDownloads: flagWeeklyDownloads(profile),
       ageYears: Math.round(profile.ageYears * 10) / 10,
       trend: profile.downloadTrend,
       riskFlags,
@@ -2844,7 +2846,7 @@ app.get("/badge/npm/*", async (c) => {
     const profile = await buildNpmCommitmentProfile(packageName);
     if (profile) {
       score = profile.commitmentScore;
-      const wdl = profile.recentWeeklyDownloads ?? 0;
+      const wdl = flagWeeklyDownloads(profile) ?? 0;
       const effPub = profile.activePublisherCount ?? profile.maintainerCount;
       if (effPub <= 1 && wdl > 10_000_000) isCritical = true;
     }
@@ -2989,7 +2991,7 @@ app.get("/badge/*", async (c) => {
     const profile = await buildNpmCommitmentProfile(packageName);
     if (profile) {
       score = profile.commitmentScore;
-      const wdl = profile.recentWeeklyDownloads ?? 0;
+      const wdl = flagWeeklyDownloads(profile) ?? 0;
       const effPub = profile.activePublisherCount ?? profile.maintainerCount;
       if (effPub <= 1 && wdl > 10_000_000) isCritical = true;
     }
@@ -3417,17 +3419,12 @@ app.post("/api/keys/create", async (c) => {
         seedScores.push({ ...s, score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] });
         continue;
       }
-      const wdl = profile.recentWeeklyDownloads ?? 0;
-      const riskFlags: string[] = [];
-      const effPub = profile.activePublisherCount ?? profile.maintainerCount;
-      if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
-      else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
-      else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+      const riskFlags = digestRiskFlags(profile);
       seedScores.push({
         ...s,
         score: profile.commitmentScore,
         maintainers: profile.maintainerCount,
-        weeklyDownloads: wdl,
+        weeklyDownloads: flagWeeklyDownloads(profile),
         riskFlags,
       });
     } catch {
@@ -3445,11 +3442,7 @@ app.post("/api/keys/create", async (c) => {
   const seedCriticalCount = seedScores.filter((r) => r.riskFlags.includes("CRITICAL")).length;
   const seedScoreLines = seedScores
     .map((r) => {
-      const flag = r.riskFlags.includes("CRITICAL") ? "⚑ CRITICAL"
-        : r.riskFlags.includes("HIGH") ? "⚠ HIGH"
-        : r.riskFlags.includes("WARN") ? "↓ WARN"
-        : r.score === null ? "(not scored)"
-        : "✓ OK";
+      const flag = digestFlagLabel(r.riskFlags, r.score);
       const scoreStr = r.score === null ? "  —" : `${String(r.score).padStart(3)}/100`;
       const maint = r.maintainers === null ? "?" : `${r.maintainers}`;
       return `  ${r.name.padEnd(22)} ${scoreStr}  ${maint}p  ${fmtSeedDL(r.weeklyDownloads)}/wk  ${flag}`;
@@ -4730,13 +4723,8 @@ app.post("/api/subscribe", async (c) => {
         try {
           const profile = await buildNpmCommitmentProfile(pkg);
           if (!profile) return { name: pkg, score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] };
-          const wdl = profile.recentWeeklyDownloads ?? 0;
-          const riskFlags: string[] = [];
-          const effPub = profile.activePublisherCount ?? profile.maintainerCount;
-          if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
-          else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
-          else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
-          return { name: profile.name, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: wdl, riskFlags };
+          const riskFlags = digestRiskFlags(profile);
+          return { name: profile.name, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: flagWeeklyDownloads(profile), riskFlags };
         } catch {
           return { name: pkg, score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] };
         }
@@ -4757,6 +4745,7 @@ app.post("/api/subscribe", async (c) => {
   const critDL = critical.reduce((s, p) => s + (p.weeklyDownloads ?? 0), 0);
 
   function fmtDL(n: number | null): string {
+    if (n === null) return "—";
     if (!n) return "?";
     if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
     if (n >= 1e6) return Math.round(n / 1e6) + "M";
@@ -4767,7 +4756,7 @@ app.post("/api/subscribe", async (c) => {
   const pkgLines = auditResults
     .filter((p) => p.score !== null)
     .map((p) => {
-      const flag = p.riskFlags.includes("CRITICAL") ? "⚑ CRITICAL" : p.riskFlags.includes("HIGH") ? "⚠ HIGH" : p.riskFlags.includes("WARN") ? "↓ WARN" : "✓ OK";
+      const flag = digestFlagLabel(p.riskFlags, p.score);
       return `  ${p.name.padEnd(22)} ${String(p.score).padStart(3)}/100  ${p.maintainers}p  ${fmtDL(p.weeklyDownloads)}/wk  ${flag}`;
     })
     .join("\n");
@@ -4787,7 +4776,7 @@ ${critical.length > 0
 
 ${pkgLines || "(No packages scored yet)"}
 
-CRITICAL = sole npm publisher + 10M+ weekly downloads.
+CRITICAL = sole npm publisher + 10M+ weekly downloads.${auditResults.some((x) => x.riskFlags.includes("UNKNOWN")) ? "\nUNKNOWN = npm download counts unavailable this run; risk not evaluated, score partial." : ""}
 This is the structural profile that made the April 1st axios attack possible.
 
 Audit your own project:
@@ -6494,13 +6483,14 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
                 } else {
                   const profile = await buildNpmCommitmentProfile(pkg);
                   if (!profile) return { name: pkg, ecosystem: eco, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: "not found" };
-                  const wdl = profile.recentWeeklyDownloads ?? 0;
+                  const wdl = flagWeeklyDownloads(profile) ?? 0;
                   const riskFlags: string[] = [];
+                  if (flagWeeklyDownloads(profile) === null) riskFlags.push("UNKNOWN");
                   const effPub = profile.activePublisherCount ?? profile.maintainerCount;
                   if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole active npm publisher + >10M/wk");
                   else if (effPub <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole active npm publisher + >1M/wk");
                   if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
-                  return { name: profile.name, ecosystem: eco, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: wdl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
+                  return { name: profile.name, ecosystem: eco, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: flagWeeklyDownloads(profile), ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
                 }
               } catch (err) {
                 return { name: pkg, ecosystem: eco, score: null, maintainers: null, weeklyDownloads: null, ageYears: null, trend: null, riskFlags: [], error: err instanceof Error ? err.message : "error" };
@@ -7042,16 +7032,11 @@ async function runWeeklyDigest(env: Bindings): Promise<{ sent: number; skipped: 
           scoreCache.set(pkg, { score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] });
           return;
         }
-        const wdl = profile.recentWeeklyDownloads ?? 0;
-        const riskFlags: string[] = [];
-        const effPub = profile.activePublisherCount ?? profile.maintainerCount;
-        if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
-        else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
-        else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+        const riskFlags = digestRiskFlags(profile);
         scoreCache.set(pkg, {
           score: profile.commitmentScore,
           maintainers: profile.maintainerCount,
-          weeklyDownloads: wdl,
+          weeklyDownloads: flagWeeklyDownloads(profile),
           riskFlags,
         });
       } catch {
@@ -7074,7 +7059,8 @@ async function runWeeklyDigest(env: Bindings): Promise<{ sent: number; skipped: 
   // Insert current scores (one row per package per run)
   for (const pkg of pkgList) {
     const cur = scoreCache.get(pkg)!;
-    if (cur.score !== null) {
+    // Never baseline a partial score: a failed download fetch costs ~22 points.
+    if (cur.score !== null && !cur.riskFlags.includes("UNKNOWN")) {
       await env.DB.prepare(
         `INSERT INTO package_score_history
          (package_name, ecosystem, score, maintainers, weekly_downloads, risk_flags, recorded_at)
@@ -7084,6 +7070,7 @@ async function runWeeklyDigest(env: Bindings): Promise<{ sent: number; skipped: 
   }
 
   function fmtDL(n: number | null): string {
+    if (n === null) return "—";
     if (!n) return "?";
     if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
     if (n >= 1e6) return Math.round(n / 1e6) + "M";
@@ -7131,11 +7118,9 @@ async function runWeeklyDigest(env: Bindings): Promise<{ sent: number; skipped: 
     const critical = results.filter((r) => r.riskFlags.includes("CRITICAL"));
     const pkgLines = results
       .map((r) => {
-        const flag = r.riskFlags.includes("CRITICAL") ? "⚑ CRITICAL"
-          : r.riskFlags.includes("HIGH") ? "⚠ HIGH"
-          : r.riskFlags.includes("WARN") ? "↓ WARN"
-          : "✓ OK";
-        const change = fmtChange(r.score, r.prevScore);
+        const flag = digestFlagLabel(r.riskFlags, r.score);
+        // Partial score without download data: a delta vs a full score is noise.
+        const change = r.riskFlags.includes("UNKNOWN") ? "" : fmtChange(r.score, r.prevScore);
         const scoreStr = `${r.score}/100${change}`;
         return `  ${r.name.padEnd(22)} ${scoreStr.padEnd(12)}  ${r.maintainers ?? "?"}p  ${fmtDL(r.weeklyDownloads)}/wk  ${flag}`;
       })
@@ -7156,7 +7141,7 @@ ${critical.length > 0
 
 ${pkgLines}
 
-CRITICAL = sole npm publisher + 10M+ weekly downloads.
+CRITICAL = sole npm publisher + 10M+ weekly downloads.${results.some((x) => x.riskFlags.includes("UNKNOWN")) ? "\nUNKNOWN = npm download counts unavailable this run; risk not evaluated, score partial." : ""}
 This structural profile is what made the April 1st axios supply chain attack possible.
 
 Full audit: ${auditLink}
@@ -7244,16 +7229,11 @@ Unsubscribe: ${unsubLink}`;
           scoreCache.set(pkg, { score: null, maintainers: null, weeklyDownloads: null, riskFlags: [] });
           return;
         }
-        const wdl = profile.recentWeeklyDownloads ?? 0;
-        const riskFlags: string[] = [];
-        const effPub = profile.activePublisherCount ?? profile.maintainerCount;
-        if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL");
-        else if (profile.ageYears < 1 && wdl > 1_000_000) riskFlags.push("HIGH");
-        else if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN");
+        const riskFlags = digestRiskFlags(profile);
         scoreCache.set(pkg, {
           score: profile.commitmentScore,
           maintainers: profile.maintainerCount,
-          weeklyDownloads: wdl,
+          weeklyDownloads: flagWeeklyDownloads(profile),
           riskFlags,
         });
       } catch {
@@ -7276,7 +7256,8 @@ Unsubscribe: ${unsubLink}`;
   // Insert current scores for new packages
   for (const pkg of newFreePkgList) {
     const cur = scoreCache.get(pkg)!;
-    if (cur.score !== null) {
+    // Never baseline a partial score: a failed download fetch costs ~22 points.
+    if (cur.score !== null && !cur.riskFlags.includes("UNKNOWN")) {
       await env.DB.prepare(
         `INSERT INTO package_score_history
          (package_name, ecosystem, score, maintainers, weekly_downloads, risk_flags, recorded_at)
@@ -7309,11 +7290,9 @@ Unsubscribe: ${unsubLink}`;
     const critical = results.filter((r) => r.riskFlags.includes("CRITICAL"));
     const pkgLines = results
       .map((r) => {
-        const flag = r.riskFlags.includes("CRITICAL") ? "⚑ CRITICAL"
-          : r.riskFlags.includes("HIGH") ? "⚠ HIGH"
-          : r.riskFlags.includes("WARN") ? "↓ WARN"
-          : "✓ OK";
-        const change = fmtChange(r.score, r.prevScore);
+        const flag = digestFlagLabel(r.riskFlags, r.score);
+        // Partial score without download data: a delta vs a full score is noise.
+        const change = r.riskFlags.includes("UNKNOWN") ? "" : fmtChange(r.score, r.prevScore);
         const scoreStr = `${r.score}/100${change}`;
         return `  ${r.name.padEnd(22)} ${scoreStr.padEnd(12)}  ${r.maintainers ?? "?"}p  ${fmtDL(r.weeklyDownloads)}/wk  ${flag}`;
       })
@@ -7334,7 +7313,7 @@ ${critical.length > 0
 
 ${pkgLines}
 
-CRITICAL = sole npm publisher + 10M+ weekly downloads.
+CRITICAL = sole npm publisher + 10M+ weekly downloads.${results.some((x) => x.riskFlags.includes("UNKNOWN")) ? "\nUNKNOWN = npm download counts unavailable this run; risk not evaluated, score partial." : ""}
 This structural profile is what made the April 1st axios supply chain attack possible.
 
 Full audit: ${auditLink}

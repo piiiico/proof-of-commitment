@@ -110,6 +110,43 @@ export function isSuspiciouslyZeroDownloads(
 }
 
 /**
+ * Weekly downloads a RISK FLAG may be computed from: null when the download
+ * fetch failed (absent, or sanity-zero above). Flags compare against this,
+ * never `recentWeeklyDownloads ?? 0` — a failed fetch's 0 silently dropped
+ * axios from CRITICAL to "✓ OK" in the 2026-09-27 watchlist digest.
+ */
+export function flagWeeklyDownloads(p: {
+  recentWeeklyDownloads: number | null | undefined;
+  versionCount: number | null | undefined;
+  ageYears: number | null | undefined;
+}): number | null {
+  const w = p.recentWeeklyDownloads;
+  if (typeof w !== "number" || !Number.isFinite(w)) return null;
+  return isSuspiciouslyZeroDownloads(w, p.versionCount, p.ageYears) ? null : w;
+}
+
+/** Short risk flags for the watchlist/digest surfaces. UNKNOWN = downloads unavailable. */
+export function digestRiskFlags(p: Pick<NpmCommitmentProfile, "recentWeeklyDownloads" | "versionCount" | "ageYears" | "activePublisherCount" | "maintainerCount" | "daysSinceLastPublish">): string[] {
+  const wdl = flagWeeklyDownloads(p);
+  const effPub = p.activePublisherCount ?? p.maintainerCount;
+  if (wdl === null) return p.daysSinceLastPublish > 365 ? ["UNKNOWN", "WARN"] : ["UNKNOWN"];
+  if (effPub <= 1 && wdl > 10_000_000) return ["CRITICAL"];
+  if (p.ageYears < 1 && wdl > 1_000_000) return ["HIGH"];
+  if (p.daysSinceLastPublish > 365) return ["WARN"];
+  return [];
+}
+
+/** Row label for a digest line — never "✓ OK" when downloads were unavailable. */
+export function digestFlagLabel(flags: string[], score: number | null = 0): string {
+  return flags.includes("CRITICAL") ? "⚑ CRITICAL"
+    : flags.includes("HIGH") ? "⚠ HIGH"
+    : flags.includes("UNKNOWN") ? "? UNKNOWN"
+    : flags.includes("WARN") ? "↓ WARN"
+    : score === null ? "(not scored)"
+    : "✓ OK";
+}
+
+/**
  * Bulk-fetch WEEKLY download totals for multiple npm packages in ONE API call.
  * Uses the point API (/downloads/point/last-week) which is simpler and more reliable
  * than the range API — avoids the concurrent-request race condition that causes zeros.
