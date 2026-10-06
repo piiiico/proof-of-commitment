@@ -45,6 +45,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { digestFlagLabel } from "../src/backend/npm.ts";
 
 const WORKER_SOURCE = readFileSync(
   join(import.meta.dir, "..", "src", "backend", "worker.ts"),
@@ -373,7 +374,10 @@ describe("seeded-branch scoring (2026-06-11 welcome-scores)", () => {
     expect(WORKER_SOURCE).toContain("r.name.padEnd(22)");
     expect(WORKER_SOURCE).toMatch(/\$\{maint\}p/);
     expect(WORKER_SOURCE).toContain("fmtSeedDL(r.weeklyDownloads)");
-    expect(WORKER_SOURCE).toContain("⚑ CRITICAL");
+    // Label literal moved to npm.ts digestFlagLabel (d305552) — assert the
+    // seed row delegates to it, and execute it rather than grep the literal.
+    expect(WORKER_SOURCE).toContain("digestFlagLabel(r.riskFlags, r.score)");
+    expect(digestFlagLabel(["CRITICAL"], 40)).toBe("⚑ CRITICAL");
   });
 
   test("overflow uses watchSeeds.length vs seededPackages.length", () => {
