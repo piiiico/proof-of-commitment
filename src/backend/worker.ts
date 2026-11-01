@@ -1191,7 +1191,8 @@ app.post("/api/audit", async (c) => {
             ? `${Math.round(r.weeklyDownloads / 1_000)}k/wk`
             : `${r.weeklyDownloads}/wk`
           : "";
-        return `  ${r.name.padEnd(20)} ${score}  ${risk.padEnd(14)} ${r.maintainers ?? "?"}p  ${dl}`;
+        const line = `  ${r.name.padEnd(20)} ${score}  ${risk.padEnd(14)} ${r.maintainers ?? "?"}p  ${dl}`;
+        return r.compromised ? `${line}\n    ⚠ COMPROMISED — ${r.compromised.attack} — ${r.compromised.url}` : line;
       });
 
       const ctaBlock = isOvershoot
