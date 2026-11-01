@@ -635,6 +635,8 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
     if (pkg.compromised) {
       const atk = pkg.compromised;
       console.log(clr(c.red, `  ⚠ COMPROMISED — ${atk.attack} (${atk.date}) — ${atk.url}`));
+    } else if (pkg.compromised_check === 'unavailable') {
+      console.log(clr(c.yellow, `  ? Malicious-version check unavailable (OSV unreachable) — not checked, not clean`));
     }
 
     // Score breakdown if available

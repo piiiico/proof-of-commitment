@@ -74,272 +74,75 @@ async function svgToPng(svg: string): Promise<Uint8Array> {
   return rendered.asPng();
 }
 
-// ── Known Supply Chain Attacks ───────────────────────────────────────
-// Recent compromised packages. Checked during /api/audit to surface
-// incident data alongside behavioral scoring. Entries expire naturally
-// as attacks age out (show only last 90 days).
-
-interface AttackRecord {
-  attack: string;       // short name
-  date: string;         // ISO date of incident
-  url: string;          // blog post / analysis link
-  affectedVersions?: string; // optional version range
-}
-
-const KNOWN_ATTACKS: Map<string, AttackRecord> = new Map();
-const KNOWN_ATTACK_PREFIXES: Array<{ prefix: string; eco: string; record: AttackRecord }> = [];
-
-function registerAttack(ecosystem: string, packages: string[], record: AttackRecord) {
-  for (const pkg of packages) {
-    if (pkg.endsWith("/*")) {
-      KNOWN_ATTACK_PREFIXES.push({ prefix: pkg.slice(0, -1), eco: ecosystem, record });
-    } else {
-      KNOWN_ATTACKS.set(`${ecosystem}:${pkg}`, record);
-    }
-  }
-}
-
-// TrapDoor — cross-ecosystem credential theft + AI assistant poisoning (May 22 2026)
-registerAttack("npm", [
-  "async-pipeline-builder", "build-scripts-utils", "chain-key-validator",
-  "crypto-credential-scanner", "defi-env-auditor", "defi-threat-scanner",
-  "deployment-key-auditor", "dev-env-bootstrapper", "eth-wallet-sentinel",
-  "llm-context-compressor", "mnemonic-safety-check", "model-switch-router",
-  "node-setup-helpers", "project-init-tools", "prompt-engineering-toolkit",
-  "solidity-deploy-guard", "token-usage-tracker", "wallet-backup-verifier",
-  "wallet-security-checker", "web3-secrets-detector", "workspace-config-loader",
-], {
-  attack: "TrapDoor",
-  date: "2026-05-22",
-  url: "https://getcommit.dev/blog/trapdoor-ai-assistant-poisoning/",
-});
-registerAttack("pypi", [
-  "cryptowallet-safety", "data-pipeline-check", "defi-risk-scanner",
-  "env-loader-cli", "eth-security-auditor", "git-config-sync", "solidity-build-guard",
-], {
-  attack: "TrapDoor",
-  date: "2026-05-22",
-  url: "https://getcommit.dev/blog/trapdoor-ai-assistant-poisoning/",
-});
-registerAttack("cargo", [
-  "move-analyzer-build", "move-compiler-tools", "move-project-builder",
-  "sui-framework-helpers", "sui-move-build-helper", "sui-sdk-build-utils",
-], {
-  attack: "TrapDoor",
-  date: "2026-05-22",
-  url: "https://getcommit.dev/blog/trapdoor-ai-assistant-poisoning/",
-});
-
-// Miasma — Red Hat credential theft via compromised GitHub account (Jun 1 2026)
-registerAttack("npm", [
-  "@redhat-cloud-services/*",
-], {
-  attack: "Miasma",
-  date: "2026-06-01",
-  url: "https://getcommit.dev/blog/redhat-miasma-provenance-bypass/",
-});
-
-// IronWorm — Rust-based infostealer via asteroiddao account (Jun 4 2026)
-// eBPF rootkit + Tor C2 + npm Trusted Publishing self-propagation
-// Commits authored as "claude@users.noreply.github.com" with forged timestamps
-registerAttack("npm", [
-  "weavedb-lite", "weavedb-sdk-base", "test-weavedb-sdk",
-  "weavedb-warp-contracts-plugin-deploy", "arnext-arkb", "weavedb-console",
-  "arnext", "roidjs", "weavedb-exm-sdk", "create-arnext-app",
-  "weavedb-tools", "wdb-core", "cwao-tools", "test-ajs", "monade",
-  "weavedb-exm-sdk-web", "testnpmnmp", "warp-contracts-plugin-deploy-test",
-  "wdb-cli", "ai3", "cwao-units", "atomic-notes", "cwao",
-  "weavedb-client", "wdb-sdk", "weavedb-offchain", "fpjson-lang",
-  "weavedb-contracts", "weavedb-node-client", "arjson", "hbsig",
-  "zkjson", "aonote", "weavedb-base", "weavedb-sdk-node", "wao",
-  "weavedb-sdk",
-], {
-  attack: "IronWorm",
-  date: "2026-06-04",
-  url: "https://getcommit.dev/blog/ironworm-rust-malware-targets-ai-credentials/",
-});
-
-// Miasma — Phantom Gyp wave: @vapi-ai + jagreehal ecosystem (Jun 3 2026)
-// Uses binding.gyp instead of lifecycle scripts to bypass install-script monitors.
-// Plants .claude/setup.mjs, .cursor/rules/setup.mdc, .gemini/settings.json
-// 57 packages across 286+ malicious versions in under 2 hours.
-// Sources: snyk.io/blog/node-gyp-supply-chain-compromise, stepsecurity.io
-registerAttack("npm", [
-  "@vapi-ai/*",
-  "@jagreehal/*",
-  "@evolvconsulting/evolv-coder-lite",
-  "ai-sdk-ollama",
-  "autotel", "autotel-adapters", "autotel-audit", "autotel-aws",
-  "autotel-backends", "autotel-cli", "autotel-cloudflare", "autotel-devtools",
-  "autotel-drizzle", "autotel-edge", "autotel-eventcatalog", "autotel-hono",
-  "autotel-mcp", "autotel-mcp-instrumentation", "autotel-mongoose", "autotel-pact",
-  "autotel-playwright", "autotel-plugins", "autotel-sentry", "autotel-subscribers",
-  "autotel-tanstack", "autotel-terminal", "autotel-vitest", "autotel-web",
-  "awaitly", "awaitly-analyze", "awaitly-libsql", "awaitly-mongo",
-  "awaitly-postgres", "awaitly-visualizer",
-  "effect-analyzer",
-  "eslint-plugin-awaitly",
-  "eslint-plugin-executable-stories-jest", "eslint-plugin-executable-stories-playwright",
-  "eslint-plugin-executable-stories-vitest",
-  "executable-stories-cypress", "executable-stories-demo", "executable-stories-formatters",
-  "executable-stories-init", "executable-stories-jest", "executable-stories-mcp",
-  "executable-stories-playwright", "executable-stories-react", "executable-stories-vitest",
-  "http-uploader-dev",
-  "mountly", "mountly-tailwind",
-  "node-env-resolver", "node-env-resolver-aws", "node-env-resolver-dotenvx",
-  "node-env-resolver-nextjs", "node-env-resolver-vite",
-  "wrangler-deploy",
-], {
-  attack: "Miasma (Phantom Gyp)",
-  date: "2026-06-03",
-  url: "https://getcommit.dev/blog/phantom-gyp-binding-gyp-bypass/",
-});
-
-// Mini Shai-Hulud — TanStack (May 11 2026)
-registerAttack("npm", [
-  "@tanstack/*",
-], {
-  attack: "Mini Shai-Hulud",
-  date: "2026-05-11",
-  url: "https://getcommit.dev/blog/two-attacks-one-week/",
-});
-
-// node-ipc credential harvester (May 14 2026)
-registerAttack("npm", ["node-ipc"], {
-  attack: "node-ipc credential harvester",
-  date: "2026-05-14",
-  url: "https://getcommit.dev/blog/two-attacks-one-week/",
-});
-
-// Mini Shai-Hulud — UiPath (May 11 2026)
-registerAttack("npm", ["@uipath/*"], {
-  attack: "Mini Shai-Hulud",
-  date: "2026-05-11",
-  url: "https://getcommit.dev/blog/may-2026-npm-attacks-roundup/",
-});
-
-// Mini Shai-Hulud — SAP CAP (Apr 29 2026)
-registerAttack("npm", ["@cap-js/*"], {
-  attack: "Mini Shai-Hulud",
-  date: "2026-04-29",
-  url: "https://getcommit.dev/blog/may-2026-npm-attacks-roundup/",
-});
-
-// Sapphire Sleet — Mastra AI framework credential theft via phished maintainer (Jun 17 2026)
-// North Korean state actor (MSFT attribution). Injected easy-day-js typosquat (dayjs clone)
-// into 141 @mastra packages in 88 minutes. PowerShell backdoor + crypto wallet harvester
-// targeting 166 browser-extension IDs. C2: 23.254.164.92, maskasd.com
-// Sources: Microsoft Threat Intelligence (Jun 17), Mastra incident report #18061
-registerAttack("npm", [
-  "@mastra/*",
-  "mastra",
-  "easy-day-js",
-], {
-  attack: "Sapphire Sleet (Mastra)",
-  date: "2026-06-17",
-  url: "https://getcommit.dev/blog/mastra-dormant-publisher-attack/",
-});
-
-// Mini Shai-Hulud — @antv visualization ecosystem (May 20 2026)
-// Compromised @antv npm packages enable CI/CD credential theft.
-// Same worm family as TanStack (May 11) and UiPath (May 11).
-// Source: Microsoft Threat Intelligence
-registerAttack("npm", [
-  "@antv/*",
-], {
-  attack: "Mini Shai-Hulud",
-  date: "2026-05-20",
-  url: "https://getcommit.dev/blog/may-2026-npm-attacks-roundup/",
-});
-
-// Miasma — LeoPlatform + Go ecosystem expansion (Jun 24 2026)
-// codfish/semantic-release-action force-pushed → 1442 dependent repos compromised.
-// binding.gyp bypass, Bun payload staging, AI IDE persistence hooks.
-// Campaign marker: RevokeAndItGoesKaboom
-// First Go module compromise in the Shai-Hulud family.
-// Source: socket.dev (Jun 25)
-registerAttack("npm", [
-  "leo-auth", "leo-aws", "leo-cache", "leo-cdk-lib", "leo-cli",
-  "leo-config", "leo-connector-elasticsearch", "leo-connector-mongo",
-  "leo-connector-mysql", "leo-connector-oracle", "leo-connector-redshift",
-  "leo-cron", "leo-logger", "leo-sdk", "leo-streams",
-  "rstreams-metrics", "rstreams-shard-util",
-  "hexo-deployer-wrangler", "hexo-shoka-swiper", "prism-silq",
-  "serverless-convention", "serverless-leo", "solo-nav",
-], {
-  attack: "Miasma (LeoPlatform)",
-  date: "2026-06-24",
-  url: "https://socket.dev/blog/miasma-mini-shai-hulud-hits-leoplatform-npm-packages-go-ecosystem",
-});
-registerAttack("golang", [
-  "github.com/verana-labs/verana-blockchain",
-], {
-  attack: "Miasma (LeoPlatform)",
-  date: "2026-06-24",
-  url: "https://socket.dev/blog/miasma-mini-shai-hulud-hits-leoplatform-npm-packages-go-ecosystem",
-});
-
-// Miasma — ImmobiliareLabs/Backstage (Jun 26 2026)
-// codfish/semantic-release-action hijack → compromised CI/CD release pipelines.
-// 22 @immobiliarelabs Backstage plugins (GitLab, LDAP auth).
-// binding.gyp bypass, AES-128-GCM payload, Bun execution.
-// Campaign marker: thebeautifulsnadsoftime
-// Source: socket.dev (Jun 26)
-registerAttack("npm", [
-  "@immobiliarelabs/*",
-], {
-  attack: "Miasma (ImmobiliareLabs/Backstage)",
-  date: "2026-06-26",
-  url: "https://socket.dev/blog/miasma-mini-shai-hulud-hits-immobiliarelabs-npm-packages",
-});
-
-// axios credential theft (Mar 30 2026)
-registerAttack("npm", ["axios"], {
-  attack: "axios token theft",
-  date: "2026-03-30",
-  url: "https://getcommit.dev/blog/axios-attack-prediction/",
-});
-
-// LiteLLM PyPI supply chain (Mar 2026)
-registerAttack("pypi", ["litellm"], {
-  attack: "LiteLLM PyPI token theft",
-  date: "2026-03-05",
-  url: "https://getcommit.dev/blog/python-supply-chain-risk/",
-});
-
-export function lookupCompromised(name: string, ecosystem: string): AttackRecord | null {
-  // Exact match first
-  const exact = KNOWN_ATTACKS.get(`${ecosystem}:${name}`);
-  if (exact) return exact;
-  // Prefix match (for scoped packages like @redhat-cloud-services/*)
-  for (const { prefix, eco, record } of KNOWN_ATTACK_PREFIXES) {
-    if (eco === ecosystem && name.startsWith(prefix)) return record;
-  }
-  return null;
-}
+// ── Known malicious versions: OSV / OpenSSF malicious-packages ───────
+// Replaced a hand-kept registry on 2026-11-01. That registry got no entry after
+// 2026-06-26, so keyv, jscrambler, @joyfill and litellm 1.107.0 all audited clean.
+// OSV "MAL-" records are version-precise and never expire, so this stays
+// age-blind: the published date travels with the field.
+const OSV_ECOSYSTEM: Record<string, string> = { npm: "npm", pypi: "PyPI", cargo: "crates.io", golang: "Go" };
+const EXACT_VERSION = /^v?\d+(\.\d+)*(?:[-+][0-9A-Za-z.+-]+)?$/;
 
 /**
- * Attach known supply-chain incident history to scored results, in place.
- *
- * Deliberately age-blind. See the call site in /api/audit for the 2026-09-19
- * measurement that killed the previous 90-day cutoff. Exported so the
- * no-expiry invariant is testable without booting the worker.
+ * Attach OSV malicious-package records to scored results, in place.
+ * `versions` maps lowercase package name → requested version; only exact
+ * versions are sent to OSV, otherwise the package is queried as a whole and
+ * `version_checked` is null. If OSV cannot be read, every row gets
+ * compromised_check:"unavailable" — never a silent clean.
  */
-export function enrichWithAttackHistory<T extends { name: string; ecosystem: string }>(
+export async function enrichWithAttackHistory<T extends { name: string; ecosystem: string }>(
   results: T[],
-): T[] {
-  for (const r of results) {
-    const record = lookupCompromised(r.name, r.ecosystem);
-    if (record) {
-      (r as any).compromised = { attack: record.attack, date: record.date, url: record.url };
-    }
+  versions: Map<string, string> = new Map(),
+  fetchFn: typeof fetch = fetch,
+): Promise<T[]> {
+  const rows = results.filter((r) => OSV_ECOSYSTEM[r.ecosystem]);
+  if (rows.length === 0) return results;
+  const ver = (r: T) => {
+    const v = versions.get(r.name.toLowerCase());
+    return v && EXACT_VERSION.test(v) ? v : null;
+  };
+  try {
+    const res = await fetchFn("https://api.osv.dev/v1/querybatch", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        queries: rows.map((r) => ({
+          package: { name: r.name, ecosystem: OSV_ECOSYSTEM[r.ecosystem] },
+          ...(ver(r) ? { version: ver(r) } : {}),
+        })),
+      }),
+    });
+    if (!res.ok) throw new Error(`osv querybatch ${res.status}`);
+    const batch = (await res.json()) as { results?: Array<{ vulns?: Array<{ id: string }> }> };
+    if (!Array.isArray(batch.results) || batch.results.length !== rows.length) throw new Error("osv querybatch: malformed");
+    const malIds = [...new Set(batch.results.flatMap((x) => (x.vulns ?? []).map((v) => v.id).filter((id) => id.startsWith("MAL-"))))];
+    const details = new Map<string, any>(await Promise.all(malIds.map(async (id) => {
+      const d = await fetchFn(`https://api.osv.dev/v1/vulns/${id}`);
+      if (!d.ok) throw new Error(`osv ${id} ${d.status}`);
+      return [id, await d.json()] as [string, any];
+    })));
+    rows.forEach((r, i) => {
+      (r as any).compromised_check = "osv";
+      const live = (batch.results![i]!.vulns ?? []).map((v) => details.get(v.id)).filter((d) => d && !d.withdrawn);
+      if (live.length === 0) return;
+      const ids: string[] = live.map((d) => d.id);
+      const affected: string[] = [...new Set<string>(live.flatMap((d) => (d.affected ?? [])
+        .filter((a: any) => a.package?.name?.toLowerCase() === r.name.toLowerCase())
+        .flatMap((a: any) => a.versions ?? [])))];
+      const shown = affected.length > 6 ? `${affected.slice(0, 6).join(", ")} +${affected.length - 6} more` : affected.join(", ");
+      (r as any).compromised = {
+        attack: `${ids.join(", ")}: malicious ${affected.length ? `version${affected.length > 1 ? "s" : ""} ${shown}` : "versions"} (OSV/OpenSSF)`,
+        date: live.map((d) => String(d.published ?? d.modified).slice(0, 10)).sort()[0],
+        url: `https://osv.dev/vulnerability/${ids[0]}`,
+        source: "osv",
+        ids,
+        affected_versions: affected,
+        version_checked: ver(r),
+      };
+    });
+  } catch {
+    for (const r of rows) (r as any).compromised_check = "unavailable";
   }
   return results;
-}
-
-/** Registered attack records, for coverage/health gates. */
-export function allAttackRecords(): AttackRecord[] {
-  return [...KNOWN_ATTACKS.values(), ...KNOWN_ATTACK_PREFIXES.map((p) => p.record)];
 }
 
 // ── World ID JWT Verification ────────────────────────────────────────
@@ -1060,23 +863,24 @@ app.post("/api/audit", async (c) => {
   // Coerce here so both shapes work; if items are something else (numbers,
   // nulls, nested arrays) return a clean 400 explaining the expected shape.
   const rawItems: unknown[] = Array.isArray(body?.packages) ? body.packages.slice(0, 20) : [];
+  // A version ("keyv@6.0.0" or {name, version}) only narrows the OSV malicious-version check.
   const packages: string[] = [];
+  const versions = new Map<string, string>();
   for (const item of rawItems) {
-    if (typeof item === "string" && item.length > 0) {
-      packages.push(item);
-    } else if (item && typeof item === "object" && !Array.isArray(item)) {
-      const name = (item as Record<string, unknown>).name;
-      if (typeof name === "string" && name.length > 0) {
-        packages.push(name);
-      }
-    }
+    let name: unknown = item, version: unknown;
+    if (item && typeof item === "object" && !Array.isArray(item)) ({ name, version } = item as Record<string, unknown>);
+    if (typeof name !== "string" || name.length === 0) continue;
+    const at = name.lastIndexOf("@");
+    if (at > 0) [name, version] = [name.slice(0, at), name.slice(at + 1)];
+    packages.push(name as string);
+    if (typeof version === "string" && version) versions.set((name as string).toLowerCase(), version);
   }
   const ecosystem: string = body?.ecosystem ?? "auto";
 
   if (packages.length === 0) {
     return c.json({
       error: "'packages' array is required (max 20)",
-      hint: "Send an array of package names: { packages: [\"express\", \"lodash\"] }. Inside the array, the object shape { name, version } is also accepted (e.g. { packages: [{ name: \"express\", version: \"4.x\" }] }); the version field is ignored.",
+      hint: "Send an array of package names: { packages: [\"express\", \"lodash\"] }. Inside the array, the object shape { name, version } is also accepted (e.g. { packages: [{ name: \"express\", version: \"4.x\" }] }); the version narrows the malicious-version check.",
     }, 400);
   }
 
@@ -1289,23 +1093,8 @@ app.post("/api/audit", async (c) => {
 
   results.sort((a, b) => (a.score ?? -1) - (b.score ?? -1));
 
-  // Enrich with known attack history. NO recency cutoff, deliberately: a documented
-  // supply-chain incident is a permanent fact about a package, and malicious versions
-  // stay pinned in lockfiles for years after the registry is cleaned. The incident
-  // `date` travels with every record so consumers render recency themselves.
-  //
-  // This used to carry a 90-day rolling cutoff. It was a time bomb: correct the day it
-  // was written, silently a no-op later. Measured 2026-09-19 — 11 of 13 distinct
-  // registered attack waves had aged out (17 registerAttack calls collapse to 13
-  // attack/date pairs), including every attack named in our own agent card and
-  // marketing (axios, LiteLLM, Miasma), and the 2 survivors were 3 and 5 days from
-  // expiry. Re-derived from allAttackRecords(), NOT from reading the file: a
-  // hand-transcribed first pass said "8 of 10" and had missed three waves. The
-  // live API returned NO compromised field for fpjson-lang (IronWorm), @cap-js/sqlite
-  // and node-ipc, so the CLI printed "No CRITICAL packages found" over known-malicious
-  // packages. CI gating never keyed on this field (see shouldFail(): riskFlags + score
-  // only), so always-attaching changes no exit code — it only restores information.
-  enrichWithAttackHistory(results);
+  // Malicious-version records from OSV (age-blind; see enrichWithAttackHistory).
+  await enrichWithAttackHistory(results, versions);
 
   // --- Rate-limit taste: return 429 WITH partial results ---
   // The user sees real value (up to RATE_LIMIT_TASTE packages scored)
