@@ -16,7 +16,7 @@
  * Live arm: OSV_LIVE=1 bun test test/attack-registry-no-expiry.test.ts
  */
 import { expect, test, describe } from "bun:test";
-import { enrichWithAttackHistory } from "../src/backend/worker";
+import { enrichWithAttackHistory, parseAuditPackages } from "../src/backend/worker";
 
 type Row = { name: string; ecosystem: string; compromised?: any; compromised_check?: string };
 const row = (name: string, ecosystem = "npm"): Row => ({ name, ecosystem });
@@ -86,6 +86,26 @@ describe("compromised comes from OSV MAL records", () => {
       }
     });
   }
+});
+
+describe("parseAuditPackages", () => {
+  test("strings, name@version, scoped names and the {name, version} shape", () => {
+    const { packages, versions } = parseAuditPackages(["zod", "keyv@6.0.0", "@joyfill/components", "@a/b@1.2.3", { name: "litellm", version: "1.107.0" }, 7, null]);
+    expect(packages).toEqual(["zod", "keyv", "@joyfill/components", "@a/b", "litellm"]);
+    expect(versions.get("keyv")).toBe("6.0.0");
+    expect(versions.get("@a/b")).toBe("1.2.3");
+    expect(versions.get("litellm")).toBe("1.107.0");
+  });
+
+  test("one name, two versions (or one bare) → whole-package check, so a clean version cannot hide a bad one", async () => {
+    for (const items of [["keyv@6.0.0", "keyv@5.0.0"], ["keyv@5.0.0", "keyv@6.0.0"], ["keyv", "keyv@5.0.0"], ["keyv@5.0.0", "keyv"]]) {
+      const { versions } = parseAuditPackages(items);
+      const osv = fakeOsv();
+      await enrichWithAttackHistory([row("keyv")], versions, osv.fn);
+      expect(osv.queries[0]).toEqual({ package: { name: "keyv", ecosystem: "npm" } });
+    }
+    expect(parseAuditPackages(["keyv@6.0.0", "keyv@6.0.0"]).versions.get("keyv")).toBe("6.0.0");
+  });
 });
 
 describe.if(process.env.OSV_LIVE === "1")("live OSV", () => {

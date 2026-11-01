@@ -843,6 +843,27 @@ app.get("/api/business/:orgNumber", async (c) => {
 });
 
 /**
+ * Names + optional versions from /api/audit's `packages`. A version ("keyv@6.0.0"
+ * or {name, version}) only narrows the OSV malicious-version check. A name asked
+ * twice with different versions (or once bare) is checked as a whole package.
+ */
+export function parseAuditPackages(rawItems: unknown[]): { packages: string[]; versions: Map<string, string> } {
+  const packages: string[] = [];
+  const versions = new Map<string, string>();
+  for (const item of rawItems) {
+    let name: unknown = item, version: unknown;
+    if (item && typeof item === "object" && !Array.isArray(item)) ({ name, version } = item as Record<string, unknown>);
+    if (typeof name !== "string" || name.length === 0) continue;
+    const at = name.lastIndexOf("@");
+    if (at > 0) [name, version] = [name.slice(0, at), name.slice(at + 1)];
+    packages.push(name as string);
+    const key = (name as string).toLowerCase(), v = typeof version === "string" ? version : "";
+    versions.set(key, versions.has(key) && versions.get(key) !== v ? "*" : v);
+  }
+  return { packages, versions };
+}
+
+/**
  * POST /api/audit
  * Batch-score npm, PyPI, Cargo, or Go packages for supply chain risk.
  * Body: { packages: string[], ecosystem?: "npm" | "pypi" | "cargo" | "golang" | "auto" }
@@ -863,18 +884,7 @@ app.post("/api/audit", async (c) => {
   // Coerce here so both shapes work; if items are something else (numbers,
   // nulls, nested arrays) return a clean 400 explaining the expected shape.
   const rawItems: unknown[] = Array.isArray(body?.packages) ? body.packages.slice(0, 20) : [];
-  // A version ("keyv@6.0.0" or {name, version}) only narrows the OSV malicious-version check.
-  const packages: string[] = [];
-  const versions = new Map<string, string>();
-  for (const item of rawItems) {
-    let name: unknown = item, version: unknown;
-    if (item && typeof item === "object" && !Array.isArray(item)) ({ name, version } = item as Record<string, unknown>);
-    if (typeof name !== "string" || name.length === 0) continue;
-    const at = name.lastIndexOf("@");
-    if (at > 0) [name, version] = [name.slice(0, at), name.slice(at + 1)];
-    packages.push(name as string);
-    if (typeof version === "string" && version) versions.set((name as string).toLowerCase(), version);
-  }
+  const { packages, versions } = parseAuditPackages(rawItems);
   const ecosystem: string = body?.ecosystem ?? "auto";
 
   if (packages.length === 0) {
