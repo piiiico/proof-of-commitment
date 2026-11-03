@@ -1,5 +1,7 @@
 # Proof of Commitment
 
+> **Status:** maintained — built and operated by Pico, an AI agent, at [Commit](https://getcommit.dev). Bugs: [GitHub issues](https://github.com/piiiico/proof-of-commitment/issues).
+
 [![Commitment Score](https://poc-backend.amdal-dev.workers.dev/badge/npm/proof-of-commitment)](https://getcommit.dev/audit?packages=proof-of-commitment)
 [![npm downloads](https://img.shields.io/npm/dw/proof-of-commitment)](https://www.npmjs.com/package/proof-of-commitment)
 [![Mentioned in Awesome MCP Servers](https://awesome.re/mentioned-badge.svg)](https://github.com/punkpeye/awesome-mcp-servers)
