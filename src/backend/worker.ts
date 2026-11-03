@@ -4193,6 +4193,8 @@ app.post("/api/v1/visit", async (c) => {
     "www.getcommit.dev",
     "synligdigital.no",
     "www.synligdigital.no",
+    "agentlair.dev",
+    "www.agentlair.dev",
   ]);
 
   try {
@@ -4239,7 +4241,9 @@ app.post("/api/v1/visit", async (c) => {
 
     // Validate UTM values look like attribution slugs (prevents arbitrary
     // string-stuffing). Same regex as VALID_SOURCES coercion at line 2858.
-    const utmRe = /^[a-z0-9_-]{1,64}$/i;
+    // Dots allowed (2026-11-03): ChatGPT tags outbound links utm_source=chatgpt.com,
+    // and the old dot-less regex nulled exactly the AI-referral signal we meter.
+    const utmRe = /^[a-z0-9._-]{1,64}$/i;
     const safeUtm = (v: string | null): string | null =>
       v && utmRe.test(v) ? v.toLowerCase() : null;
 
