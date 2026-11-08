@@ -132,7 +132,7 @@ async function getBackendUrl(): Promise<string> {
  */
 async function isContributing(): Promise<boolean> {
   const result = await chrome.storage.local.get("config:contributing");
-  return result["config:contributing"] !== false;
+  return result["config:contributing"] === true; // v0.4: visit sync is opt-in
 }
 
 /**
@@ -263,6 +263,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       flushSyncQueue().catch(console.warn);
     }
     sendResponse({ ok: true });
+  }
+  if (message.type === "commit-sites") {
+    // v0.4 overlay: visible Google result domains -> the user's own Anbefal graph. Opt-in only.
+    (async () => {
+      const { "overlay:code": code, "overlay:seen": seen = {} } = await chrome.storage.local.get(["overlay:code", "overlay:seen"]);
+      if (!code) return null;
+      const res = await fetch("https://getcommit.dev/anbefal/api/sites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, domains: message.domains }) });
+      if (!res.ok) return null;
+      const j = await res.json();
+      for (const [d, s] of Object.entries<any>(j.sites || {})) if (s.endorsements?.length) seen[d] = s;
+      await chrome.storage.local.set({ "overlay:seen": seen });
+      return j;
+    })().then(sendResponse, () => sendResponse(null));
+    return true;
   }
 });
 

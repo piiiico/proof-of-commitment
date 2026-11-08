@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Commit",
-  "version": "0.3.0",
-  "description": "See real trust signals. Contribute your behavioral data — anonymously, verified by World ID.",
+  "version": "0.4.0",
+  "description": "See what people you know recommend, right in Google results. Only result domains are checked; your history stays local.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs0aGzGKeqcT3t3tJ5kpam2q5k+Cm22Lc6oaiCLntuqUrdqgo8OObYMoCJtEOlB/8Wc8r1CySBXSNErrhhyNNQ+xMNF4OWEIGWl/jLypoOWeLMnbUwaapeL3ZEjloaT4qVLi45D0OniUNWHzerh5Sq8b1x8rN+TDO4h14Oy0yeUOX2x88gWFJH2JkQqjK9j9aSZUpyYVzQHP/Qi8cRBumAMpKyKy8Lz3FtZEJika5D8X2iOn4/yWtwE3SJWxqAPJAUTYl6p1Ee9K2iZgzt/FjjALs6oBg85XRPVEtMBksum/phILBZwPw6NzrYh/cd9hStgYVvksLXIaokiKN0Tr15wIDAQAB",
   "permissions": [
     "storage",
@@ -12,7 +12,8 @@
     "alarms"
   ],
   "host_permissions": [
-    "https://poc-backend.amdal-dev.workers.dev/*"
+    "https://poc-backend.amdal-dev.workers.dev/*",
+    "https://getcommit.dev/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -28,8 +29,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

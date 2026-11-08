@@ -9,6 +9,7 @@
  */
 
 import { getCredential, signIn } from "./auth";
+import { initOverlay } from "./overlay";
 
 const BACKEND_URL = "https://poc-backend.amdal-dev.workers.dev";
 
@@ -270,6 +271,10 @@ function injectGitHubPanel(data: GitHubTrustData) {
       document.querySelector("main > div:first-child");
     if (repoHeader?.parentElement) {
       repoHeader.parentElement.insertBefore(panel, repoHeader.nextSibling);
+    } else {
+      // 2026-11 GitHub DOM matches none of the anchors above: float rather than vanish.
+      panel.style.cssText = "position:fixed;top:72px;right:16px;width:300px;z-index:2147483647";
+      document.body.appendChild(panel);
     }
   }
 
@@ -390,7 +395,7 @@ function injectTrustBadge(stats: DomainStats) {
 
 async function init() {
   const result = await chrome.storage.local.get("config:contributing");
-  const contributing = result["config:contributing"] !== false;
+  const contributing = result["config:contributing"] === true; // v0.4: opt-in
 
   const protocol = window.location.protocol;
   if (["chrome:", "chrome-extension:", "about:"].some(p => protocol === p)) return;
@@ -420,6 +425,7 @@ async function init() {
 
 // Wait for page to settle, then handle GitHub SPA navigation
 setTimeout(init, 1500);
+initOverlay().catch(() => {});
 
 // Re-run on GitHub SPA navigation (pushState)
 if (window.location.hostname === "github.com") {

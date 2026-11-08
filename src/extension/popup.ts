@@ -249,7 +249,7 @@ async function updateFooterStats() {
 
 async function initContributeToggle() {
   const result = await chrome.storage.local.get("config:contributing");
-  const isContributing = result["config:contributing"] !== false; // default on
+  const isContributing = result["config:contributing"] === true; // v0.4: default off
   contributeToggle.checked = isContributing;
 
   contributeToggle.addEventListener("change", () => {
