@@ -38,7 +38,9 @@ function chip(site: Site): HTMLElement | null {
 }
 
 async function serp() {
-  const links = [...document.querySelectorAll<HTMLAnchorElement>("#search a[href^='http'], #rso a[href^='http']")].filter((a) => a.querySelector("h3"));
+  // Google's result DOM could not be read from here (Google blocks automated reads), so fall back to any titled link.
+  const pick = (sel: string) => [...document.querySelectorAll<HTMLAnchorElement>(sel)].filter((a) => a.querySelector("h3"));
+  const links = pick("#search a[href^='http'], #rso a[href^='http']").length ? pick("#search a[href^='http'], #rso a[href^='http']") : pick("a[href^='http']");
   const byDomain = new Map<string, HTMLAnchorElement[]>();
   for (const a of links) {
     const d = host(a.href);
