@@ -4581,7 +4581,7 @@ ${critical.length > 0
 
 ${pkgLines || "(No packages scored yet)"}
 
-CRITICAL = sole npm publisher + 10M+ weekly downloads.${auditResults.some((x) => x.riskFlags.includes("UNKNOWN")) ? "\nUNKNOWN = npm download counts unavailable this run; risk not evaluated, score partial." : ""}
+CRITICAL = sole active npm publisher + 10M+ weekly downloads.${auditResults.some((x) => x.riskFlags.includes("UNKNOWN")) ? "\nUNKNOWN = npm download counts unavailable this run; risk not evaluated, score partial." : ""}
 This is the structural profile that made the April 1st axios attack possible.
 
 Audit your own project:
@@ -6954,7 +6954,7 @@ ${critical.length > 0
 
 ${pkgLines}
 
-CRITICAL = sole npm publisher + 10M+ weekly downloads.${results.some((x) => x.riskFlags.includes("UNKNOWN")) ? "\nUNKNOWN = npm download counts unavailable this run; risk not evaluated, score partial." : ""}
+CRITICAL = sole active npm publisher + 10M+ weekly downloads.${results.some((x) => x.riskFlags.includes("UNKNOWN")) ? "\nUNKNOWN = npm download counts unavailable this run; risk not evaluated, score partial." : ""}
 This structural profile is what made the April 1st axios supply chain attack possible.
 
 Full audit: ${auditLink}
@@ -7128,7 +7128,7 @@ ${critical.length > 0
 
 ${pkgLines}
 
-CRITICAL = sole npm publisher + 10M+ weekly downloads.${results.some((x) => x.riskFlags.includes("UNKNOWN")) ? "\nUNKNOWN = npm download counts unavailable this run; risk not evaluated, score partial." : ""}
+CRITICAL = sole active npm publisher + 10M+ weekly downloads.${results.some((x) => x.riskFlags.includes("UNKNOWN")) ? "\nUNKNOWN = npm download counts unavailable this run; risk not evaluated, score partial." : ""}
 This structural profile is what made the April 1st axios supply chain attack possible.
 
 Full audit: ${auditLink}

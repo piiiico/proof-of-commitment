@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * proof-of-commitment CLI v1.36.2
+ * proof-of-commitment CLI v1.36.3
  * Scores npm/PyPI/Cargo/Go packages on behavioral commitment signals.
  * Usage: npx proof-of-commitment [packages...] [options]
  */
@@ -655,8 +655,9 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
       console.log(breakdown);
     }
 
-    // Show WARN-level risk flags inline (dormant publishers, stale releases, etc.)
-    const warnFlags = (pkg.riskFlags || []).filter(f => f.startsWith('WARN:'));
+    // Show HIGH/WARN risk flags inline — the Risk column is score-based, so a HIGH
+    // flag hidden here contradicted the closing «flagged HIGH» line (left-pad, 11-08).
+    const warnFlags = (pkg.riskFlags || []).filter(f => /^(HIGH|WARN):/.test(f));
     for (const flag of warnFlags) {
       console.log(clr(c.yellow, `  ⚠ ${flag}`));
     }
@@ -673,14 +674,14 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
       // ecosystem baseline + actionable shortlist. Pinned by
       // test/cli-critical-concentration.test.ts.
       console.log('\n' + clr(c.red + c.bold, `⚠  ${effectiveCritical} CRITICAL packages (${conc.percent}% of ${totalScanned} scanned).`));
-      console.log(clr(c.dim, '   CRITICAL = sole npm publisher + >10M weekly downloads.'));
+      console.log(clr(c.dim, '   CRITICAL = sole active npm publisher + >10M weekly downloads.'));
       console.log(clr(c.dim, '   At this density you\'re seeing npm\'s baseline — most popular packages have'));
       console.log(clr(c.dim, '   one publisher. Watch the top 3-5 above (highest impact); pin your lockfile'));
       console.log(clr(c.dim, '   and audit deltas for the rest — concentration you can\'t avoid per-dep.'));
     } else {
       const suffix = totalScanned ? ` (in ${totalScanned} packages scanned)` : '';
       console.log('\n' + clr(c.red + c.bold, `⚠  ${effectiveCritical} CRITICAL package${effectiveCritical > 1 ? 's' : ''} found${suffix}.`));
-      console.log(clr(c.dim, '   CRITICAL = sole npm publisher + >10M weekly downloads (publish-access concentration risk)'));
+      console.log(clr(c.dim, '   CRITICAL = sole active npm publisher + >10M weekly downloads (publish-access concentration risk)'));
     }
     if (provenanceCount > 0 && provenanceCount < results.length) {
       console.log(clr(c.cyan, `   🔐 ${provenanceCount}/${results.length} use Trusted Publishing (OIDC provenance) — partial mitigation`));
@@ -711,7 +712,7 @@ function printTable(results, { totalScanned, totalCritical, lockfile } = {}) {
       // attribution. cli-watch is already an accepted source.
       const watchUrl = buildWatchUrl(results, 'cli-watch');
       const ctaUrl = watchUrl || `https://getcommit.dev/audit?packages=${encodeURIComponent(critNames)}&utm_source=cli&utm_medium=ci-annotation`;
-      console.error(`::warning title=Commit: ${effectiveCritical} CRITICAL package${effectiveCritical > 1 ? 's' : ''}::Sole npm publisher + >10M downloads/week: ${critNames}. Watch + alert if scores change: ${ctaUrl}`);
+      console.error(`::warning title=Commit: ${effectiveCritical} CRITICAL package${effectiveCritical > 1 ? 's' : ''}::Sole active npm publisher + >10M downloads/week: ${critNames}. Watch + alert if scores change: ${ctaUrl}`);
     }
     if (compromisedCount > 0) {
       const compNames = results.filter(r => r.compromised).slice(0, 5).map(r => r.name).join(', ');
@@ -1029,7 +1030,7 @@ async function inlineSignup(results, opts = {}) {
 
 function printHelp() {
   console.log(`
-${clr(c.bold, 'proof-of-commitment')} v1.36.2 — supply chain risk scorer
+${clr(c.bold, 'proof-of-commitment')} v1.36.3 — supply chain risk scorer
 
 ${clr(c.bold, 'Usage:')}
   npx proof-of-commitment                            Auto-detect manifest in current dir

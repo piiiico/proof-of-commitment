@@ -6,7 +6,7 @@ Supply chain gate for Claude Code. Scores npm, PyPI, Cargo, and Go packages on b
 
 When Claude Code runs `npm install`, `pip install`, `cargo add`, or `go get`, this plugin intercepts the command via a `PreToolUse` hook and scores every package against [getcommit.dev](https://getcommit.dev):
 
-- **CRITICAL** → blocked (sole npm publisher + >10M downloads/week — the LiteLLM/axios attack profile)
+- **CRITICAL** → blocked (sole active npm publisher + >10M downloads/week — the LiteLLM/axios attack profile)
 - **HIGH** → asks you to confirm
 - **Clean** → allowed immediately
 

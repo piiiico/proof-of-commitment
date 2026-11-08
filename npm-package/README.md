@@ -19,7 +19,7 @@ axios        🔴 CRITICAL   88      1            115.7M/wk      11.8y  🔐 ver
                 ⚠ COMPROMISED — axios token theft (2026-03-30)
 
 ⚠  5 CRITICAL packages found.
-   CRITICAL = sole npm publisher + >10M weekly downloads (publish-access concentration risk)
+   CRITICAL = sole active npm publisher + >10M weekly downloads (publish-access concentration risk)
 ```
 
 `npm audit` flags none of these. They're not vulnerabilities — they're attack-surface concentration. One stolen npm token, one phished maintainer, and a single push reaches the whole ecosystem (axios, March 30 2026 — happened).
@@ -181,7 +181,7 @@ Examples:
 | express | `![Commit Trust](https://poc-backend.amdal-dev.workers.dev/badge/express)` |
 | @babel/core | `![Commit Trust](https://poc-backend.amdal-dev.workers.dev/badge/@babel/core)` |
 
-Grades: 🟢 OK (75+) · 🟠 WARNING (40–74) · 🔴 CRITICAL (<40 or sole npm publisher with 10M+ weekly downloads)
+Grades: 🟢 OK (75+) · 🟠 WARNING (40–74) · 🔴 CRITICAL (<40 or sole active npm publisher with 10M+ weekly downloads)
 
 Badges are cached 1 hour. No API key needed.
 
