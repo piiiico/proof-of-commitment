@@ -276,6 +276,10 @@ export interface PublisherLifecycle {
   dormantRevoked: number;
   /** Fraction of current maintainers that have published in the last 12 months */
   activeRatio: number;
+  /** True when a release in the last 12 months came via npm trusted publishing (OIDC).
+   *  The CI publish is then attributed to the current maintainer accounts that
+   *  control it, so activePublishers is never 0 for a package that ships (esbuild). */
+  trustedPublisherActive: boolean;
   /** Details on dormant publishers who STILL have scope access (highest risk, sorted longest-inactive first) */
   dormantDetails: Array<{
     name: string;
@@ -365,24 +369,28 @@ function parseRepoUrl(url: string | undefined): string | null {
  * "GitHub Actions" / OIDC publishers are excluded — they're automation,
  * not human credential risk.
  */
-function analyzePublisherLifecycle(
-  pkg: NpmPackage,
+export function analyzePublisherLifecycle(
+  pkg: Pick<NpmPackage, "versions" | "time" | "maintainers">,
+  now: number = Date.now(),
 ): PublisherLifecycle | null {
-  const now = Date.now();
   const TWELVE_MONTHS_MS = 365.25 * 24 * 3600 * 1000;
 
   // Collect per-publisher stats from version _npmUser fields
   const publisherMap = new Map<string, { lastPublish: number; count: number }>();
+  let lastCiPublish = 0;
   for (const [version, meta] of Object.entries(pkg.versions)) {
     const user = meta._npmUser;
     if (!user?.name) continue;
-    // Skip automation accounts — not human credential risk
-    if (user.name === "GitHub Actions" || user.email?.includes("npm-oidc")) continue;
-
     const ts = pkg.time[version];
     if (!ts) continue;
     const publishTime = new Date(ts).getTime();
     if (isNaN(publishTime)) continue;
+    // Automation accounts are not a human credential — but they are proof
+    // the package still ships, under the control of its current maintainers.
+    if (user.name === "GitHub Actions" || user.email?.includes("npm-oidc")) {
+      if (publishTime > lastCiPublish) lastCiPublish = publishTime;
+      continue;
+    }
 
     const existing = publisherMap.get(user.name);
     if (!existing) {
@@ -430,6 +438,16 @@ function analyzePublisherLifecycle(
     return b.monthsInactive - a.monthsInactive;
   });
 
+  // Trusted publishing (esbuild since Feb 2026): every recent release is
+  // "GitHub Actions", so no human counts as active and the scorer read 0 while
+  // flagging "sole active publisher". The CI publish is controlled by the
+  // current maintainer accounts — count those (minus dormant ones already
+  // counted as attack surface) as the active publishing identity, floor 1.
+  const trustedPublisherActive = now - lastCiPublish < TWELVE_MONTHS_MS;
+  if (trustedPublisherActive && activeCount === 0) {
+    activeCount = Math.max(1, currentMaintainers.size - dormantWithAccess);
+  }
+
   const total = publisherMap.size;
   // activeRatio based on historical publishers, not current maintainers
   return {
@@ -437,7 +455,8 @@ function analyzePublisherLifecycle(
     activePublishers: activeCount,
     dormantWithAccess,
     dormantRevoked,
-    activeRatio: total > 0 ? activeCount / total : 1,
+    activeRatio: total > 0 ? Math.min(1, activeCount / total) : 1,
+    trustedPublisherActive,
     dormantDetails,
   };
 }
