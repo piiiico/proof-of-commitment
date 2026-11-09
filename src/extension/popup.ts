@@ -278,6 +278,7 @@ async function checkBrregData(domain: string) {
     return;
   }
 
+  const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
   brregLink.addEventListener("click", async () => {
     if (brregDetails.classList.contains("visible")) {
       brregDetails.classList.remove("visible");
@@ -299,22 +300,22 @@ async function checkBrregData(domain: string) {
       }> };
 
       if (data.count === 0) {
-        brregDetails.innerHTML = `No businesses found matching "${guess}".`;
+        brregDetails.innerHTML = `No businesses found matching "${esc(guess)}".`;
         return;
       }
 
       const biz = data.results[0]!;
       brregDetails.innerHTML = `
-        <strong style="color:#fff">${biz.name}</strong> (${biz.orgNumber})<br/>
-        ${biz.industry ? `Industry: ${biz.industry}<br/>` : ""}
-        ${biz.employees !== null ? `Employees: ${biz.employees}<br/>` : ""}
-        ${biz.yearsOperating !== null ? `Operating: ${biz.yearsOperating} years<br/>` : ""}
+        <strong style="color:#fff">${esc(biz.name)}</strong> (${esc(biz.orgNumber)})<br/>
+        ${biz.industry ? `Industry: ${esc(biz.industry)}<br/>` : ""}
+        ${biz.employees !== null ? `Employees: ${esc(biz.employees)}<br/>` : ""}
+        ${biz.yearsOperating !== null ? `Operating: ${esc(biz.yearsOperating)} years<br/>` : ""}
         <br/>
         Commitment signals:<br/>
-        <span class="brreg-score">Overall: ${biz.signals.overall}/100</span> &middot;
-        Temporal: ${biz.signals.temporal} &middot;
-        Financial: ${biz.signals.financial} &middot;
-        Operational: ${biz.signals.operational}
+        <span class="brreg-score">Overall: ${esc(biz.signals.overall)}/100</span> &middot;
+        Temporal: ${esc(biz.signals.temporal)} &middot;
+        Financial: ${esc(biz.signals.financial)} &middot;
+        Operational: ${esc(biz.signals.operational)}
       `;
     } catch {
       brregDetails.innerHTML = "Error loading business data.";
