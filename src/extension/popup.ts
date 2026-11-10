@@ -5,7 +5,7 @@
  * your personal commitment to that domain, and aggregate network stats.
  */
 
-import { bare, brregLine, cardRows, encodeCard, esc, friendLine, type Brreg, type Card } from "./shop";
+import { bare, brregLine, cardRows, encodeCard, esc, friendLine, HISTORY_DAYS, type Brreg, type Card } from "./shop";
 import { signIn, signOut, getCredential, type AuthCredential } from "./auth";
 
 const BACKEND_URL = "https://poc-backend.amdal-dev.workers.dev";
@@ -281,7 +281,24 @@ async function renderCard() {
       `<button id="card-copy" class="card-btn">Kopier lenke til kortet</button><div class="card-note">Sendes som «${esc(fra)}». Lenken inneholder bare radene over. Ingen server lagrer den.</div>`
     : `<div class="card-note">Tomt ennå. Kortet fylles lokalt med butikker (med org.nr) du kommer tilbake til over flere måneder, og ordrebekreftelser du når. Helse, apotek, spill, dating, bank og lån telles aldri.</div>`;
   const theirs = imported.length ? `<div class="card-sub">Kort fra venner</div>` + imported.map((c: Card, i: number) => `<div class="card-row"><span>${esc(c.fra)} · ${c.rader.length} ${c.rader.length === 1 ? "butikk" : "butikker"}</span><button data-drop="${i}" title="Fjern kortet">✕</button></div>`).join("") : "";
-  box.innerHTML = `<div class="card-sub">Mitt kort</div>${mine}${theirs}`;
+  const { "shop:history": hist } = await chrome.storage.local.get("shop:history");
+  const granted = await chrome.permissions.contains({ permissions: ["history"] }).catch(() => false);
+  const nb = (t: number) => new Date(t).toLocaleDateString("nb-NO", { day: "2-digit", month: "2-digit", year: "numeric" });
+  const histNote = hist && granted ? `<div class="card-note">Lest lokalt fra nettleserhistorikken ${nb(hist.from)}–${nb(hist.to)}: ${hist.touched} ${hist.touched === 1 ? "butikk" : "butikker"}. Regel: bare nettsteder med en ordrebekreftelse i historikken, eller der du har sett org.nr, telles. Ingenting sendes. <a href="#" id="hist-off">Slå av tilgangen</a></div>` : "";
+  const histBtn = `<button id="hist-read" class="card-btn">${granted ? "Oppdater fra historikken (90 dager)" : `Lag kortet fra de siste ${HISTORY_DAYS} dagene`}</button>`;
+  box.innerHTML = `<div class="card-sub">Mitt kort</div>${mine}${histBtn}${histNote}${theirs}`;
+  box.querySelector("#hist-read")!.addEventListener("click", async () => {
+    // Request inside the click handler (user gesture). Declined → nothing is read.
+    const ok = await chrome.permissions.request({ permissions: ["history"] }).catch(() => false);
+    if (!ok) return;
+    // The read runs in the background worker: the action popup can close while Chrome's permission dialog is up.
+    await chrome.runtime.sendMessage({ type: "commit-history-read" }).catch(() => null); renderCard();
+  });
+  box.querySelector("#hist-off")?.addEventListener("click", async (e) => {
+    e.preventDefault();
+    await chrome.permissions.remove({ permissions: ["history"] }).catch(() => false);
+    await chrome.storage.local.remove("shop:history"); renderCard();
+  });
   box.querySelectorAll<HTMLButtonElement>("[data-hide]").forEach((btn) => btn.addEventListener("click", async () => {
     await chrome.storage.local.set({ "card:hidden": [...hidden, btn.dataset.hide] }); renderCard();
   }));
@@ -329,8 +346,10 @@ async function init() {
     siteDomainEl.textContent = domain;
 
     // 3. Fetch and display data in parallel
+    // v0.5.1: the Commit-server lookup runs only with the opt-in on; by default the popup sends nothing to us.
+    const { "config:contributing": optIn } = await chrome.storage.local.get("config:contributing");
     const [siteStats] = await Promise.all([
-      fetchSiteTrust(domain),
+      optIn === true ? fetchSiteTrust(domain) : Promise.resolve(null),
       displayYourCommitment(domain),
     ]);
 

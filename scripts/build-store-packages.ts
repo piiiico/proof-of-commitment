@@ -35,8 +35,9 @@ const firefox = {
     gecko: {
       id: "commit@getcommit.dev",
       strict_min_version: "140.0",
-      // The org.nr a shop page prints goes to data.brreg.no; visited domains (visit sync) only after opt-in in the popup.
-      data_collection_permissions: { required: ["websiteActivity", "browsingActivity"] },
+      // The org.nr a shop page prints goes to data.brreg.no (website content). Visited domains and GitHub repo
+      // lookups reach Commit's server only after the opt-in in the popup. History (v0.5.1) is read locally only.
+      data_collection_permissions: { required: ["websiteContent"], optional: ["browsingActivity"] },
     },
     gecko_android: { strict_min_version: "142.0" },
   },

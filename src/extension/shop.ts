@@ -127,3 +127,45 @@ export function cardRows(log: Record<string, ShopLog>): CardRow[] {
   }
   return rows.sort((a, b) => b.n - a.n || b.m - a.m);
 }
+
+// ── v0.5.1: optional, local-only backfill from chrome.history ───────────
+export interface HistItem { url: string; title?: string; t: number }
+export const HISTORY_DAYS = 90;
+/** Month windows covering the last `days` days, so one history.search per window yields distinct months per domain. */
+export function monthWindows(now: number, days = HISTORY_DAYS): { start: number; end: number; m: string }[] {
+  const from = now - days * 864e5, out: { start: number; end: number; m: string }[] = [];
+  let d = new Date(from);
+  while (d.getTime() < now) {
+    const next = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
+    out.push({ start: d.getTime(), end: Math.min(next.getTime(), now), m: d.toISOString().slice(0, 7) });
+    d = next;
+  }
+  return out;
+}
+/**
+ * Merge history items into the same ShopLog the content script writes. Honesty rules:
+ * an order is counted only where isOrderPage() accepts the URL path or title; a domain enters
+ * only if it is an established shop (an order page in this history, or an org.nr already seen on it);
+ * sensitive domains never enter. Returns the new log and the domains it touched.
+ */
+export function mergeHistory(log: Record<string, ShopLog>, items: HistItem[], orgs: Record<string, string>): { log: Record<string, ShopLog>; touched: string[] } {
+  const per: Record<string, { months: Set<string>; orders: Set<string> }> = {};
+  for (const it of items) {
+    let u: URL; try { u = new URL(it.url); } catch { continue; }
+    if (u.protocol !== "https:" && u.protocol !== "http:") continue;
+    const d = bare(u.hostname);
+    const day = new Date(it.t).toISOString().slice(0, 10);
+    const p = (per[d] ||= { months: new Set(), orders: new Set() });
+    p.months.add(day.slice(0, 7));
+    if (isOrderPage(u.pathname, it.title || "")) p.orders.add(day + u.pathname);
+  }
+  const out: Record<string, ShopLog> = { ...log }, touched: string[] = [];
+  for (const [d, p] of Object.entries(per)) {
+    if (sensitive(d, log[d]?.nace)) continue;
+    if (p.orders.size === 0 && !orgs[d]) continue;
+    const l = log[d] || { months: [], orders: [] };
+    out[d] = { ...l, months: [...new Set([...l.months, ...p.months])].sort(), orders: [...new Set([...l.orders, ...p.orders])].sort() };
+    touched.push(d);
+  }
+  return { log: out, touched: touched.sort() };
+}

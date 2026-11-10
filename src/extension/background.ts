@@ -1,3 +1,4 @@
+import { HISTORY_DAYS, mergeHistory, monthWindows, type HistItem } from "./shop";
 /**
  * Background service worker for Commit browser extension.
  *
@@ -264,6 +265,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
     sendResponse({ ok: true });
   }
+  if (message.type === "commit-history-read") {
+    readHistory().then(sendResponse, () => sendResponse(null));
+    return true;
+  }
   if (message.type === "commit-brreg") {
     lookupBrreg(String(message.orgnr)).then(sendResponse, () => sendResponse(null));
     return true;
@@ -298,6 +303,24 @@ async function lookupBrreg(orgnr: string) {
   await chrome.storage.local.set({ "brreg:cache": cache });
   return b;
 }
+
+// ── v0.5.1 «Lag kortet fra de siste 90 dagene»: optional `history`, read in this browser only ──
+// Nothing here makes a network request. Merges into the same «shop:log» the content script writes (shop.ts rules).
+async function readHistory() {
+  if (!(await chrome.permissions.contains({ permissions: ["history"] }))) return null;
+  const now = Date.now(), items: HistItem[] = [];
+  for (const w of monthWindows(now)) {
+    const r = await chrome.history.search({ text: "", startTime: w.start, endTime: w.end, maxResults: 100000 });
+    for (const h of r) if (h.url && h.lastVisitTime) items.push({ url: h.url, title: h.title, t: Math.min(Math.max(h.lastVisitTime, w.start), w.end - 1) });
+  }
+  const { "shop:log": log = {}, "shop:org": orgs = {} } = await chrome.storage.local.get(["shop:log", "shop:org"]);
+  const m = mergeHistory(log, items, orgs);
+  const hist = { from: now - HISTORY_DAYS * 864e5, to: now, touched: m.touched.length };
+  await chrome.storage.local.set({ "shop:log": m.log, "shop:history": hist });
+  return hist;
+}
+// If the popup closed while the permission dialog was open, the grant itself triggers the read.
+chrome.permissions.onAdded.addListener((p) => { if (p.permissions?.includes("history")) readHistory().catch(() => {}); });
 
 // ── Init ──────────────────────────────────────────────────────────────
 

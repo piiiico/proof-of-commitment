@@ -402,8 +402,10 @@ async function init() {
 
   const hostname = window.location.hostname;
 
-  // GitHub mode: inject trust panel on repo pages
+  // GitHub mode: inject trust panel on repo pages. v0.5.1: only with the opt-in on, so by default no page
+  // address is sent to Commit's server.
   if (hostname === "github.com") {
+    if (!contributing) return;
     const ghRepo = extractGitHubRepo();
     if (ghRepo) {
       const data = await fetchGitHubTrust(ghRepo.owner, ghRepo.repo);

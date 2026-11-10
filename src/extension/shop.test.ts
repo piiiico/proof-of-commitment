@@ -52,3 +52,41 @@ test("card: sensitive never counted; 1 month without order not counted; round-tr
   expect(sensitive("norsk-tipping.no")).toBe(true);
   expect(sensitive("biltema.no", "47.520")).toBe(false);
 });
+
+import { mergeHistory, monthWindows } from "./shop";
+const T = (s: string) => new Date(s).getTime();
+test("history merge: orders only via isOrderPage, months-only only for shops with a known org.nr, sensitive/news never", () => {
+  const items = [
+    { url: "https://www.biltema.no/checkout/success", title: "Takk", t: T("2026-09-03T10:00Z") },
+    { url: "https://www.biltema.no/bil/lyspaere", title: "Lyspære", t: T("2026-10-12T10:00Z") },
+    { url: "https://www.europris.no/x", title: "Takk for din bestilling!", t: T("2026-10-20T10:00Z") },
+    { url: "https://www.kjell.com/no/", title: "Kjell", t: T("2026-08-20T10:00Z") },
+    { url: "https://www.kjell.com/no/kabler", title: "Kabler", t: T("2026-10-02T10:00Z") },
+    { url: "https://www.clas.no/", title: "Clas", t: T("2026-09-02T10:00Z") },
+    { url: "https://www.clas.no/a", title: "Clas", t: T("2026-10-02T10:00Z") },
+    { url: "https://www.vg.no/nyheter", title: "VG", t: T("2026-09-01T10:00Z") },
+    { url: "https://www.vg.no/sport", title: "VG", t: T("2026-10-01T10:00Z") },
+    { url: "https://www.vitusapotek.no/checkout/success", title: "Takk", t: T("2026-10-01T10:00Z") },
+    { url: "https://www.vg.no/takk-lampe", title: "Produkt", t: T("2026-10-03T10:00Z") },
+    { url: "chrome://settings", title: "x", t: T("2026-10-03T10:00Z") },
+  ];
+  const { log, touched } = mergeHistory({}, items, { "kjell.com": "980406989" });
+  expect(touched).toEqual(["biltema.no", "europris.no", "kjell.com"]); // clas.no: no org.nr seen, no order → out; vg.no news; apotek sensitive
+  expect(cardRows(log)).toEqual([
+    { d: "biltema.no", n: 1, m: 2, y0: 2026, y1: 2026 },
+    { d: "europris.no", n: 1, m: 1, y0: 2026, y1: 2026 },
+    { d: "kjell.com", n: 0, m: 2, y0: 2026, y1: 2026 },
+  ]);
+  // merging is idempotent and unions with the live log
+  const again = mergeHistory({ ...log, "biltema.no": { ...log["biltema.no"]!, months: [...log["biltema.no"]!.months, "2026-11"] } }, items, {});
+  expect(again.log["biltema.no"]!.orders).toEqual(["2026-09-03/checkout/success"]);
+  expect(again.log["biltema.no"]!.months).toEqual(["2026-09", "2026-10", "2026-11"]);
+  expect(mergeHistory({}, [], {}).touched).toEqual([]); // empty profile → no rows
+});
+test("month windows cover 90 days, contiguous", () => {
+  const w = monthWindows(T("2026-11-10T12:00Z"));
+  expect(w.map((x) => x.m)).toEqual(["2026-08", "2026-09", "2026-10", "2026-11"]);
+  expect(w[0]!.start).toBe(T("2026-11-10T12:00Z") - 90 * 864e5);
+  for (let i = 1; i < w.length; i++) expect(w[i]!.start).toBe(w[i - 1]!.end);
+  expect(w[w.length - 1]!.end).toBe(T("2026-11-10T12:00Z"));
+});
