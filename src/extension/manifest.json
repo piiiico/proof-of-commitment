@@ -1,19 +1,20 @@
 {
   "manifest_version": 3,
   "name": "Commit",
-  "version": "0.4.1",
-  "description": "See what people you know recommend, right in Google results. Off until you turn it on, and only result domains are checked.",
+  "version": "0.5.0",
+  "description": "Who runs the shop you're on, from its own org.nr and Brønnøysund. Friends' shared shop cards. Nothing to type, nothing stored by us.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs0aGzGKeqcT3t3tJ5kpam2q5k+Cm22Lc6oaiCLntuqUrdqgo8OObYMoCJtEOlB/8Wc8r1CySBXSNErrhhyNNQ+xMNF4OWEIGWl/jLypoOWeLMnbUwaapeL3ZEjloaT4qVLi45D0OniUNWHzerh5Sq8b1x8rN+TDO4h14Oy0yeUOX2x88gWFJH2JkQqjK9j9aSZUpyYVzQHP/Qi8cRBumAMpKyKy8Lz3FtZEJika5D8X2iOn4/yWtwE3SJWxqAPJAUTYl6p1Ee9K2iZgzt/FjjALs6oBg85XRPVEtMBksum/phILBZwPw6NzrYh/cd9hStgYVvksLXIaokiKN0Tr15wIDAQAB",
   "permissions": [
     "storage",
     "tabs",
     "activeTab",
     "identity",
-    "alarms"
+    "alarms",
+    "identity.email"
   ],
   "host_permissions": [
     "https://poc-backend.amdal-dev.workers.dev/*",
-    "https://getcommit.dev/*"
+    "https://data.brreg.no/*"
   ],
   "background": {
     "service_worker": "background.js",

@@ -5,6 +5,7 @@
  * your personal commitment to that domain, and aggregate network stats.
  */
 
+import { bare, brregLine, cardRows, encodeCard, esc, friendLine, type Brreg, type Card } from "./shop";
 import { signIn, signOut, getCredential, type AuthCredential } from "./auth";
 
 const BACKEND_URL = "https://poc-backend.amdal-dev.workers.dev";
@@ -54,7 +55,6 @@ const contributeToggle = document.getElementById("contribute-toggle")! as HTMLIn
 const footerStat = document.getElementById("footer-stat")!;
 
 const brregSection = document.getElementById("brreg-section")!;
-const brregLink = document.getElementById("brreg-link")!;
 const brregDetails = document.getElementById("brreg-details")!;
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -259,69 +259,49 @@ async function initContributeToggle() {
   });
 }
 
-// ── Brreg business data ─────────────────────────────────────────────
+// ── v0.5: org.nr line (read from the page, never guessed) + «Mitt kort» ──
 
 async function checkBrregData(domain: string) {
-  // Only attempt for .no domains or known Norwegian businesses
-  if (!domain.endsWith(".no")) {
-    brregSection.style.display = "none";
-    return;
-  }
-
+  const d = bare(domain);
+  const { "shop:org": orgs = {} } = await chrome.storage.local.get("shop:org");
+  const b: Brreg | null = orgs[d] ? await chrome.runtime.sendMessage({ type: "commit-brreg", orgnr: orgs[d] }).catch(() => null) : null;
+  if (!b) { brregSection.style.display = "none"; return; }
+  const l = brregLine(d, b);
   brregSection.style.display = "block";
+  brregDetails.classList.add("visible");
+  brregDetails.innerHTML = `${esc(l.text)}${l.red.map((r) => `<br/><b style="color:#f87171">${esc(r)}</b>`).join("")}<br/><span style="color:#8c959f">Org.nr ${esc(b.orgnr)} fra siden · Brønnøysundregistrene</span>`;
+}
 
-  // Try to search by domain name (strip TLD, use as business name guess)
-  const nameParts = domain.replace(/\.no$/, "").split(".");
-  const guess = nameParts[nameParts.length - 1] ?? domain;
-  if (guess.length < 3) {
-    brregSection.style.display = "none";
-    return;
-  }
+async function senderName(): Promise<string> {
+  const info = await new Promise<{ email?: string }>((r) => chrome.identity?.getProfileUserInfo ? chrome.identity.getProfileUserInfo((i) => r(i)) : r({})).catch(() => ({}));
+  const t = (info.email || "").split("@")[0]!.split(/[._+-]/)[0]!;
+  return t ? t[0]!.toUpperCase() + t.slice(1) : "En venn";
+}
 
-  const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-  brregLink.addEventListener("click", async () => {
-    if (brregDetails.classList.contains("visible")) {
-      brregDetails.classList.remove("visible");
-      return;
-    }
-
-    brregDetails.innerHTML = "Searching Brønnøysund...";
-    brregDetails.classList.add("visible");
-
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/business/search?q=${encodeURIComponent(guess)}&limit=1`);
-      if (!res.ok) {
-        brregDetails.innerHTML = "Could not reach business registry.";
-        return;
-      }
-      const data = await res.json() as { count: number; results: Array<{
-        name: string; orgNumber: string; signals: { overall: number; temporal: number; financial: number; operational: number };
-        employees: number | null; yearsOperating: number | null; industry: string | null;
-      }> };
-
-      if (data.count === 0) {
-        brregDetails.innerHTML = `No businesses found matching "${esc(guess)}".`;
-        return;
-      }
-
-      const biz = data.results[0]!;
-      brregDetails.innerHTML = `
-        <strong style="color:#fff">${esc(biz.name)}</strong> (${esc(biz.orgNumber)})<br/>
-        ${biz.industry ? `Industry: ${esc(biz.industry)}<br/>` : ""}
-        ${biz.employees !== null ? `Employees: ${esc(biz.employees)}<br/>` : ""}
-        ${biz.yearsOperating !== null ? `Operating: ${esc(biz.yearsOperating)} years<br/>` : ""}
-        <br/>
-        Commitment signals:<br/>
-        <span class="brreg-score">Overall: ${esc(biz.signals.overall)}/100</span> &middot;
-        Temporal: ${esc(biz.signals.temporal)} &middot;
-        Financial: ${esc(biz.signals.financial)} &middot;
-        Operational: ${esc(biz.signals.operational)}
-      `;
-    } catch {
-      brregDetails.innerHTML = "Error loading business data.";
-    }
+async function renderCard() {
+  const box = document.getElementById("card-section")!;
+  const { "shop:log": log = {}, "card:hidden": hidden = [], "kort:imported": imported = [] } = await chrome.storage.local.get(["shop:log", "card:hidden", "kort:imported"]);
+  const rows = cardRows(log).filter((r) => !hidden.includes(r.d));
+  const fra = await senderName();
+  const mine = rows.length
+    ? rows.map((r) => `<div class="card-row"><span>${esc(friendLine("Du", r).replace(/^Du: /, r.d + ": "))}</span><button data-hide="${esc(r.d)}" title="Fjern fra kortet">✕</button></div>`).join("") +
+      `<button id="card-copy" class="card-btn">Kopier lenke til kortet</button><div class="card-note">Sendes som «${esc(fra)}». Lenken inneholder bare radene over. Ingen server lagrer den.</div>`
+    : `<div class="card-note">Tomt ennå. Kortet fylles lokalt med butikker (med org.nr) du kommer tilbake til over flere måneder, og ordrebekreftelser du når. Helse, apotek, spill, dating, bank og lån telles aldri.</div>`;
+  const theirs = imported.length ? `<div class="card-sub">Kort fra venner</div>` + imported.map((c: Card, i: number) => `<div class="card-row"><span>${esc(c.fra)} · ${c.rader.length} ${c.rader.length === 1 ? "butikk" : "butikker"}</span><button data-drop="${i}" title="Fjern kortet">✕</button></div>`).join("") : "";
+  box.innerHTML = `<div class="card-sub">Mitt kort</div>${mine}${theirs}`;
+  box.querySelectorAll<HTMLButtonElement>("[data-hide]").forEach((btn) => btn.addEventListener("click", async () => {
+    await chrome.storage.local.set({ "card:hidden": [...hidden, btn.dataset.hide] }); renderCard();
+  }));
+  box.querySelectorAll<HTMLButtonElement>("[data-drop]").forEach((btn) => btn.addEventListener("click", async () => {
+    await chrome.storage.local.set({ "kort:imported": imported.filter((_: Card, i: number) => i !== Number(btn.dataset.drop)) }); renderCard();
+  }));
+  box.querySelector("#card-copy")?.addEventListener("click", async () => {
+    const link = `https://getcommit.dev/extension#kort=${encodeCard({ v: 1, fra, laget: new Date().toISOString().slice(0, 10), rader: rows })}`;
+    await navigator.clipboard.writeText(link).catch(() => {});
+    const b = box.querySelector<HTMLButtonElement>("#card-copy")!; b.textContent = "Kopiert. Lim inn i en melding til en venn."; b.dataset.link = link;
   });
 }
+renderCard();
 
 // ── Auth pill click → sign out ──────────────────────────────────────
 

@@ -264,21 +264,40 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
     sendResponse({ ok: true });
   }
-  if (message.type === "commit-sites") {
-    // v0.4 overlay: visible Google result domains -> the user's own Anbefal graph. Opt-in only.
-    (async () => {
-      const { "overlay:code": code, "overlay:seen": seen = {} } = await chrome.storage.local.get(["overlay:code", "overlay:seen"]);
-      if (!code) return null;
-      const res = await fetch("https://getcommit.dev/anbefal/api/sites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, domains: message.domains }) });
-      if (!res.ok) return null;
-      const j = await res.json();
-      for (const [d, s] of Object.entries<any>(j.sites || {})) if (s.endorsements?.length) seen[d] = s;
-      await chrome.storage.local.set({ "overlay:seen": seen });
-      return j;
-    })().then(sendResponse, () => sendResponse(null));
+  if (message.type === "commit-brreg") {
+    lookupBrreg(String(message.orgnr)).then(sendResponse, () => sendResponse(null));
     return true;
   }
 });
+
+// ── v0.5 Brreg lookup (only the org.nr the page itself printed goes to data.brreg.no) ──
+
+const BRREG_TTL = 7 * 864e5;
+async function lookupBrreg(orgnr: string) {
+  if (!/^\d{9}$/.test(orgnr)) return null;
+  const { "brreg:cache": cache = {} } = await chrome.storage.local.get("brreg:cache");
+  if (cache[orgnr] && Date.now() - cache[orgnr].t < BRREG_TTL) return cache[orgnr].b;
+  const get = async (u: string) => { const r = await fetch(u); return r.ok ? r.json() : null; };
+  let e = await get(`https://data.brreg.no/enhetsregisteret/api/enheter/${orgnr}`);
+  if (!e) { const u = await get(`https://data.brreg.no/enhetsregisteret/api/underenheter/${orgnr}`); if (u?.overordnetEnhet) e = await get(`https://data.brreg.no/enhetsregisteret/api/enheter/${u.overordnetEnhet}`); }
+  if (!e) return null;
+  let omsetning: number | null = null, aar: string | null = null;
+  const rs = await get(`https://data.brreg.no/regnskapsregisteret/regnskap/${e.organisasjonsnummer}`).catch(() => null);
+  if (Array.isArray(rs) && rs.length) {
+    const r = [...rs].sort((a, b) => String(b.regnskapsperiode?.tilDato).localeCompare(String(a.regnskapsperiode?.tilDato)))[0];
+    const v = r?.resultatregnskapResultat?.driftsresultat?.driftsinntekter?.sumDriftsinntekter;
+    if (typeof v === "number") { omsetning = v; aar = String(r.regnskapsperiode.tilDato).slice(0, 4); }
+  }
+  const b = {
+    orgnr: e.organisasjonsnummer, navn: e.navn, start: e.stiftelsesdato || e.registreringsdatoEnhetsregisteret || null,
+    ansatte: e.harRegistrertAntallAnsatte ? e.antallAnsatte : null, nace: e.naeringskode1?.kode || null,
+    konkurs: !!e.konkurs, avvikling: !!e.underAvvikling, tvang: !!e.underTvangsavviklingEllerTvangsopplosning, slettet: !!e.slettedato,
+    omsetning, aar, hjemmeside: e.hjemmeside || null,
+  };
+  cache[orgnr] = { t: Date.now(), b };
+  await chrome.storage.local.set({ "brreg:cache": cache });
+  return b;
+}
 
 // ── Init ──────────────────────────────────────────────────────────────
 

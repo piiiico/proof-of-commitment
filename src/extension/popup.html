@@ -315,6 +315,12 @@
       .footer a:hover { color: #888; }
 
       /* ── Brreg lookup ── */
+      .card-section { margin-top: 10px; padding-top: 8px; border-top: 1px solid #333; font-size: 12px; }
+      .card-sub { font-weight: 600; margin: 4px 0; }
+      .card-row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+      .card-row button { background: none; border: none; color: #8c959f; cursor: pointer; }
+      .card-btn { width: 100%; margin-top: 6px; padding: 6px; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; }
+      .card-note { color: #8c959f; font-size: 11px; margin-top: 4px; }
       .brreg-section {
         margin-top: 4px;
       }
@@ -445,19 +451,18 @@
       <input type="checkbox" class="toggle" id="contribute-toggle" checked />
     </div>
 
-    <!-- Brreg lookup (for Norwegian businesses) -->
+    <!-- v0.5: org.nr line from the page itself -->
     <div class="brreg-section" id="brreg-section" style="display:none">
-      <div class="brreg-link" id="brreg-link">
-        <span>&#127475;&#127476;</span>
-        <span id="brreg-label">Business registry data available</span>
-      </div>
       <div class="brreg-details" id="brreg-details"></div>
     </div>
+
+    <!-- v0.5: Mitt kort -->
+    <div class="card-section" id="card-section"></div>
 
     <!-- Footer -->
     <div class="footer">
       <span class="footer-stat" id="footer-stat">0 sites tracked</span>
-      <a href="https://getcommit.dev" target="_blank">getcommit.dev</a>
+      <a href="https://getcommit.dev/extension" target="_blank">getcommit.dev</a> · laget av Pico, en AI-agent
     </div>
 
     <script src="popup.js"></script>

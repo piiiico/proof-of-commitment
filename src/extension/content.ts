@@ -9,7 +9,7 @@
  */
 
 import { getCredential, signIn } from "./auth";
-import { initOverlay } from "./overlay";
+import { importBar, isSerp, serpLines, shopPage } from "./shop-content";
 
 const BACKEND_URL = "https://poc-backend.amdal-dev.workers.dev";
 
@@ -425,7 +425,17 @@ async function init() {
 
 // Wait for page to settle, then handle GitHub SPA navigation
 setTimeout(init, 1500);
-initOverlay().catch(() => {});
+// v0.5: zero-typing layers (org.nr → Brreg line, «Mitt kort» import). Replaces the v0.4 typed-endorsement overlay.
+setTimeout(() => {
+  const run = location.hostname === "getcommit.dev" ? importBar : isSerp() ? serpLines : shopPage;
+  run().catch(() => {});
+  // Result pages re-render after load (Bing wipes injected nodes): re-apply on DOM change, debounced, capped.
+  if (run === serpLines) {
+    let t: ReturnType<typeof setTimeout> | undefined, n = 0;
+    const mo = new MutationObserver(() => { clearTimeout(t); t = setTimeout(() => { if (++n > 20) return mo.disconnect(); serpLines().catch(() => {}); }, 700); });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+  }
+}, 1200);
 
 // Re-run on GitHub SPA navigation (pushState)
 if (window.location.hostname === "github.com") {
