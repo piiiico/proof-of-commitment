@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+      - '!v0.*'  # v0.x = browser-extension releases, not the npm CLI (v1.x)
   workflow_dispatch:
 
 jobs:
