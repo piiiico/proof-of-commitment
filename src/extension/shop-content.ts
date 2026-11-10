@@ -88,9 +88,9 @@ export async function serpLines() {
     const b = orgs[d] ? await brreg(orgs[d]) : null; // only org.nrs read on an earlier visit; never guessed
     if (!b && !fr.length) continue;
     const host = (a.closest("h2,h3")?.parentElement || a.parentElement)!;
-    if (host.querySelector(":scope > .commit-shop-serp")) continue;
+    if (host.querySelector(":scope > [data-commit-serp]")) continue;
     const el = document.createElement("div");
-    el.className = "commit-shop-serp";
+    el.dataset.commitSerp = d; // a data attribute, not a class: Bing strips unknown-class nodes from result items
     el.style.cssText = `${FONT};font-size:12px;margin:2px 0 6px;padding:3px 8px;border-left:3px solid #dadce0;background:#f8f9fa;color:#3c4043`;
     el.innerHTML = html(d, b, fr);
     host.appendChild(el);

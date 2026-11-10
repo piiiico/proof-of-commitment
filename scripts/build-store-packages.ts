@@ -28,13 +28,14 @@ function pack(name: string, manifest: object) {
 const { key: _key, ...chrome } = m;
 const firefox = {
   ...chrome,
+  // Firefox has no chrome.identity.getProfileUserInfo; the card sender falls back to «En venn».
+  permissions: chrome.permissions.filter((x: string) => x !== "identity.email"),
   background: { scripts: ["background.js"], type: "module" },
   browser_specific_settings: {
     gecko: {
       id: "commit@getcommit.dev",
       strict_min_version: "140.0",
-      // Domains of visible Google results (overlay) and visited domains (visit sync) leave the browser,
-      // both only after the user turns the feature on in-page / in the popup.
+      // The org.nr a shop page prints goes to data.brreg.no; visited domains (visit sync) only after opt-in in the popup.
       data_collection_permissions: { required: ["websiteActivity", "browsingActivity"] },
     },
     gecko_android: { strict_min_version: "142.0" },

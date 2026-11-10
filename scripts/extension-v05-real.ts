@@ -23,7 +23,7 @@ console.log("shop:org", JSON.stringify(await wA.evaluate(() => chrome.storage.lo
 for (const [name, u] of [["google", "https://www.google.com/search?q=biltema+lyspære&hl=no"], ["bing", "https://www.bing.com/search?q=biltema.no+europris.no"], ["ddg", "https://duckduckgo.com/html/?q=biltema+lysp%C3%A6re"]] as const) {
   try { await p.goto(u, { waitUntil: "domcontentloaded", timeout: 45000 }); } catch { console.log("SERP-GOTO-FAIL", name); continue; }
   await wait(6000);
-  const r = await p.evaluate(() => ({ url: location.href, captcha: /sorry|captcha|unusual traffic|robot/i.test(location.href + document.body.innerText.slice(0, 3000)), lines: [...document.querySelectorAll(".commit-shop-serp")].map((e) => (e as HTMLElement).innerText) }));
+  const r = await p.evaluate(() => ({ url: location.href, captcha: /sorry|captcha|unusual traffic|robot/i.test(location.href + document.body.innerText.slice(0, 3000)), lines: [...document.querySelectorAll("[data-commit-serp]")].map((e) => (e as HTMLElement).innerText) }));
   console.log("SERP", name, JSON.stringify(r));
   await p.screenshot({ path: `${shots}/v05-serp-${name}.png` });
 }
@@ -54,6 +54,12 @@ await q.goto(SHOPS[0]!, { waitUntil: "domcontentloaded", timeout: 45000 }); awai
 console.log("B SHOP", JSON.stringify(await line(q)));
 await q.screenshot({ path: `${shots}/v05-friend-on-shop.png` });
 await q.goto("https://www.bing.com/search?q=biltema.no+europris.no", { waitUntil: "domcontentloaded" }); await wait(6000);
-console.log("B SERP bing", JSON.stringify(await q.evaluate(() => [...document.querySelectorAll(".commit-shop-serp")].map((e) => (e as HTMLElement).innerText))));
+console.log("B SERP bing", JSON.stringify(await q.evaluate(() => [...document.querySelectorAll("[data-commit-serp]")].map((e) => (e as HTMLElement).innerText))));
 await q.screenshot({ path: `${shots}/v05-friend-serp-bing.png` });
+// Google: real SERP served /sorry to this browser (not routed around) → v0.4-style FIXTURE result page, labelled.
+await q.setRequestInterception(true);
+q.on("request", (r: any) => r.url().startsWith("https://www.google.com/search") ? r.respond({ status: 200, contentType: "text/html", body: `<html><body><div id="search"><div id="rso">${["biltema.no", "europris.no", "elkjop.no"].map((d) => `<div class="g"><div><a href="https://www.${d}/"><h3>${d} (FIXTURE)</h3></a></div></div>`).join("")}</div></div></body></html>` }) : r.continue());
+await q.goto("https://www.google.com/search?q=fixture", { waitUntil: "load" }); await wait(4000);
+console.log("B SERP google-FIXTURE", JSON.stringify(await q.evaluate(() => [...document.querySelectorAll("[data-commit-serp]")].map((e) => (e as HTMLElement).dataset.commitSerp + " => " + (e as HTMLElement).innerText))));
+await q.screenshot({ path: `${shots}/v05-friend-serp-google-FIXTURE.png` });
 await B.close();

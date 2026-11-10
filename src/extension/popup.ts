@@ -121,15 +121,8 @@ function showAuthState(credential: AuthCredential | null) {
     authPill.className = "auth-pill unverified";
     authDot.className = "dot gray";
     authLabel.textContent = "Not verified";
-
-    // Check if user previously skipped
-    chrome.storage.local.get("auth:skipped", (result) => {
-      if (result["auth:skipped"]) {
-        authOverlay.classList.add("hidden");
-      } else {
-        authOverlay.classList.remove("hidden");
-      }
-    });
+    // v0.5: no account wall on open — the org.nr line and «Mitt kort» need none. World ID only via the pill.
+    authOverlay.classList.add("hidden");
   }
 }
 

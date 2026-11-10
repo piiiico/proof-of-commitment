@@ -1,86 +1,36 @@
-# Commit — Chrome Extension
+# Commit: browser extension
 
-See real trust signals. Contribute your behavioral data — anonymously, verified by World ID.
+**v0.5.0.** Nobody types anything. Built and maintained by Pico, an AI agent working for Håkon Åmdal.
 
-**Status:** v0.2 — site-contextual trust UI, contributing toggle, content script trust badge. Installable for sideloading.
+## What it shows
 
----
+**On a shop page, with no friends and no account.** If the page prints its own organisation number («Org.nr: 882 692 302»), one line in the bottom-left corner:
 
-## Install in 5 minutes
+> Biltema Norge AS · i drift siden 2000 · 1 845 ansatte · omsetning 2025: 5,6 mrd kr
 
-### Step 1: Build
+The figures come from Brønnøysundregistrene (data.brreg.no, open data). The line turns red only on hard facts: konkurs, avvikling, registered less than 12 months ago with no accounts, or an org.nr that belongs to a company whose name doesn't resemble the domain (a rough check, and it says so). A page without an org.nr gets nothing. We never guess an org.nr from a name.
 
-```bash
-git clone https://github.com/hawkaa/proof-of-commitment
-cd proof-of-commitment
-bun install
-bun run build:ext
-```
+**Under search results (Google and Bing; DuckDuckGo is wired in but untested).** The same line, for shops whose org.nr you've already seen on an earlier visit.
 
-### Step 2: Load in Chrome
+**«Mitt kort».** From install on, the extension counts locally the shops (pages with an org.nr) you return to across months and the order-confirmation pages you reach. In the popup you see the list, delete any row, and copy a link. Send it to a friend through any channel. They open it and click «Importer», and from then on their extension shows «Håkon: handlet her 3× (2025–26)» on that shop and under its results. Health, pharmacy, gambling, dating, adult, religion, politics, banks and loans are never counted (domain denylist plus NACE codes), and the importer filters them again.
 
-1. Open Chrome → `chrome://extensions`
-2. Enable **Developer mode** (toggle in top right)
-3. Click **Load unpacked** → select `dist/extension/`
+**On GitHub repository pages.** A trust card showing age, recent activity, contributors and releases.
 
-The extension appears in your toolbar. Click it on any website to see trust data.
+## What leaves the browser
 
-### Step 3: World ID verification (optional)
+- The org.nr a shop prints goes to data.brreg.no. Nothing else is sent with it.
+- The card goes only where you send the link. The data sits after `#`, so it doesn't even reach getcommit.dev's server when the friend opens it.
+- Visit sync (domain, visit count, time) runs only if you turn on «Contributing» in the popup. It's off by default.
+- GitHub pages send owner/repo to our backend for the trust card.
+- No Commit server stores anyone's browsing or purchases.
 
-The extension works without World ID — it tracks time locally and shows network trust data. To contribute your data to the trust network, verify with World ID.
+## Install (sideload)
 
-**Extension ID:** `iiomogkajkfbbpmicbfdgdojfmlbpnhn`
-**Redirect URI:** `https://iiomogkajkfbbpmicbfdgdojfmlbpnhn.chromiumapp.org/callback`
+Download `commit-extension-v0.5.0.zip` from the [releases](https://github.com/piiiico/proof-of-commitment/releases), unzip it, open `chrome://extensions`, turn on Developer mode, then «Load unpacked» and pick the folder. Or build it yourself: `bun install && bun run build:ext`, which builds into `dist/extension/`.
 
-World ID app_id is pre-configured. You just need a [World App](https://worldcoin.org/download) on your phone.
+## Tests
 
----
+- `bun test src/extension/shop.test.ts`: org.nr detection (label + mod11), the line and its red cases, name matching, order pages, card rows and the sensitive filter.
+- `bun scripts/extension-v05-real.ts`: a real Chromium with the extension loaded, run against real shops and real result pages, plus card export → import into a second profile. Screenshots go to `chrome-store/screenshots/`.
 
-## What it does
-
-### Popup (site-contextual)
-- **Trust signals** for the current domain: verified visitors, repeat rate, avg engagement time
-- **Your commitment** to this site: time spent, visits, since when
-- **Contributing toggle**: control whether your data syncs to the network
-- **Brreg lookup**: Norwegian business registry data for .no domains (expandable)
-- **Trust score ring**: composite score from visitor density, repeat rate, and engagement
-
-### Content script
-- **Trust badge**: small floating pill (bottom-right) on pages with commitment data
-- Shows verified visitor count, color-coded by trust level
-- Dismissible with a click
-
-### Background
-- **Time tracking**: passive per-domain tracking (no URLs, no paths)
-- **Sync queue**: batched 5-minute syncs to backend (respects contributing toggle)
-- **Offline safe**: queues data when backend is unreachable
-
----
-
-## Privacy
-
-- **Local first**: all visit data stored in `chrome.storage.local`
-- **Contributing toggle**: you control when data leaves your browser
-- **Domain-level only**: no URLs, paths, or page content
-- **World ID**: app-scoped sub identifier; no biometrics stored locally
-- **Sync data**: only domain + visit count + time; no user identity in payload
-
----
-
-## Development
-
-```bash
-bun install
-bun run build:ext    # build once
-bun run dev:ext      # watch mode
-```
-
-Source files:
-- `src/extension/background.ts` — service worker, time tracking, sync
-- `src/extension/popup.ts` — site-contextual UI controller
-- `src/extension/popup.html` — popup markup & styles
-- `src/extension/auth.ts` — World ID OIDC flow
-- `src/extension/content.ts` — trust badge injection
-- `src/extension/manifest.json` — Chrome MV3 manifest
-
-Stable extension ID (`iiomogkajkfbbpmicbfdgdojfmlbpnhn`) via RSA key in manifest.
+Source: `shop.ts` (pure logic), `shop-content.ts` (page side), `background.ts` (Brreg lookup and cache), `popup.ts` («Mitt kort»), `content.ts` (GitHub card and dispatch).
