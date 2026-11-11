@@ -21,6 +21,7 @@ import { Database, type Statement } from "bun:sqlite";
 import {
   buildMcpTrafficStats,
   buildAuditTrafficStats,
+  buildTrafficExcluding,
   buildOrganicMcpKeyStats,
   parseEmailPatterns,
   isInternalTestEmail,
@@ -618,5 +619,27 @@ describe("resolveApiKey countAsRequest", () => {
 
     const result = await resolveApiKey(db, `Bearer ${key}`);
     expect(result.error?.status).toBe(429);
+  });
+});
+
+// ── buildTrafficExcluding: self-IP excluded at the reader, outsiders still count ──
+describe("buildTrafficExcluding", () => {
+  test("excludes named IPs, keeps outside IPs, ignores rows older than 7d", async () => {
+    const sqlite = new Database(":memory:");
+    setupSchema(sqlite);
+    const today = new Date().toISOString().slice(0, 10);
+    const old = new Date(Date.now() - 20 * 864e5).toISOString().slice(0, 10);
+    const ins = sqlite.query("INSERT INTO audit_rate_limits (ip, date, count) VALUES (?, ?, ?)");
+    ins.run("10.0.0.1", today, 228); // self
+    ins.run("8.8.8.8", today, 3);     // outside
+    ins.run("1.1.1.1", today, 2);     // outside
+    ins.run("8.8.8.8", old, 99);      // out of window
+    const db = d1Shim(sqlite) as never;
+    const r = await buildTrafficExcluding(db, "audit_rate_limits", ["10.0.0.1"]);
+    expect(r).toEqual({ excluded_ips: 1, calls_7d: 5, excluded_calls_7d: 228, outside_ips_7d: 2 });
+    // Negative arm: an unknown exclude IP removes nothing.
+    const none = await buildTrafficExcluding(db, "audit_rate_limits", ["9.9.9.9"]);
+    expect(none.calls_7d).toBe(233);
+    expect(none.excluded_calls_7d).toBe(0);
   });
 });

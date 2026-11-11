@@ -3884,6 +3884,30 @@ export async function buildMcpTrafficStats(db: D1Database): Promise<McpTrafficSt
 }
 
 /**
+ * 7d traffic split by caller-named IPs (the reader passes its own egress).
+ * Our own container IP was 3499 of 3576 /api/audit calls 11-05..11; raw rows
+ * stay intact, the exclusion happens at this reader only.
+ */
+export async function buildTrafficExcluding(
+  db: D1Database,
+  table: "audit_rate_limits" | "mcp_rate_limits",
+  excludeIps: string[],
+): Promise<{ excluded_ips: number; calls_7d: number; excluded_calls_7d: number; outside_ips_7d: number }> {
+  const from = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const rows = await db
+    .prepare(`SELECT ip, SUM(count) AS calls FROM ${table} WHERE date >= ? GROUP BY ip`)
+    .bind(from)
+    .all<{ ip: string; calls: number }>();
+  const ex = new Set(excludeIps);
+  let calls = 0, excluded = 0, ips = 0;
+  for (const r of rows.results ?? []) {
+    if (ex.has(r.ip)) excluded += r.calls ?? 0;
+    else { calls += r.calls ?? 0; ips++; }
+  }
+  return { excluded_ips: ex.size, calls_7d: calls, excluded_calls_7d: excluded, outside_ips_7d: ips };
+}
+
+/**
  * Aggregate the audit_rate_limits table into today + last_7d traffic stats.
  * Same shape as buildMcpTrafficStats — mirror table, separate counters.
  */
@@ -4117,7 +4141,22 @@ app.get("/api/keys/stats", async (c) => {
     c.env.INTERNAL_TEST_EMAIL_PATTERNS
   );
 
+  const excludeIps = (c.req.query("exclude_ips") ?? "")
+    .split(",").map((s) => s.trim()).filter(Boolean).slice(0, 10);
+  let trafficExcluding: Record<string, unknown> | null = null;
+  if (excludeIps.length > 0) {
+    try {
+      trafficExcluding = {
+        audit: await buildTrafficExcluding(c.env.DB, "audit_rate_limits", excludeIps),
+        mcp: await buildTrafficExcluding(c.env.DB, "mcp_rate_limits", excludeIps),
+      };
+    } catch (err) {
+      trafficExcluding = { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   return c.json({
+    traffic_excluding: trafficExcluding,
     total_keys: totalRow?.count ?? 0,
     keys_today: todayRow?.count ?? 0,
     keys_last_24h: last24hRow?.count ?? 0,
@@ -8172,27 +8211,27 @@ app.get("/api/admin/key-analytics", async (c) => {
  */
 app.get("/api/stats/teams-protected", async (c) => {
   try {
-    // Count distinct emails on active (non-revoked) API keys, by window.
-    // api_keys.created_at is stored as ISO string; D1 SQLite handles
-    // datetime() comparisons on ISO-8601 lexicographically.
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-
-    const [row7, row30, rowTotal] = await Promise.all([
-      c.env.DB.prepare(
-        `SELECT COUNT(DISTINCT email) AS n FROM api_keys WHERE revoked_at IS NULL AND created_at >= ?`
-      ).bind(sevenDaysAgo).first<{ n: number }>(),
-      c.env.DB.prepare(
-        `SELECT COUNT(DISTINCT email) AS n FROM api_keys WHERE revoked_at IS NULL AND created_at >= ?`
-      ).bind(thirtyDaysAgo).first<{ n: number }>(),
-      c.env.DB.prepare(
-        `SELECT COUNT(DISTINCT email) AS n FROM api_keys WHERE revoked_at IS NULL`
-      ).first<{ n: number }>(),
-    ]);
-
-    const count_7d = row7?.n ?? 0;
-    const count_30d = row30?.n ?? 0;
-    const count_total = rowTotal?.n ?? 0;
+    // Distinct ORGANIC emails on active keys. Internal probe keys are excluded
+    // at this reader (same patterns as /api/keys/stats organic{}): 11-11 it
+    // returned 155 "teams" while organic.total was 3.
+    const patterns = parseEmailPatterns(
+      c.env.INTERNAL_TEST_EMAIL_PATTERNS ?? DEFAULT_INTERNAL_TEST_EMAIL_PATTERNS
+    );
+    const rows = await c.env.DB.prepare(
+      `SELECT email, created_at FROM api_keys WHERE revoked_at IS NULL`
+    ).all<{ email: string; created_at: string }>();
+    const now = Date.now();
+    const all = new Set<string>(), e30 = new Set<string>(), e7 = new Set<string>();
+    for (const r of rows.results ?? []) {
+      if (!r.email || isInternalTestEmail(r.email, patterns)) continue;
+      const ts = Date.parse(r.created_at.includes("T") ? r.created_at : r.created_at.replace(" ", "T") + "Z");
+      all.add(r.email);
+      if (ts >= now - 30 * 864e5) e30.add(r.email);
+      if (ts >= now - 7 * 864e5) e7.add(r.email);
+    }
+    const count_7d = e7.size;
+    const count_30d = e30.size;
+    const count_total = all.size;
 
     // Pick the tightest meaningful window. Threshold matches the frontend
     // suppression rule (don't show <5) so callers don't have to re-check.
