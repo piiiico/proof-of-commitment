@@ -29,6 +29,7 @@ import { buildCommitmentProfile, searchAndProfile } from "./brreg.ts";
 import { buildGitHubCommitmentProfile, parseGitHubInput } from "./github.ts";
 import { buildNpmCommitmentProfile, bulkFetchNpmWeeklyDownloads, flagWeeklyDownloads, digestRiskFlags, digestFlagLabel } from "./npm.ts";
 import { buildPyPICommitmentProfile } from "./pypi.ts";
+import { provenanceStoppedFlag, type ProvenanceHistory } from "./provenance-history.ts";
 import { buildCargoCommitmentProfile } from "./cargo.ts";
 import { buildGolangCommitmentProfile } from "./golang.ts";
 import { initWasm, Resvg } from "@resvg/resvg-wasm";
@@ -968,6 +969,7 @@ app.post("/api/audit", async (c) => {
     trend: string | null;
     daysSinceLastPublish: number | null;
     hasProvenance: boolean | null;
+    provenance?: ProvenanceHistory | null;
     hasStagedPublishing?: boolean | null;
     scorecardScore: number | null;
     hasDangerousWorkflow: boolean | null;
@@ -1037,7 +1039,10 @@ app.post("/api/audit", async (c) => {
             else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH: sole maintainer + >1M/wk");
             if (profile.ageYears < 1 && weeklyDl > 100_000) riskFlags.push("HIGH: new package (<1yr) + high downloads");
             if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
-            return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: null, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags, scoreBreakdown: profile.scoreBreakdown };
+            const pypiStop = provenanceStoppedFlag(profile.provenance);
+            if (pypiStop) riskFlags.push(pypiStop);
+            const pypiHasProv = profile.provenance?.latestState ? profile.provenance.latestState === "full" : null;
+            return { name: profile.name, ecosystem: "pypi", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: null, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: pypiHasProv, provenance: profile.provenance, scorecardScore: null, hasDangerousWorkflow: null, riskFlags, scoreBreakdown: profile.scoreBreakdown };
           } else {
             // Why this branch picks `undefined` over `null`:
             //   - `undefined` → buildNpmCommitmentProfile takes the SLOW path
@@ -1091,7 +1096,9 @@ app.post("/api/audit", async (c) => {
             // UI shows "—" instead of a confident-but-wrong "0/wk" cell on the
             // first interaction (the moment conversion decisions get made).
             const downloadDataMissing = wdReport === null;
-            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: wdReport, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, hasStagedPublishing: profile.hasStagedPublishing, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown, publisherLifecycle: lc ?? undefined, downloadDataMissing: downloadDataMissing || undefined };
+            const npmStop = provenanceStoppedFlag(profile.provenance);
+            if (npmStop) riskFlags.push(npmStop);
+            return { name: profile.name, ecosystem: "npm", score: profile.commitmentScore, maintainers: profile.maintainerCount, githubContributors: profile.githubContributors, weeklyDownloads: wdReport, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, daysSinceLastPublish: profile.daysSinceLastPublish, hasProvenance: profile.hasProvenance, provenance: profile.provenance, hasStagedPublishing: profile.hasStagedPublishing, scorecardScore: profile.scorecardScore ?? null, hasDangerousWorkflow: profile.hasDangerousWorkflow ?? null, riskFlags, scoreBreakdown: profile.scoreBreakdown, publisherLifecycle: lc ?? undefined, downloadDataMissing: downloadDataMissing || undefined };
           }
         } catch (err) {
           return { name: pkg, ecosystem: useGolang ? "golang" : useCargo ? "cargo" : usePypi ? "pypi" : "npm", score: null, maintainers: null, githubContributors: null, weeklyDownloads: null, ageYears: null, trend: null, daysSinceLastPublish: null, hasProvenance: null, scorecardScore: null, hasDangerousWorkflow: null, riskFlags: [], scoreBreakdown: null, error: err instanceof Error ? err.message : "error" };
@@ -6108,6 +6115,8 @@ Examples: score all deps in a project, compare two similar packages, identify ab
                   riskFlags.push("HIGH: new package (<1yr) + high downloads");
                 if (profile.daysSinceLastPublish > 365)
                   riskFlags.push("WARN: no release in 12+ months");
+                const provStop = provenanceStoppedFlag(profile.provenance);
+                if (provStop) riskFlags.push(provStop);
 
                 return {
                   name: pkg,
@@ -6147,6 +6156,8 @@ Examples: score all deps in a project, compare two similar packages, identify ab
                   riskFlags.push("HIGH: new package (<1yr) + high downloads");
                 if (profile.daysSinceLastPublish > 365)
                   riskFlags.push("WARN: no release in 12+ months");
+                const provStop = provenanceStoppedFlag(profile.provenance);
+                if (provStop) riskFlags.push(provStop);
 
                 return {
                   name: pkg,
@@ -6205,7 +6216,7 @@ Examples: score all deps in a project, compare two similar packages, identify ab
               : `${Math.round(r.ageYears * 12)}mo`
             : "N/A";
         const flags =
-          r.riskFlags.length > 0 ? ` ⚠️ ${r.riskFlags.join("; ")}` : "";
+          r.riskFlags.length > 0 ? ` ${r.riskFlags.every((f) => f.startsWith("INFO")) ? "ℹ️" : "⚠️"} ${r.riskFlags.join("; ")}` : "";
         const errStr = r.error ? ` (error: ${r.error})` : "";
         return `  ${scoreStr.padEnd(7)} ${r.name.padEnd(35)} ${dlStr.padEnd(12)} ${maintStr.padEnd(15)} ${ageStr}${flags}${errStr}`;
       });
@@ -6323,6 +6334,8 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
                   if (profile.maintainerCount <= 1 && weeklyDl > 10_000_000) riskFlags.push("CRITICAL: sole maintainer + >10M/wk");
                   else if (profile.maintainerCount <= 1 && weeklyDl > 1_000_000) riskFlags.push("HIGH: sole maintainer + >1M/wk");
                   if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
+                  const provStop = provenanceStoppedFlag(profile.provenance);
+                  if (provStop) riskFlags.push(provStop);
                   return { name: profile.name, ecosystem: eco, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: weeklyDl, ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
                 } else {
                   const profile = await buildNpmCommitmentProfile(pkg);
@@ -6334,6 +6347,8 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
                   if (effPub <= 1 && wdl > 10_000_000) riskFlags.push("CRITICAL: sole active npm publisher + >10M/wk");
                   else if (effPub <= 1 && wdl > 1_000_000) riskFlags.push("HIGH: sole active npm publisher + >1M/wk");
                   if (profile.daysSinceLastPublish > 365) riskFlags.push("WARN: no release in 12+ months");
+                  const provStop = provenanceStoppedFlag(profile.provenance);
+                  if (provStop) riskFlags.push(provStop);
                   return { name: profile.name, ecosystem: eco, score: profile.commitmentScore, maintainers: profile.maintainerCount, weeklyDownloads: flagWeeklyDownloads(profile), ageYears: Math.round(profile.ageYears * 10) / 10, trend: profile.downloadTrend, riskFlags };
                 }
               } catch (err) {
@@ -6367,7 +6382,7 @@ Use this when someone asks "is my project at risk?" or "audit this repo's depend
           : `${r.weeklyDownloads}/wk` : "N/A";
         const maintStr = r.maintainers !== null ? `${r.maintainers} pub.` : "N/A";
         const ageStr = r.ageYears !== null ? r.ageYears >= 1 ? `${Math.floor(r.ageYears)}yr` : `${Math.round(r.ageYears * 12)}mo` : "N/A";
-        const flags = r.riskFlags.length > 0 ? ` ⚠️ ${r.riskFlags.join("; ")}` : "";
+        const flags = r.riskFlags.length > 0 ? ` ${r.riskFlags.every((f) => f.startsWith("INFO")) ? "ℹ️" : "⚠️"} ${r.riskFlags.join("; ")}` : "";
         return `  ${scoreStr.padEnd(7)} ${r.name.padEnd(35)} ${dlStr.padEnd(12)} ${maintStr.padEnd(10)} ${ageStr}${flags}`;
       });
 

@@ -20,6 +20,12 @@ import {
   buildGitHubCommitmentProfile,
   parseGitHubInput,
 } from "./github.ts";
+import {
+  computeProvenanceHistory,
+  type ProvenanceHistory,
+  type ReleaseProvenance,
+  provenanceSummaryLine,
+} from "./provenance-history.ts";
 
 const NPM_REGISTRY = "https://registry.npmjs.org";
 const NPM_DOWNLOADS = "https://api.npmjs.org/downloads/range";
@@ -45,6 +51,17 @@ interface NpmPackage {
   repository?: { type: string; url: string };
   keywords?: string[];
   license?: string;
+}
+
+/** Per-version attestation state from a full packument: dist.attestations + time[v]. */
+export function npmReleaseProvenance(pkg: Pick<NpmPackage, "versions" | "time">): ReleaseProvenance[] {
+  const out: ReleaseProvenance[] = [];
+  for (const [version, meta] of Object.entries(pkg.versions ?? {})) {
+    const t = new Date(pkg.time?.[version] ?? "").getTime();
+    if (isNaN(t)) continue;
+    out.push({ version, publishedAt: t, state: meta?.dist?.attestations ? "full" : "none" });
+  }
+  return out;
 }
 
 export interface DownloadRange {
@@ -318,6 +335,7 @@ export interface NpmCommitmentProfile {
   hasProvenance: boolean | null; // npm SLSA provenance attestation (null = check failed/skipped)
   scorecardScore: number | null; // OpenSSF Scorecard 0–10 (null = no GitHub repo or not indexed)
   hasDangerousWorkflow: boolean | null; // true = Dangerous-Workflow Scorecard check failed (null = no Scorecard data)
+  provenance: ProvenanceHistory | null; // window-free attestation history from the packument (informational)
   hasStagedPublishing: boolean | null; // npm Staged Publishing (GA May 2026): human 2FA approval before release (null = inconclusive)
 
   // Trust signals
@@ -779,6 +797,13 @@ export async function buildNpmCommitmentProfile(
     latestVersion && pkg.versions[latestVersion]?.dist?.attestations
   );
 
+  // Window-free provenance history from the same packument (no extra request)
+  const provenance = computeProvenanceHistory(
+    npmReleaseProvenance(pkg),
+    latestVersion,
+    { pypiWindow: false }
+  );
+
   // Repository URL
   const repoUrl = parseRepoUrl(
     pkg.repository?.url ??
@@ -1054,6 +1079,7 @@ export async function buildNpmCommitmentProfile(
       : null,
     scorecardStr,
     provenanceStr,
+    provenanceSummaryLine(provenance),
     stagedPublishingStr,
     ``,
     `Commitment Score: ${commitmentScore}/100`,
@@ -1085,6 +1111,7 @@ export async function buildNpmCommitmentProfile(
     repositoryUrl: repoUrl,
     publisherLifecycle,
     hasProvenance,
+    provenance,
     scorecardScore,
     hasDangerousWorkflow,
     hasStagedPublishing,

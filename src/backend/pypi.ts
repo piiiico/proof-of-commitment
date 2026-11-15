@@ -20,6 +20,13 @@ import {
   buildGitHubCommitmentProfile,
   parseGitHubInput,
 } from "./github.ts";
+import {
+  computeProvenanceHistory,
+  type ProvenanceHistory,
+  type ProvenanceState,
+  type ReleaseProvenance,
+  provenanceSummaryLine,
+} from "./provenance-history.ts";
 
 const PYPI_URL = "https://pypi.org/pypi";
 const PYPISTATS_URL = "https://pypistats.org/api/packages";
@@ -42,8 +49,72 @@ interface PyPIInfo {
 }
 
 interface PyPIRelease {
+  filename?: string;
   upload_time: string;
   yanked?: boolean;
+}
+
+/** PEP 691 Simple JSON (Accept: application/vnd.pypi.simple.v1+json). */
+interface PyPISimpleFile {
+  filename: string;
+  provenance?: string | null; // URL of the provenance object; null = none
+  "upload-time"?: string;
+  yanked?: boolean | string;
+}
+
+/**
+ * Per-release provenance states from the Simple JSON files + the JSON API
+ * `releases` map (version → filenames). Versions are taken from the JSON API,
+ * never parsed out of filenames. Yanked files are ignored.
+ */
+export function pypiReleaseProvenance(
+  releases: Record<string, PyPIRelease[]>,
+  simpleFiles: PyPISimpleFile[]
+): ReleaseProvenance[] {
+  const byFile = new Map<string, PyPISimpleFile>();
+  for (const f of simpleFiles) byFile.set(f.filename, f);
+  const out: ReleaseProvenance[] = [];
+  for (const [version, files] of Object.entries(releases)) {
+    let attested = 0;
+    let total = 0;
+    let first = Infinity;
+    for (const f of files) {
+      if (f.yanked || !f.filename) continue;
+      const sf = byFile.get(f.filename);
+      if (!sf || sf.yanked) continue;
+      total++;
+      if (sf.provenance) attested++;
+      const t = new Date(sf["upload-time"] ?? f.upload_time).getTime();
+      if (!isNaN(t) && t < first) first = t;
+    }
+    if (total === 0 || first === Infinity) continue;
+    const state: ProvenanceState =
+      attested === 0 ? "none" : attested === total ? "full" : "incomplete";
+    out.push({ version, publishedAt: first, state });
+  }
+  return out;
+}
+
+export async function fetchPyPIProvenanceHistory(
+  encodedName: string,
+  releases: Record<string, PyPIRelease[]>,
+  latestVersion: string | null
+): Promise<ProvenanceHistory | null> {
+  try {
+    const res = await fetch(`https://pypi.org/simple/${encodedName}/`, {
+      headers: { Accept: "application/vnd.pypi.simple.v1+json" },
+      // @ts-ignore CF fetch cache hint
+      cf: { cacheEverything: true, cacheTtl: 300 },
+    });
+    if (!res.ok) return null;
+    const simple = (await res.json()) as { files?: PyPISimpleFile[] };
+    if (!Array.isArray(simple.files) || simple.files.length === 0) return null;
+    const rel = pypiReleaseProvenance(releases, simple.files);
+    if (rel.length === 0) return null;
+    return computeProvenanceHistory(rel, latestVersion, { pypiWindow: true });
+  } catch {
+    return null;
+  }
 }
 
 interface PyPIResponse {
@@ -93,6 +164,9 @@ export interface PyPICommitmentProfile {
     githubBacking: number;
   };
   githubScore: number | null;
+
+  /** Window-free provenance history (null = Simple API unavailable). Informational. */
+  provenance: ProvenanceHistory | null;
 
   summary: string;
 }
@@ -252,6 +326,8 @@ export async function buildPyPICommitmentProfile(
   const pkg = (await pypiRes.json()) as PyPIResponse;
 
   const { info, releases, ownership } = pkg;
+  // Started now, awaited after downloads/GitHub so it runs in parallel.
+  const provenancePromise = fetchPyPIProvenanceHistory(encodedName, releases, info.version ?? null);
   const now = Date.now();
 
   // Find earliest and latest release dates
@@ -369,6 +445,9 @@ export async function buildPyPICommitmentProfile(
     }
   }
 
+  // 3b. Provenance history (Simple JSON, one request)
+  const provenance = await provenancePromise;
+
   // 4. Compute scores
   const longevity = scoreLongevity(ageYears);
   const downloadMomentum = scoreDownloads(avg7d, trend);
@@ -409,6 +488,7 @@ export async function buildPyPICommitmentProfile(
     `Maintainers: ${maintainerCount}`,
     repositoryUrl ? `Repository: ${repositoryUrl}` : "No linked GitHub repository",
     license ? `License: ${license}` : "No license specified",
+    provenanceSummaryLine(provenance),
     githubScore !== null
       ? `GitHub commitment score: ${githubScore}/100`
       : null,
@@ -445,6 +525,7 @@ export async function buildPyPICommitmentProfile(
       githubBacking,
     },
     githubScore,
+    provenance,
     summary: lines,
   };
 }
