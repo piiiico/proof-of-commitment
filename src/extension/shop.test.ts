@@ -19,13 +19,60 @@ test("line: quiet when healthy, red on hard facts", () => {
   expect(l.red).toEqual([]);
   expect(brregLine("biltema.no", { ...bil, konkurs: true }).red).toContain("konkurs");
   expect(brregLine("x.no", { ...bil, navn: "NY BUTIKK AS", hjemmeside: null, start: "2026-08-01", omsetning: null, aar: null }, new Date("2026-11-10")).red.join()).toMatch(/ingen regnskap/);
-  expect(brregLine("superbillig-sko.no", { ...bil, hjemmeside: null }).red.join()).toMatch(/ikke ligner/);
+  // v0.5.2: a name that doesn't resemble the domain is grey info, never red (75/341 legit .no sites were red)
+  const obs = brregLine("obs.no", { ...bil, navn: "COOP NORGE SA", hjemmeside: null }, new Date("2026-11-10"));
+  expect(obs.red).toEqual([]);
+  expect(obs.text).toMatch(/^drives av Coop Norge SA · i drift siden 2000/);
+  expect(brregLine("biltema.no", bil, new Date("2026-11-10")).text).toMatch(/^Biltema Norge AS/);
+});
+
+import { rdapBase, rdapRegistered, registrable } from "./shop";
+const NOW = new Date("2026-11-23");
+const red = (d: string, b: typeof bil, reg: string | null) => brregLine(d, b, NOW, reg).red.join(" | ");
+test("clone signature: domain < 12 months, company >= 3 years older than the domain → red", () => {
+  // brand-in-URL clones that copy Biltema's footer (all passed grey in v0.5.1)
+  for (const d of ["biltema-outlet.shop", "biltemanorge-tilbud.com", "biltema-blackfriday.store"])
+    expect(red(d, bil, "2026-10-28T09:00:00Z")).toBe("nytt domene (oktober 2026), selskapet fra 2000 – kopier av kjente butikker ser slik ut");
+  const l = brregLine("biltema.no", bil, NOW, "1999-11-14T23:00:00Z");
+  expect(l.red).toEqual([]);
+  expect(l.text).toMatch(/i drift siden 2000 · domenet registrert 1999 ·/);
+  // the 4 measured legit false positives keep a TRUE sentence (dates from the 11-23 RDAP census)
+  expect(red("sparebankennorge.no", { ...bil, navn: "SPAREBANKEN NORGE", start: "1982-01-01" }, "2026-06-29T17:55:03Z")).toMatch(/^nytt domene \(juni 2026\), selskapet fra 1982/);
+  expect(red("regnskapsbasen.no", { ...bil, navn: "ELGFARM AS", start: "2021-02-01" }, "2026-03-20T09:01:12Z")).toMatch(/^nytt domene \(mars 2026\), selskapet fra 2021/);
+  expect(red("gaiagruppen.no", { ...bil, navn: "GAIA GRUPPEN AS", start: "2007-06-01" }, "2026-11-12T14:25:04Z")).toMatch(/^nytt domene \(november 2026\), selskapet fra 2007/);
+  expect(red("lystclub.no", { ...bil, navn: "INVEST CK DA", start: "2015-04-01" }, "2026-01-25T18:05:12Z")).toMatch(/^nytt domene \(januar 2026\), selskapet fra 2015/);
+  // boundaries: a 13-month-old domain, a company only 2 years older, unknown company start, no date → no clone red
+  expect(red("x.no", bil, "2025-10-01T00:00:00Z")).toBe("");
+  expect(red("x.no", { ...bil, start: "2024-08-01" }, "2026-08-01T00:00:00Z")).toBe("");
+  expect(red("x.no", { ...bil, start: null }, "2026-08-01T00:00:00Z")).toBe("");
+  expect(red("x.no", bil, null)).toBe("");
+  expect(brregLine("x.no", bil, NOW, null).text).not.toMatch(/domenet/);
+});
+
+const BOOT: [string[], string[]][] = [[["no"], ["https://rdap.norid.no/"]], [["com", "net"], ["http://x.invalid/", "https://rdap.verisign.com/com/v1/"]]];
+const rdapRes = (status: number, body: unknown) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
+test("RDAP: bootstrap, registrable domain, needle, 429 and no-bootstrap arms", async () => {
+  expect(registrable("www.shop.biltema.no")).toBe("biltema.no");
+  expect(registrable("www.example.co.uk")).toBe("example.co.uk");
+  expect(rdapBase("biltema.no", BOOT)).toBe("https://rdap.norid.no/");
+  expect(rdapBase("drmartensie.com", BOOT)).toBe("https://rdap.verisign.com/com/v1/"); // https only
+  const seen: string[] = [];
+  const ok = (async (u: string) => { seen.push(u); return new Response(JSON.stringify({ events: [{ eventAction: "last changed", eventDate: "2026-11-01T00:00:00Z" }, { eventAction: "registration", eventDate: "2026-03-12T07:57:30Z" }] })); }) as unknown as typeof fetch;
+  expect(await rdapRegistered("drmartensie.com", BOOT, ok)).toBe("2026-03-12T07:57:30Z");
+  expect(seen).toEqual(["https://rdap.verisign.com/com/v1/domain/drmartensie.com"]);
+  expect(await rdapRegistered("biltema.no", BOOT, rdapRes(429, { errorCode: 429 }))).toBeNull();
+  expect(await rdapRegistered("biltema.no", BOOT, rdapRes(200, { events: [] }))).toBeNull();
+  expect(await rdapRegistered("biltema.no", BOOT, (async () => { throw new Error("net"); }) as unknown as typeof fetch)).toBeNull();
+  let called = 0;
+  expect(await rdapRegistered("vero-moda.es", BOOT, (async () => { called++; return new Response("{}"); }) as unknown as typeof fetch)).toBeNull();
+  expect(called).toBe(0); // no bootstrap → no request, no date, never «nytt»
 });
 
 test("name match is fuzzy both ways", () => {
   expect(nameMatches("elkjop.no", { navn: "ELKJØP NORGE AS", hjemmeside: null })).toBe(true);
   expect(nameMatches("komplett.no", { navn: "KOMPLETT SERVICES AS", hjemmeside: null })).toBe(true);
   expect(nameMatches("fake-shop.no", { navn: "BILTEMA NORGE AS", hjemmeside: null })).toBe(false);
+  expect(nameMatches("biltema-blackfriday.store", { navn: "BILTEMA NORGE AS", hjemmeside: null })).toBe(true); // why a name can't catch a clone
 });
 
 test("order pages", () => {

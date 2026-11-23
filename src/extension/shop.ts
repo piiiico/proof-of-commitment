@@ -3,7 +3,7 @@
  *
  * 1. Single-player: on a page that prints its own org.nr (footer «Org.nr: 882 692 302»), the background
  *    worker asks data.brreg.no (open, no key) and the page gets one quiet line: name, years in operation,
- *    employees, latest revenue. Red only on hard facts. No org.nr on the page = nothing shown; we never
+ *    employees, latest revenue, the year its domain was registered (RDAP). Red only on hard facts. No org.nr on the page = nothing shown; we never
  *    guess an org.nr from a name. On Google results, the same line for domains cached from an earlier visit.
  * 2. «Mitt kort»: from install on, this browser counts (locally) shops with an org.nr that you came back to
  *    across months and order-confirmation pages you reached. You review the list in the popup, delete rows,
@@ -74,22 +74,58 @@ export function nameMatches(domain: string, b: Pick<Brreg, "navn" | "hjemmeside"
 }
 
 export interface Line { text: string; red: string[] }
-export function brregLine(domain: string, b: Brreg, now = new Date()): Line {
+const MND = ["januar", "februar", "mars", "april", "mai", "juni", "juli", "august", "september", "oktober", "november", "desember"];
+const months = (from: string, to: Date) => (to.getTime() - new Date(from).getTime()) / (30.44 * 864e5);
+/**
+ * `domReg` = the shop domain's own RDAP registration date (null/absent = unknown: no date shown, never «nytt»).
+ * v0.5.2: a name that doesn't resemble the domain is grey info («drives av X»), never red: it was wrong on 75 of 341
+ * legit .no sites (memory/data/clone-1123). Red on the clone signature instead: domain < 12 months old while the
+ * company it names is at least 3 years older than the domain.
+ */
+export function brregLine(domain: string, b: Brreg, now = new Date(), domReg?: string | null): Line {
   const red: string[] = [];
   if (b.konkurs) red.push("konkurs");
   if (b.avvikling || b.tvang) red.push(b.tvang ? "under tvangsavvikling" : "under avvikling");
   if (b.slettet) red.push("slettet i Enhetsregisteret");
-  const ageMonths = b.start ? (now.getTime() - new Date(b.start).getTime()) / (30.44 * 864e5) : null;
-  if (ageMonths !== null && ageMonths < 12 && b.omsetning === null) red.push(`registrert ${b.start}, ingen regnskap ennå`);
-  if (!nameMatches(domain, b)) red.push(`org.nr på siden tilhører ${b.navn}, som ikke ligner ${bare(domain)} (grov navnesjekk)`);
-  const parts = [titleCase(b.navn)];
+  if (b.start && months(b.start, now) < 12 && b.omsetning === null) red.push(`registrert ${b.start}, ingen regnskap ennå`);
+  if (domReg && b.start && months(domReg, now) < 12 && months(b.start, new Date(domReg)) >= 36) {
+    const d = new Date(domReg);
+    red.push(`nytt domene (${MND[d.getUTCMonth()]} ${d.getUTCFullYear()}), selskapet fra ${b.start.slice(0, 4)} – kopier av kjente butikker ser slik ut`);
+  }
+  const parts = [nameMatches(domain, b) ? titleCase(b.navn) : `drives av ${titleCase(b.navn)}`];
   if (b.start) parts.push(`i drift siden ${b.start.slice(0, 4)}`);
+  if (domReg) parts.push(`domenet registrert ${domReg.slice(0, 4)}`);
   if (b.ansatte) parts.push(`${b.ansatte.toLocaleString("nb-NO")} ansatte`);
   if (b.omsetning !== null && b.aar) parts.push(`omsetning ${b.aar}: ${kr(b.omsetning)}`);
   return { text: parts.join(" · "), red };
 }
+
+// ── v0.5.2: the shop domain's registration date, from its registry's RDAP server (IANA bootstrap) ──
+/** Registrable domain: last two labels, three under common second-level suffixes (co.uk, com.au …). */
+export function registrable(host: string): string {
+  const h = bare(host);
+  return h.split(".").slice(/\.(co|com|org|net|ac|gov|ltd|plc|or|ne)\.[a-z]{2}$/.test(h) ? -3 : -2).join(".");
+}
+export type Services = [string[], string[]][];
+export function rdapBase(domain: string, services: Services): string | null {
+  const tld = domain.split(".").pop()!;
+  for (const [tlds, urls] of services) if (tlds.includes(tld)) return urls.find((u) => u.startsWith("https://")) || null;
+  return null; // no bootstrap (.es, .it …) → no date, never «nytt»
+}
+/** Registration date, or null on no bootstrap / 429 / any error. One request. */
+export async function rdapRegistered(domain: string, services: Services, f: typeof fetch = fetch): Promise<string | null> {
+  const base = rdapBase(domain, services);
+  if (!base) return null;
+  try {
+    const r = await f(base.replace(/\/?$/, "/") + "domain/" + domain, { headers: { Accept: "application/rdap+json" } });
+    if (!r.ok) return null;
+    const j: any = await r.json();
+    const d = (j?.events || []).find((e: any) => e?.eventAction === "registration")?.eventDate;
+    return typeof d === "string" && !isNaN(Date.parse(d)) ? d : null;
+  } catch { return null; }
+}
 function titleCase(s: string) {
-  return s.toLowerCase().replace(/(^|[\s-])(\p{L})/gu, (_, a, c) => a + c.toUpperCase()).replace(/\b(As|Asa|Ab|Nuf)\b/g, (x) => x.toUpperCase());
+  return s.toLowerCase().replace(/(^|[\s-])(\p{L})/gu, (_, a, c) => a + c.toUpperCase()).replace(/\b(As|Asa|Ab|Nuf|Sa|Da|Ans|Ba)\b/g, (x) => x.toUpperCase());
 }
 
 export function friendLine(fra: string, r: CardRow): string {

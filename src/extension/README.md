@@ -1,6 +1,6 @@
 # Commit: browser extension
 
-**v0.5.1.** Nobody types anything. Built and maintained by Pico, an AI agent working for Håkon Åmdal.
+**v0.5.2.** Nobody types anything. Built and maintained by Pico, an AI agent working for Håkon Åmdal.
 
 ## What it shows
 
@@ -8,7 +8,7 @@
 
 > Biltema Norge AS · i drift siden 2000 · 1 845 ansatte · omsetning 2025: 5,6 mrd kr
 
-The figures come from Brønnøysundregistrene (data.brreg.no, open data). The line turns red only on hard facts: konkurs, avvikling, registered less than 12 months ago with no accounts, or an org.nr that belongs to a company whose name doesn't resemble the domain (a rough check, and it says so). A page without an org.nr gets nothing. We never guess an org.nr from a name.
+The figures come from Brønnøysundregistrene (data.brreg.no, open data); since v0.5.2 the line also gives the year the shop's domain was registered, from RDAP (IANA bootstrap, `rdap.norid.no` for .no; 30-day cache, one call per shop visit, no date on any error or 429, no date for TLDs without RDAP). The line turns red only on hard facts: konkurs, avvikling, registered less than 12 months ago with no accounts, or the clone signature: a domain under 12 months old printing the org.nr of a company at least 3 years older than the domain. A company name that doesn't resemble the domain is grey info («drives av …»); it was red until v0.5.2 and was wrong on 75 of 341 legit .no sites (Tranco .no census, 2026-11-23). The new rule's measured false positives: 4 of 319 legit hosts with an RDAP date (domain moves, e.g. a bank merger), and the red line states both dates so it stays true for them. A page without an org.nr gets nothing, and the clone shops we checked print none, so the extension is silent on them. We never guess an org.nr from a name.
 
 **Under search results (Google and Bing; DuckDuckGo is wired in but untested).** The same line, for shops whose org.nr you've already seen on an earlier visit.
 
@@ -21,6 +21,7 @@ The figures come from Brønnøysundregistrene (data.brreg.no, open data). The li
 ## What leaves the browser
 
 - The org.nr a shop prints goes to data.brreg.no. Nothing else is sent with it.
+- On a page with an org.nr, the shop's domain name goes to its registry's public RDAP server (IANA's bootstrap list says which; once per 30 days per domain). Result pages only read the local cache.
 - Browser history (only if you press the button): read in your browser, never sent anywhere.
 - The card goes only where you send the link. The data sits after `#`, so it doesn't even reach getcommit.dev's server when the friend opens it.
 - By default nothing goes to Commit's servers. The «Commit-server» switch in the popup (off by default) turns on three things: the GitHub trust card (owner/repo), the popup's lookup of the current tab's domain, and visit sync (domain, visit count, time, every five minutes).
@@ -28,11 +29,12 @@ The figures come from Brønnøysundregistrene (data.brreg.no, open data). The li
 
 ## Install (sideload)
 
-Download `commit-extension-v0.5.1.zip` from the [releases](https://github.com/piiiico/proof-of-commitment/releases), unzip it, open `chrome://extensions`, turn on Developer mode, then «Load unpacked» and pick the folder. Or build it yourself: `bun install && bun run build:ext`, which builds into `dist/extension/`.
+Download `commit-extension-v0.5.2.zip` from the [releases](https://github.com/piiiico/proof-of-commitment/releases), unzip it, open `chrome://extensions`, turn on Developer mode, then «Load unpacked» and pick the folder. Or build it yourself: `bun install && bun run build:ext`, which builds into `dist/extension/`.
 
 ## Tests
 
-- `bun test src/extension/shop.test.ts`: org.nr detection (label + mod11), the line and its red cases, name matching, order pages, card rows and the sensitive filter.
+- `bun test src/extension/shop.test.ts`: org.nr detection (label + mod11), the line and its red cases (clone signature, the 4 measured legit false positives), RDAP (needle, 429, no-bootstrap), name matching, order pages, card rows and the sensitive filter.
+- `bun scripts/extension-v052-rdap.ts` (X display): biltema.no and obs.no grey with the domain year, a LABELLED SYNTHETIC Biltema footer served on the real clone domain drmartensie.com turns red, the Bing line reads the cached year.
 - `bun scripts/extension-v051-history.ts` (needs an X display, e.g. `Xvfb :99 & DISPLAY=:99 …`): the history button against LABELLED SYNTHETIC history seeded into the profile's History database, through the real toolbar popup and Chrome's native dialog (answered with XTEST keys). Positive, empty-profile, declined and revoke arms, then export → import → friend line on biltema.no and on Bing.
 - `bun scripts/extension-v05-real.ts`: a real Chromium with the extension loaded, run against real shops and real result pages, plus card export → import into a second profile. Screenshots go to `chrome-store/screenshots/`.
 

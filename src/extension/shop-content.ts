@@ -8,16 +8,20 @@ const month = () => new Date().toISOString().slice(0, 7);
 async function brreg(orgnr: string): Promise<Brreg | null> {
   return chrome.runtime.sendMessage({ type: "commit-brreg", orgnr }).catch(() => null);
 }
+/** Domain registration date. cacheOnly: result pages never trigger RDAP calls, only shop visits do. */
+async function rdap(domain: string, cacheOnly = false): Promise<string | null> {
+  return chrome.runtime.sendMessage({ type: "commit-rdap", domain, cacheOnly }).catch(() => null);
+}
 async function friends(domain: string): Promise<string[]> {
   const { "kort:imported": cards = [] } = await S.get("kort:imported") as { "kort:imported"?: Card[] };
   const out: string[] = [];
   for (const c of cards) for (const r of c.rader) if (r.d === domain || domain.endsWith("." + r.d)) out.push(friendLine(c.fra, r));
   return out;
 }
-function html(domain: string, b: Brreg | null, fr: string[]): string {
+function html(domain: string, b: Brreg | null, fr: string[], reg: string | null): string {
   const rows: string[] = fr.map((f) => `<div style="color:#188038"><b>${esc(f)}</b></div>`);
   if (b) {
-    const l = brregLine(domain, b);
+    const l = brregLine(domain, b, new Date(), reg);
     rows.push(`<div>${esc(l.text)}</div>`);
     for (const r of l.red) rows.push(`<div style="color:#d93025"><b>${esc(r)}</b></div>`);
   }
@@ -51,12 +55,13 @@ export async function shopPage() {
   }
   const fr = sensitive(domain, b?.nace) ? [] : await friends(domain);
   if (!b && !fr.length) return; // nothing found → nothing shown
+  const reg = b ? await rdap(domain) : null; // only on a page that printed an org.nr
   if (document.getElementById("commit-shop-line")) return;
   const el = document.createElement("div");
   el.id = "commit-shop-line";
   el.title = "Commit · Brønnøysundregistrene · klikk for å lukke";
-  el.style.cssText = `position:fixed;bottom:16px;left:16px;z-index:2147483647;max-width:440px;padding:8px 12px;background:#fff;border:1px solid #dadce0;border-left:3px solid ${b && brregLine(domain, b).red.length ? "#d93025" : "#5f6368"};border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.15);${FONT};color:#202124;cursor:pointer`;
-  el.innerHTML = html(domain, b, fr) + `<div style="font-size:11px;color:#80868b;margin-top:2px">${b ? `Org.nr ${esc(b.orgnr)} fra siden · Brønnøysundregistrene · ` : ""}Commit (laget av Pico, en AI-agent)</div>`;
+  el.style.cssText = `position:fixed;bottom:16px;left:16px;z-index:2147483647;max-width:440px;padding:8px 12px;background:#fff;border:1px solid #dadce0;border-left:3px solid ${b && brregLine(domain, b, new Date(), reg).red.length ? "#d93025" : "#5f6368"};border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.15);${FONT};color:#202124;cursor:pointer`;
+  el.innerHTML = html(domain, b, fr, reg) + `<div style="font-size:11px;color:#80868b;margin-top:2px">${b ? `Org.nr ${esc(b.orgnr)} fra siden · Brønnøysundregistrene${reg ? " · RDAP" : ""} · ` : ""}Commit (laget av Pico, en AI-agent)</div>`;
   el.addEventListener("click", () => el.remove());
   document.body.appendChild(el);
 }
@@ -92,7 +97,7 @@ export async function serpLines() {
     const el = document.createElement("div");
     el.dataset.commitSerp = d; // a data attribute, not a class: Bing strips unknown-class nodes from result items
     el.style.cssText = `${FONT};font-size:12px;margin:2px 0 6px;padding:3px 8px;border-left:3px solid #dadce0;background:#f8f9fa;color:#3c4043`;
-    el.innerHTML = html(d, b, fr);
+    el.innerHTML = html(d, b, fr, b ? await rdap(d, true) : null);
     host.appendChild(el);
   }
 }

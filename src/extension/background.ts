@@ -1,4 +1,4 @@
-import { HISTORY_DAYS, mergeHistory, monthWindows, type HistItem } from "./shop";
+import { HISTORY_DAYS, mergeHistory, monthWindows, rdapRegistered, registrable, type HistItem, type Services } from "./shop";
 /**
  * Background service worker for Commit browser extension.
  *
@@ -269,6 +269,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     readHistory().then(sendResponse, () => sendResponse(null));
     return true;
   }
+  if (message.type === "commit-rdap") {
+    lookupRdap(String(message.domain), !!message.cacheOnly).then(sendResponse, () => sendResponse(null));
+    return true;
+  }
   if (message.type === "commit-brreg") {
     lookupBrreg(String(message.orgnr)).then(sendResponse, () => sendResponse(null));
     return true;
@@ -302,6 +306,33 @@ async function lookupBrreg(orgnr: string) {
   cache[orgnr] = { t: Date.now(), b };
   await chrome.storage.local.set({ "brreg:cache": cache });
   return b;
+}
+
+// ── v0.5.2 the shop domain's registration date: only the domain name goes to its registry's RDAP server ──
+// IANA bootstrap and every RDAP answer carry Access-Control-Allow-Origin: *, so no host permission is needed.
+// Norid answers 429 to bursts: one call per shop visit, 30-day cache, in-flight dedup; any error = no date shown.
+const RDAP_TTL = 30 * 864e5;
+const inflight = new Map<string, Promise<string | null>>();
+async function lookupRdap(host: string, cacheOnly: boolean): Promise<string | null> {
+  const d = registrable(host);
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d)) return null;
+  const { "rdap:cache": cache = {} } = await chrome.storage.local.get("rdap:cache");
+  if (cache[d] && Date.now() - cache[d].t < RDAP_TTL) return cache[d].reg;
+  if (cacheOnly) return null;
+  if (!inflight.has(d)) inflight.set(d, (async () => {
+    const { "rdap:boot": boot } = await chrome.storage.local.get("rdap:boot");
+    let services: Services | null = boot && Date.now() - boot.t < RDAP_TTL ? boot.services : null;
+    if (!services) {
+      const r = await fetch("https://data.iana.org/rdap/dns.json").catch(() => null);
+      services = r?.ok ? (await r.json()).services : null;
+      if (!services) return null;
+      await chrome.storage.local.set({ "rdap:boot": { t: Date.now(), services } });
+    }
+    const reg = await rdapRegistered(d, services);
+    if (reg) { const c = (await chrome.storage.local.get("rdap:cache"))["rdap:cache"] || {}; c[d] = { t: Date.now(), reg }; await chrome.storage.local.set({ "rdap:cache": c }); }
+    return reg;
+  })().finally(() => inflight.delete(d)));
+  return inflight.get(d)!;
 }
 
 // ── v0.5.1 «Lag kortet fra de siste 90 dagene»: optional `history`, read in this browser only ──
