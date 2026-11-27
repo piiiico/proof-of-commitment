@@ -4,7 +4,7 @@
  * Until then withMcpRateLimit appended a signup/upgrade block to successful
  * results from call 5 (anonymous) or 10 (free key), including an instruction
  * to the agent to call get_api_key with an email. It produced 0 used keys
- * and 4 example.* signups typed by agents. This pins its removal.
+ * and 4 example.* placeholder signups. This pins its removal.
  *
  * Run: `bun test test/mcp-free-key-cta.test.ts`
  */

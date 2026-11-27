@@ -5286,9 +5286,10 @@ async function bumpMcpCount(env: Bindings, ip: string): Promise<number> {
  *
  * Success results are never extended with sales text. Until 2026-11-27 a
  * signup/upgrade block was appended from call 5 (anon) or 10 (free key).
- * D1 06-10→11-26: ~200 anon IP-days saw it, almost all cloud fleets on a
- * fixed 10/12-call script; it produced 9 keys (4 ours, 3 example.* emails
- * typed by agents, 0 ever used). The cost was the user's context.
+ * D1 06-10→11-26: 218 IP-days saw it; since 09-28, 176 of 208 were
+ * cloud IPs on a fixed 10/12-call script. MCP keys since May: 9 (4 ours,
+ * 4 example.* placeholders, 1 other), 0 ever used. The cost was the
+ * user's context.
  *
  * 3. Paid tiers (developer/pro/enterprise):
  *    - pass through untouched. No counter bump, no CTA — they paid.
