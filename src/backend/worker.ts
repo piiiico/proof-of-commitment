@@ -3578,8 +3578,8 @@ app.get("/api/keys/usage", async (c) => {
 // MCP rate-limit thresholds. Declared here (not next to the MCP server
 // definition further down) so MCP_TRAFFIC_THRESHOLDS below can reference them
 // at module-init time without TDZ. The MCP server reuses these same constants.
-const MCP_SOFT_CTA_AT = 5;      // first call to include CTA
-const MCP_STRONG_CTA_AT = 10;   // upgrade message tone
+const MCP_SOFT_CTA_AT = 5;      // usage bucket for /api/keys/stats only;
+const MCP_STRONG_CTA_AT = 10;   // no CTA text is sent since 2026-11-27
 const MCP_HARD_LIMIT = 15;      // beyond → 429-style block (was 100 — tightened to drive signups)
 // Points at the real signup form. /signup doesn't exist on getcommit.dev — the
 // SPA fallback serves the homepage, so users following the CTA landed on the
@@ -5031,11 +5031,6 @@ interface McpCtx {
   ip: string;
   hasApiKey: boolean;
   // Populated only when hasApiKey is true and the api_keys row was fetched.
-  // Drives free-tier soft-CTA injection in withMcpRateLimit — without these
-  // fields a free-key holder would silently bypass all conversion pressure
-  // (the 149-keys-0-paying gap diagnosed 2026-06-20: free-key MCP traffic
-  // never bumped any counter, never saw any upgrade prompt, dashboard always
-  // showed 0/200 even after hundreds of MCP calls).
   tier?: "free" | "developer" | "pro" | "enterprise";
   keyEmail?: string;
 }
@@ -5044,81 +5039,11 @@ function todayUtcDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function mcpCtaText(count: number): string {
-  const remaining = Math.max(0, MCP_HARD_LIMIT - count);
-  if (count >= MCP_STRONG_CTA_AT) {
-    return [
-      "",
-      "─────────────────────────────────────────────────",
-      `⚠ Commit MCP — ${count}/${MCP_HARD_LIMIT} free queries today (${remaining} left).`,
-      `   Get a free key now: call get_api_key({ email: "you@co.com" })`,
-      `   Or sign up at: ${MCP_SIGNUP_URL}`,
-      "─────────────────────────────────────────────────",
-    ].join("\n");
-  }
-  return [
-    "",
-    "─────────────────────────────────────────────────",
-    `Commit MCP — ${count}/${MCP_HARD_LIMIT} free queries used today.`,
-    `Get notified when packages you queried get worse — call get_api_key with your email,`,
-    `or sign up at: ${MCP_SIGNUP_URL}`,
-    "─────────────────────────────────────────────────",
-  ].join("\n");
-}
-
 function mcpHardBlockText(count: number): string {
   return [
     `Daily free MCP limit reached (${count}/${MCP_HARD_LIMIT}). Resets at 00:00 UTC.`,
-    "",
-    `Get a free API key right here — call the get_api_key tool with your email.`,
-    `Or sign up at: ${MCP_SIGNUP_URL}    (30s, no card)`,
-    "",
-    `A free key gives you 200 audits/day + weekly alerts when your packages get riskier.`,
-  ].join("\n");
-}
-
-// Soft-CTA threshold for FREE-tier API key holders on MCP.
-// Different from anon MCP_SOFT_CTA_AT (5) because keyed-free users are a
-// warmer audience — they already opted in, so the upgrade conversation
-// can start later, after sustained usage proves the channel is valuable.
-// 10 = 2× anon threshold; calibrated against the 149-keys-0-paying gap
-// where ZERO upgrade pressure was visible to free-key MCP users.
-export const MCP_FREE_KEY_SOFT_CTA_AT = 10;
-export const MCP_FREE_KEY_STRONG_CTA_AT = 25;
-
-/**
- * Value-positive soft-CTA appended to MCP tool results for FREE-tier API
- * key holders past usage milestones. No hard limit and no "running out"
- * language — the pricing page promises "unlimited with free API key" and
- * we keep that promise. The CTA frames Developer ($15/mo) as additive
- * (CI/CD GitHub Action, instant alerts, batch API, 50 repo audits/month),
- * not as a cap reliever. Email pre-fills the /pricing checkout modal so
- * the click → buy path is 2 fewer fields. medium=mcp-free-key tags this
- * funnel separately from anon mcp-soft-cta in /api/admin analytics.
- */
-export function mcpFreeKeyCtaText(count: number, email: string | undefined): string {
-  const upgradeUrl = buildUpgradeUrl(email, { medium: "mcp-free-key" });
-  if (count >= MCP_FREE_KEY_STRONG_CTA_AT) {
-    return [
-      "",
-      "─────────────────────────────────────────────────",
-      `Commit MCP — ${count} audits today (free key, unlimited).`,
-      `You're using this every day. Developer ($15/mo) adds:`,
-      `  • Auto-trigger GitHub Action on every PR`,
-      `  • Instant email alerts (vs free weekly digest)`,
-      `  • 50 GitHub repo audits / month`,
-      `  • Batch API — up to 5 packages per call`,
-      `→ ${upgradeUrl}`,
-      "─────────────────────────────────────────────────",
-    ].join("\n");
-  }
-  return [
-    "",
-    "─────────────────────────────────────────────────",
-    `Commit MCP — ${count} audits today on free key (unlimited).`,
-    `Running this in CI? Developer ($15/mo) auto-triggers on every PR + instant alerts:`,
-    `→ ${upgradeUrl}`,
-    "─────────────────────────────────────────────────",
+    `A free key lifts it to 200 audits/day. It is tied to an email, so ask your user`,
+    `before calling get_api_key, or they can sign up at ${MCP_SIGNUP_URL}`,
   ].join("\n");
 }
 
@@ -5354,26 +5279,21 @@ async function bumpMcpCount(env: Bindings, ip: string): Promise<number> {
 }
 
 /**
- * Wrap an MCP tool handler with rate-limit + soft-CTA logic.
+ * Wrap an MCP tool handler with the rate limit.
  *
- * Three populations, three paths:
+ * 1. Anonymous: bump per-IP counter; >MCP_HARD_LIMIT (15) → error result.
+ * 2. Free-tier key: bump the counter, no limit ("unlimited with free key").
  *
- * 1. Anonymous (no API key):
- *    - bump per-IP counter; >MCP_HARD_LIMIT (15) → hard block + signup CTA
- *    - ≥MCP_SOFT_CTA_AT (5) → append generic free-key signup CTA
- *
- * 2. Free-tier API key:
- *    - bump per-IP counter (same table — no schema change)
- *    - NO hard limit (pricing page promises "unlimited with free key")
- *    - ≥MCP_FREE_KEY_SOFT_CTA_AT (10) → append value-positive Developer CTA
- *      with email-prefilled /pricing URL (medium=mcp-free-key for funnel
- *      attribution). Closes the 149-keys-0-paying gap where free-key MCP
- *      traffic saw ZERO upgrade pressure.
+ * Success results are never extended with sales text. Until 2026-11-27 a
+ * signup/upgrade block was appended from call 5 (anon) or 10 (free key).
+ * D1 06-10→11-26: ~200 anon IP-days saw it, almost all cloud fleets on a
+ * fixed 10/12-call script; it produced 9 keys (4 ours, 3 example.* emails
+ * typed by agents, 0 ever used). The cost was the user's context.
  *
  * 3. Paid tiers (developer/pro/enterprise):
  *    - pass through untouched. No counter bump, no CTA — they paid.
  */
-function withMcpRateLimit<A>(
+export function withMcpRateLimit<A>(
   ctx: McpCtx,
   handler: (args: A) => Promise<McpToolResult>,
 ): (args: A) => Promise<McpToolResult> {
@@ -5385,44 +5305,17 @@ function withMcpRateLimit<A>(
 
     const count = await bumpMcpCount(ctx.env, ctx.ip);
 
-    // Free-tier API key holders: no hard limit (offering promise kept),
-    // but soft-CTA milestones surface Developer-tier value at sustained
-    // usage. Email pre-fills the /pricing modal.
-    if (ctx.hasApiKey && ctx.tier === "free") {
-      const result = await handler(args);
-      if (count >= MCP_FREE_KEY_SOFT_CTA_AT) {
-        return {
-          ...result,
-          content: [
-            ...result.content,
-            { type: "text" as const, text: mcpFreeKeyCtaText(count, ctx.keyEmail) },
-          ],
-        };
-      }
-      return result;
-    }
-
-    // Anonymous: existing hard-limit + soft-CTA behavior.
-    if (count > MCP_HARD_LIMIT) {
+    // A successful result carries only the answer: no sales text is ever
+    // appended to the agent's context (2026-11-27). Only the anonymous
+    // hard limit speaks, and only as an error.
+    if (!ctx.hasApiKey && count > MCP_HARD_LIMIT) {
       return {
         content: [{ type: "text" as const, text: mcpHardBlockText(count) }],
         isError: true,
       };
     }
 
-    const result = await handler(args);
-
-    if (count >= MCP_SOFT_CTA_AT) {
-      return {
-        ...result,
-        content: [
-          ...result.content,
-          { type: "text" as const, text: mcpCtaText(count) },
-        ],
-      };
-    }
-
-    return result;
+    return handler(args);
   };
 }
 
@@ -6550,9 +6443,7 @@ When you've hit the daily free query limit (or just want faster access), call th
 After creating the key, configure your MCP client to pass it:
   Authorization: Bearer sk_commit_<your-key>
 
-Example: get_api_key({ email: "dev@company.com" })
-
-One key per email. 3 keys per IP per day (anti-abuse).`,
+Use the user's own email and ask them first: alerts and key recovery go there, so a made-up address gives a key nobody can recover. One key per email. 3 keys per IP per day (anti-abuse).`,
     {
       email: z
         .string()
